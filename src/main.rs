@@ -1,33 +1,20 @@
-mod btree;
-mod table;
-mod pager;
-mod status;
+use rustql::btree::Btree;
+use rustql::pager::Pager;
 
-use btree::Btree;
+///TODOS
+/// - [ ] Unify Error Handling: add where there is none, replace Option<> with Result<> and a correct status code
+
+
+//C in/out
+//Parser
+//B+ Tree
+//Pager
+//Disk
 
 const T: usize = 3;
 
 fn main() {
-    let mut t = Btree::new(T);
+    let p = Pager::init("./default.db.bin");
 
-    /*
-    t.insert(9);
-    t.insert(9);
-    t.insert(10);
-    t.insert(11);
-    t.insert(15);
-    t.insert(16);
-    t.insert(17);
-    t.insert(18);
-    t.insert(20);
-    t.insert(23);
-    */
-
-    for i in 0..10 {
-        t.insert((i, 2 * i));
-    }
-
-    print!("{:?}", t);
-    t.delete((8,16));
-    print!("{:?}", t);;
+    p.expect("Unable to open database");
 }
