@@ -18,6 +18,12 @@ pub enum Status {
     InternalExceptionWriteFailed,
     InternalExceptionInvalidFieldType,
     InternalExceptionInvalidSchema,
+    InternalExceptionInvalidFieldName,
+    InternalExceptionInvalidFieldValue,
+    InternalExceptionKeyNotFound,
+    InternalExceptionInvalidRowLength,
+    InternalExceptionInvalidColCount,
+    InternalExceptionPagerMismatch,
 }
 
 impl Debug for Status {

@@ -8,13 +8,13 @@ use rustql::pager::Pager;
 //C in/out
 //Parser
 //B+ Tree
+//(PageReader)
 //Pager
+//(Serializer)
 //Disk
 
 const T: usize = 3;
 
 fn main() {
-    let p = Pager::init("./default.db.bin");
-
-    p.expect("Unable to open database");
+    let p = Pager::init_from_file("./default.db.bin").expect("Unable to open database");
 }

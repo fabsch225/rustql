@@ -1,5 +1,5 @@
 use std::fmt::{Debug, Formatter};
-use crate::pager::{Key, Page, Pager, PagerFacade, Position, Serializer, TableSchema};
+use crate::pager::{Key, Page, Pager, PagerFacade, Position, Row, Serializer, TableSchema};
 //TODO implement error handling with unwraps or else
 
 //TODO implement interaction with Node only with getters and setters
@@ -15,82 +15,114 @@ use crate::pager::{Key, Page, Pager, PagerFacade, Position, Serializer, TableSch
 //wont do this for now
 
 #[derive(Clone)]
-pub struct BtreeNode {
+pub struct BTreeNode {
     pub page_position: Position,          // Unique ID for the node (corresponds to a page in the pager)
     pub is_leaf: bool,          // Indicates if the node is a leaf
-    pub keys: Vec<Key>,         // Cached keys (loaded from pager)
-    pub children: Vec<Position>,    // Child page IDs (loaded from pager)
+    //#### dont cache this stuff **twice**. use f.ex. pager_interface -> readKeysFromCache() -> ((modify the vector as needed)) -> writeKeysToCache(vec) [or is it not a cache but a buffer!?]
+    //pub keys: Vec<Key>,         // Cached keys (loaded from pager)
+    //pub children: Vec<Position>,    // Child page IDs (loaded from pager)
     pub pager_interface: PagerFacade,           // Reference to the pager for disk-backed storage
+
+    pub schema: TableSchema,
+    //maybe dont store so much in memory! !? :)
+    //dont store everything double in memory. TODO: concept clean up system in the btree (wont rust to that by itself!?), for example, when getting a new node, check if we can delete the old one!
+    //#### doing the same: implement getters and setters on the page cache
+    //pub data: Vec<Row>
+
+    //Thought why dont i store the pages in seperated Vecs!?!?!? --> lets not do this, then memory is more efficient...
 }
 
-impl BtreeNode {
+impl BTreeNode {
     pub fn cmp(a: &Key, b: &Key) -> std::cmp::Ordering {
         Serializer::compare(a, b).expect("Key comparison failed")
     }
 }
 
-impl BtreeNode {
+impl BTreeNode {
     fn is_leaf(&self) -> bool {
         self.is_leaf
     }
     fn get_keys_count(&self) -> usize {
-        self.keys.len()
+        let vec = self.pager_interface.access_page_read(&self, |d, t|{Serializer::read_keys_as_vec(d, t)});
+        //let x = &vec.unwrap().len();
+        let mut vec = vec.unwrap();
+        vec.push(vec![0, 2, 3, 4]);
+        self.pager_interface.access_page_write(&self, |d, t|{Serializer::write_keys_vec(&vec, d, t)});
+        return 0;
     }
     fn get_keys_from(&self, index: usize) -> Vec<Key> {
-        self.keys[index..].to_vec()
+        //self.keys[index..].to_vec()
+        todo!()
     }
     fn get_key(&self, index: usize) -> Option<&Key> {
-        self.keys.get(index)
+        //self.keys.get(index)
+        todo!()
     }
     fn set_key(&mut self, index: usize, key: Key) {
-        self.keys[index] = key;
+        todo!()
+        //self.keys[index] = key;
     }
     fn set_keys(&mut self, keys: Vec<Key>) {
-        self.keys = keys;
+        //self.keys = keys;
+        todo!()
     }
     fn get_keys(&self) -> &Vec<Key> {
-        &self.keys
+        todo!()
+        //&self.keys
     }
     fn remove_key(&mut self, index: usize) -> Key {
-        self.keys.remove(index)
+        todo!()
+        //self.keys.remove(index)
     }
     fn change_key(&mut self, prev_key: Key, key: Key) {
-        let index = self.keys.iter().position(|x| *x == prev_key).unwrap();
-        self.keys.insert(index, key);
+        todo!()
+        //let index = self.keys.iter().position(|x| *x == prev_key).unwrap();
+        //self.keys.insert(index, key);
     }
     fn push_key(&mut self, key: Key) {
-        self.keys.push(key);
+        todo!()
+        //self.keys.push(key);
         //TODO Save Keys to Memory
     }
     fn extend_keys(&mut self, keys: Vec<Key>) {
-        self.keys.extend(keys);
+        //self.keys.extend(keys);
+        todo!()
     }
     fn truncate_keys(&mut self, index: usize) {
-        self.keys.truncate(index);
+        //self.keys.truncate(index);
+        todo!()
     }
-    fn get_child(&self, index: usize) -> Option<BtreeNode> {
-        Pager::get_child(index, &Self)
+    fn get_child(&self, index: usize) -> Option<BTreeNode> {
+        Pager::get_child(index, &self)
+    }
+
+    //TODO should exist? -> we only interface this!?!?!?!?
+    #[deprecated]
+    fn get_child_mut(&mut self, index: usize) -> Option<BTreeNode> {
+        //Pager::get_child(index, &self)
+        todo!()
     }
     fn get_children_count(&self) -> usize {
-        self.children.len()
+        //self.children.len()
+        todo!()
     }
-    fn set_children(&mut self, children: Vec<BtreeNode>) {
+    fn set_children(&mut self, children: Vec<BTreeNode>) {
         //self.children = children;
         todo!()
     }
-    fn get_children_from(&self, index: usize) -> Vec<BtreeNode> {
+    fn get_children_from(&self, index: usize) -> Vec<BTreeNode> {
         //self.children[index..].to_vec()
         todo!()
     }
-    fn set_child(&mut self, index: usize, child: BtreeNode) {
+    fn set_child(&mut self, index: usize, child: BTreeNode) {
         //self.children[index] = child;
         todo!()
     }
-    fn remove_child(&mut self, index: usize) -> BtreeNode {
+    fn remove_child(&mut self, index: usize) -> BTreeNode {
         //self.children.remove(index)
         todo!()
     }
-    fn push_child(&mut self, child: BtreeNode) {
+    fn push_child(&mut self, child: BTreeNode) {
         //self.children.push(child);
         todo!()
     }
@@ -112,7 +144,7 @@ impl BtreeNode {
         //self.keys.insert(index, key);
         todo!()
     }
-    fn insert_child(&mut self, index: usize, key: BtreeNode) {
+    fn insert_child(&mut self, index: usize, key: BTreeNode) {
         //self.children.insert(index, key);
         todo!()
     }
@@ -156,7 +188,7 @@ impl BtreeNode {
 }
 
 pub struct Btree {
-    pub root: BtreeNode,
+    pub root: BTreeNode,
     pub t: usize, // Minimum degree
 }
 
@@ -182,7 +214,7 @@ impl Btree {
         }*/
     }
 
-    fn insert_non_full(x: &mut BtreeNode, k: Key, t: usize) {
+    fn insert_non_full(x: &mut BTreeNode, k: Key, t: usize) {
         let mut i = x.get_keys_count() as isize - 1;
         if x.is_leaf() {
             x.push_key(k.clone()); // Add a dummy value
@@ -206,7 +238,7 @@ impl Btree {
         }
     }
 
-    fn split_child(x: &mut BtreeNode, i: usize, t: usize) {
+    fn split_child(x: &mut BTreeNode, i: usize, t: usize) {
         todo!();
         /*
         let mut y = x.get_child_mut(i).unwrap().clone();
@@ -231,7 +263,7 @@ impl Btree {
         Self::delete_from(&mut self.root, k, self.t);
     }
 
-    fn delete_from(x: &mut BtreeNode, k: Key, t: usize) {
+    fn delete_from(x: &mut BTreeNode, k: Key, t: usize) {
         let mut i = 0;
         while i < x.get_keys_count() && k > *x.get_key(i).unwrap() {
             i += 1;
@@ -250,43 +282,45 @@ impl Btree {
                 if x.get_child(i).unwrap().get_keys_count() < t {
                     Btree::fill(x, i, t);
                 }
-                Btree::delete_from(x.get_child_mut(i).unwrap(), k, t);
+                Btree::delete_from(&mut x.get_child_mut(i).unwrap(), k, t);
             }
         }
     }
 
-    fn delete_internal_node(x: &mut BtreeNode, k: Key, i: usize, t: usize) {
+    fn delete_internal_node(x: &mut BTreeNode, k: Key, i: usize, t: usize) {
         if x.get_child(i).unwrap().get_keys_count() >= t {
             let pred = Btree::get_predecessor(&x.get_child(i).unwrap());
             x.set_key(i, pred.clone());
-            Btree::delete_from(x.get_child_mut(i).unwrap(), pred, t);
+            Btree::delete_from(&mut x.get_child_mut(i).unwrap(), pred, t);
         } else if x.get_child(i + 1).unwrap().get_keys_count() >= t {
             let succ = Btree::get_successor(&x.get_child(i + 1).unwrap());
             x.set_key(i, succ.clone());
-            Btree::delete_from(x.get_child_mut(i + 1).unwrap(), succ, t);
+            Btree::delete_from(&mut x.get_child_mut(i + 1).unwrap(), succ, t);
         } else {
             Btree::merge(x, i, t);
-            Btree::delete_from(x.get_child_mut(i).unwrap(), k, t);
+            Btree::delete_from(&mut x.get_child_mut(i).unwrap(), k, t);
         }
     }
 
-    fn get_predecessor(x: &BtreeNode) -> Key {
-        let mut cur = x;
+    //TODO optimize this!!!!
+    fn get_predecessor(x: &BTreeNode) -> Key {
+        let mut cur = x.clone();
         while !cur.is_leaf() {
-            cur = cur.get_child(cur.get_children_count() - 1).unwrap();
+            cur = cur.get_child(cur.get_children_count() - 1).unwrap().clone();
         }
         cur.get_key(cur.get_keys_count() - 1).unwrap().clone()
     }
 
-    fn get_successor(x: &BtreeNode) -> Key {
-        let mut cur = x;
+    //TODO optimize this!!!!
+    fn get_successor(x: &BTreeNode) -> Key {
+        let mut cur = x.clone();
         while !cur.is_leaf() {
-            cur = cur.get_child(0).unwrap();
+            cur = cur.get_child(0).unwrap().clone();
         }
         cur.get_key(0).unwrap().clone()
     }
 
-    fn merge(x: &mut BtreeNode, i: usize, t: usize) {
+    fn merge(x: &mut BTreeNode, i: usize, t: usize) {
         let mut child = x.get_child_mut(i).unwrap().clone();
 
         child.push_key(x.get_key(i).unwrap().clone());
@@ -301,7 +335,7 @@ impl Btree {
         x.set_child(i, child);
     }
 
-    fn fill(x: &mut BtreeNode, i: usize, t: usize) {
+    fn fill(x: &mut BTreeNode, i: usize, t: usize) {
         if i != 0 && x.get_child(i - 1).unwrap().get_keys_count() >= t {
             Btree::borrow_from_prev(x, i);
         } else if i != x.get_children_count() - 1 && x.get_child(i + 1).unwrap().get_keys_count() >= t {
@@ -315,7 +349,7 @@ impl Btree {
         }
     }
 
-    fn borrow_from_prev(x: &mut BtreeNode, i: usize) {
+    fn borrow_from_prev(x: &mut BTreeNode, i: usize) {
         x.children_move_key_left(i, i - 1);
 
         let parent_key = x.get_key(i - 1).unwrap().clone();
@@ -346,7 +380,7 @@ impl Btree {
         }
      */
 
-    fn borrow_from_next(x: &mut BtreeNode, i: usize) {
+    fn borrow_from_next(x: &mut BTreeNode, i: usize) {
         x.children_move_key_right(i, i + 1);
         let parent_key = x.get_key(i).unwrap().clone();
         x.child_push_key(i, parent_key);
@@ -378,31 +412,6 @@ impl Btree {
 
 impl Debug for Btree {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        fn print_tree<T: Debug>(
-            node: &BtreeNode,
-            level: usize,
-            f: &mut Formatter<'_>,
-        ) -> std::fmt::Result {
-            // Print the current level and keys
-            writeln!(
-                f,
-                "Level {} ({} keys): {:?}",
-                level,
-                node.keys.len(),
-                node.keys
-            )?;
-            /*
-            // Recursively print child nodes
-            if !node.leaf {
-                for child in &node.children {
-                    print_tree(child, level + 1, f)?;
-                }
-            }*/
-            Ok(())
-        }
-
-        // Start printing from the root
-        //print_tree(&self.root, 0, f)
         todo!();
     }
 }

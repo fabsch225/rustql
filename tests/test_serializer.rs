@@ -100,14 +100,33 @@ mod tests {
     }
 
     #[test]
+    fn test_ascii_to_bytes() {
+        let mut expected: [u8; STRING_SIZE] = [0; STRING_SIZE];
+        expected[..5].copy_from_slice(b"hello"); // Copy "hello" into the beginning
+        let input = "hello".to_string();
+        assert_eq!(Serializer::ascii_to_bytes(&input), expected);
+    }
+
+    #[test]
     fn test_bytes_to_position() {
-        let input: [u8; 16] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]; // Represents the integer 1
-        let expected: i128 = 1;
+        let input: [u8; 4] = [0, 0, 0, 1]; // Represents the integer 1
+        let expected: i32 = 1;
         assert_eq!(Serializer::bytes_to_position(&input), expected);
 
-        let input: [u8; 16] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0]; // Represents 2^24
-        let expected: i128 = 1 << 24;
+        let input: [u8; 4] = [1, 0, 0, 0]; // Represents 2^24
+        let expected: i32 = 1 << 24;
         assert_eq!(Serializer::bytes_to_position(&input), expected);
+    }
+
+    #[test]
+    fn test_position_to_bytes() {
+        let expected: [u8; 4] = [0, 0, 0, 1]; // Represents the integer 1
+        let input: Position = 1;
+        assert_eq!(Serializer::position_to_bytes(input), expected);
+
+        let expected: [u8; 4] = [1, 0, 0, 0]; // Represents 2^24
+        let input: Position = 1 << 24;
+        assert_eq!(Serializer::position_to_bytes(input), expected);
     }
 
     #[test]
@@ -119,6 +138,17 @@ mod tests {
         let input: [u8; 4] = [0, 1, 0, 0]; // Represents 2^16
         let expected: i32 = 1 << 16;
         assert_eq!(Serializer::bytes_to_int(&input), expected);
+    }
+
+    #[test]
+    fn test_int_to_bytes() {
+        let expected: [u8; 4] = [0, 0, 0, 42]; // Represents the integer 42
+        let input: i32 = 42;
+        assert_eq!(Serializer::int_to_bytes(input), expected);
+
+        let expected: [u8; 4] = [0, 1, 0, 0]; // Represents 2^16
+        let input: i32 = 1 << 16;
+        assert_eq!(Serializer::int_to_bytes(input), expected);
     }
 
     #[test]
@@ -137,6 +167,17 @@ mod tests {
         let input: [u8; 3] = [0x07, 0xE4, 0x21]; // Encodes 2020-02-01
         let expected = (2020, 2, 1);
         assert_eq!(Serializer::bytes_to_date(&input), expected);
+    }
+
+    #[test]
+    fn test_date_to_bytes() {
+        let expected: [u8; 3] = [0x07, 0xE5, 0x91]; // Encodes 2021-09-01
+        let input = (2021, 9, 1);
+        assert_eq!(Serializer::date_to_bytes(input.0, input.1, input.2), expected);
+
+        let expected: [u8; 3] = [0x07, 0xE4, 0x21]; // Encodes 2020-02-01
+        let input = (2020, 2, 1);
+        assert_eq!(Serializer::date_to_bytes(input.0, input.1, input.2), expected);
     }
 
     #[test]
