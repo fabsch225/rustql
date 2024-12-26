@@ -85,6 +85,7 @@ impl fmt::Debug for Type {
 pub type PageData = Vec<u8>;
 
 #[derive(Clone)]
+#[derive(Debug)]
 pub struct Page {
     data: PageData, //not like this, look at my comments in BTreeNode
     position: Position,
@@ -186,6 +187,9 @@ impl PagerFacade {
             .write()
             .expect("Failed to acquire write lock on Pager");
         let page = pager.access_page_read(node.page_position);
+
+        println!("{:?}", page);
+
         if page.is_ok() {
             func(&page?.data, &node.schema)
         } else {
@@ -272,14 +276,12 @@ impl Pager {
     }
 
     pub fn access_page_read(&mut self, position: Position) -> Result<Page, Status> {
-        use std::collections::hash_map::Entry;
+        let miss = !self.cache.contains_key(&position);
 
-        let miss = self.cache.contains_key(&position);
-
-        //TODO optimize this! lets hope the compiler does its magic for now
-        if (miss) {
+        //TODO optimize this! lets hope the compiler does magic for now
+        if miss {
             let page = self.read_page_from_disk(position);
-            if (page.is_ok()) {
+            if page.is_ok() {
                 let page = page?.clone();
                 self.cache.insert(position, page.clone());
                 Ok(page)
@@ -290,7 +292,7 @@ impl Pager {
             Ok(self
                 .cache
                 .get(&position)
-                .expect("This should not happen, i checked just now")
+                .expect("This should not happen")
                 .clone())
         }
     }
@@ -336,7 +338,8 @@ impl Pager {
         if !pager_facade.verify(&self) {
             return Err(InternalExceptionPagerMismatch);
         }
-        let page_data = Serializer::createPageData(keys, schema);
+        let page_data = Serializer::init_page_data(keys, data);
+
         let status_insert = self.insert_page_at_position(position, page_data);
         if (status_insert != InternalSuccess) {
             return Err(status_insert);
@@ -443,11 +446,28 @@ impl Serializer {
             fields,
         })
     }
-    pub fn createPageData(keys: Vec<Key>, schema: &TableSchema) -> PageData {
+
+    pub fn init_page_data(keys: Vec<Key>, data: Vec<Row>) -> PageData {
+        let len = keys.len();
+        let children: Vec<Position> = vec![0; len + 1];
+        Serializer::init_page_data_with_children(keys, children, data)
+    }
+
+    pub fn init_page_data_with_children(keys: Vec<Key>, children: Vec<Position>, data: Vec<Row>) -> PageData {
         let mut result = PageData::new();
-        result.push(0);
+        let len = keys.len();
+        result.push(len as u8);
         result.push(Serializer::create_flag(true));
-        Self::expand_keys_with_vec(&keys, &mut result, schema);
+        for key in keys {
+            result.extend(key);
+        }
+        for child in children {
+            result.extend(Serializer::position_to_bytes(child));
+        }
+        for row in data {
+            result.extend(row);
+        }
+
         result
     }
     //the expansion methods also expand the rows and children of course.
@@ -457,12 +477,11 @@ impl Serializer {
         schema: &TableSchema,
     ) -> Result<usize, Status> {
         let original_size = page[0] as usize; //old number of keys
-        let original_num_children = original_size + 1;
+        let original_num_children = original_size;
         let key_length = schema.key_length;
         let keys_offset = 2 + key_length * original_size;
         let new_keys_offset = expand_size * key_length;
-        let new_children_start =
-            keys_offset + new_keys_offset + original_num_children * POSITION_SIZE;
+        let new_children_start = new_keys_offset + original_num_children * POSITION_SIZE;
         let new_children_offset = expand_size * POSITION_SIZE;
         page.splice(keys_offset..keys_offset, vec![0; new_keys_offset]);
         page.splice(
@@ -619,9 +638,9 @@ impl Serializer {
         let keys_start = 2;
         let children_start = keys_start + num_keys * key_length;
         let data_start = children_start + (num_keys + 1) * POSITION_SIZE;
-        let row_length = schema.row_length;
-        let start = data_start + index * row_length;
-        let end = start + (index + 1) * row_length;
+        let data_length = schema.data_length;
+        let start = data_start + index * data_length;
+        let end = start + (index + 1) * data_length;
         Ok(page[start..end].to_vec())
     }
 
@@ -651,11 +670,11 @@ impl Serializer {
         let keys_start = 2;
         let children_start = keys_start + num_keys * key_length;
         let data_start = children_start + (num_keys + 1) * POSITION_SIZE;
-        let row_length = schema.row_length;
-        let start = data_start + index * row_length;
-        let end = start + row_length;
+        let data_length = schema.data_length;
+        let start = data_start + index * data_length;
+        let end = start + data_length;
 
-        if row.len() != row_length {
+        if row.len() != data_length {
             return Err(InternalExceptionInvalidRowLength);
         }
 
@@ -673,12 +692,14 @@ impl Serializer {
         let keys_start = 2;
         let children_start = keys_start + num_keys * key_length;
         let data_start = children_start + (num_keys + 1) * POSITION_SIZE;
-        let row_length = schema.row_length;
+        let data_length = schema.data_length;
+
+        println!("{:?}", page);
 
         let mut rows = Vec::new();
         for index in 0..num_keys {
-            let start = data_start + index * row_length;
-            let end = start + row_length;
+            let start = data_start + index * data_length;
+            let end = start + data_length;
             if end > page.len() {
                 return Err(InternalExceptionIndexOutOfRange);
             }
@@ -701,14 +722,14 @@ impl Serializer {
         let keys_start = 2;
         let children_start = keys_start + num_keys * key_length;
         let data_start = children_start + (num_keys + 1) * POSITION_SIZE;
-        let row_length = schema.row_length;
+        let data_length = schema.data_length;
 
         for (index, row) in rows.iter().enumerate() {
-            if row.len() != row_length {
+            if row.len() != data_length {
                 return Err(InternalExceptionInvalidRowLength);
             }
-            let start = data_start + index * row_length;
-            let end = start + row_length;
+            let start = data_start + index * data_length;
+            let end = start + data_length;
             if start >= page.len() || end > page.len() {
                 return Err(InternalExceptionIndexOutOfRange);
             }
@@ -751,12 +772,12 @@ impl Serializer {
         }
 
         let data_start = children_start + (num_keys + 1) * POSITION_SIZE;
-        let row_length = schema.row_length;
+        let data_length = schema.data_length;
         let mut data: Vec<Row> = vec!();
 
         for i in 0..num_keys {
-            let start = data_start + i * row_length;
-            let end = start +  (i + 1) * row_length;
+            let start = data_start + i * data_length;
+            let end = start +  (i + 1) * data_length;
             data.push(page.data[start..end].to_vec());
         }
          */

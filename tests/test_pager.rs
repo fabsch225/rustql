@@ -1,5 +1,7 @@
 #[cfg(test)]
 mod tests {
+    use std::ffi::c_long;
+    use std::thread::scope;
     use rustql::pager::{Field, Key, Pager, Serializer, TableSchema, Type};
 
     fn get_schema() -> TableSchema {
@@ -29,21 +31,41 @@ mod tests {
 
     #[test]
     fn test_insert_and_read() {
+
         let mut p = Pager::init_from_schema("./default.db.bin", get_schema()).unwrap();
 
         let key : Key = vec![0, 0, 0, 1];
         let str = Serializer::ascii_to_bytes("Fabian").to_vec();
 
-        let r = p.access_pager_write(|s|Pager::create_page_at_position(
+        let w = p.access_pager_write(|s|Pager::create_page_at_position(
             s,
-            0,
-            vec![key],
+            1,
+            vec![key.clone()],
             vec![],
-            vec![str],
+            vec![str.clone()],
             &get_schema(),
             p.clone()
         ));
 
+        assert!(w.is_ok());
+        let w = w.unwrap();
+
+        let r = p.access_page_read(&w.clone(), |d, _|Serializer::read_data_by_vec(d, &get_schema()));
+
         assert!(r.is_ok());
+
+        let value = r.unwrap().get(0).unwrap().to_vec();
+
+        assert_eq!(value, str.clone());
+
+        let r2 = p.access_page_read(&w.clone(), |d, _|Serializer::read_data_by_key(d, key.clone(), &get_schema()));
+
+        assert!(r2.is_ok());
+        assert_eq!(r2.unwrap(), str.clone());
+
+        let r3 = p.access_page_read(&w.clone(), |d, _|Serializer::read_data_by_index(d, 0, &get_schema()));
+
+        assert!(r3.is_ok());
+        assert_eq!(r3.unwrap(), str.clone());
     }
 }
