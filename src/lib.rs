@@ -1,4 +1,6 @@
 pub mod btree;
 pub mod pager;
 pub mod status;
-mod crypto;
+pub mod crypto;
+pub mod serializer;
+pub mod pager_frontend;

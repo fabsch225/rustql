@@ -2,25 +2,185 @@
 mod tests {
     use rustql::pager::*;
     use rustql::status::Status;
+    use rustql::serializer::Serializer;
+    fn get_schema() -> TableSchema {
+        TableSchema {
+            col_count: 2,
+            row_length: 260,
+            key_length: 4,
+            key_type: Type::Integer,
+            data_length: 256,
+            fields: vec![
+                Field {
+                    name: "Id".to_string(),
+                    field_type: Type::Integer,
+                },
+                Field {
+                    name: "Name".to_string(),
+                    field_type: Type::String,
+                },
+            ],
+        }
+    }
+
+    fn create_mock_page_data(num_keys: usize) -> PageData {
+        let schema = get_schema();
+        let keys: Vec<Key> = (0..num_keys)
+            .map(|i| vec![i as u8; schema.key_length])
+            .collect();
+        let children: Vec<Position> = vec![0; num_keys + 1];
+        let rows: Vec<Row> = (0..num_keys)
+          .map(|i| {
+                let mut row = vec![0u8; schema.data_length];
+                row[0..9].copy_from_slice(b"Mock Name");
+                row
+            })
+            .collect();
+
+        Serializer::init_page_data_with_children(keys, children, rows)
+    }
+
+    #[test]
+    fn test_init_page_data() {
+        let schema = get_schema();
+        let page = create_mock_page_data(2);
+
+        assert_eq!(page[0], 2);
+        assert_eq!(page[2..6], vec![0u8, 0u8, 0u8, 0u8]);
+        assert_eq!(page[6..10], vec![1u8, 1u8, 1u8, 1u8]);
+    }
+
+    #[test]
+    fn test_is_leaf() {
+        let page = create_mock_page_data(2);
+        let is_leaf = Serializer::is_leaf(&page).unwrap();
+
+        assert!(is_leaf);
+    }
+
+    #[test]
+    fn test_expand_keys_by() {
+        let mut page = create_mock_page_data(2);
+        let schema = get_schema();
+
+        Serializer::expand_keys_by(2, &mut page, &schema).unwrap();
+
+        assert_eq!(page[0], 4);
+    }
+
+    #[test]
+    fn test_read_key() {
+        let page = create_mock_page_data(2);
+        let schema = get_schema();
+
+        let key = Serializer::read_key(1, &page, &schema).unwrap();
+        assert_eq!(key, vec![1u8; 4]);
+    }
+
+    #[test]
+    fn test_write_key() {
+        let mut page = create_mock_page_data(2);
+        let schema = get_schema();
+
+        Serializer::write_key(0, &vec![9u8; 4], &mut page, &schema);
+        let key = Serializer::read_key(0, &page, &schema).unwrap();
+
+        assert_eq!(key, vec![9u8; 4]);
+    }
+
+    #[test]
+    fn test_read_child() {
+        let page = create_mock_page_data(2);
+        let schema = get_schema();
+
+        let child = Serializer::read_child(0, &page, &schema).unwrap();
+        assert_eq!(child, 0);
+    }
+
+    #[test]
+    fn test_write_child() {
+        let mut page = create_mock_page_data(2);
+        let schema = get_schema();
+
+        Serializer::write_child(1, 42, &mut page, &schema);
+        let child = Serializer::read_child(1, &page, &schema).unwrap();
+
+        assert_eq!(child, 42);
+    }
+
+    #[test]
+   fn test_read_data_by_index() {
+    let page = create_mock_page_data(2);
+    let schema = get_schema();
+
+    let row = Serializer::read_data_by_index(&page, 1, &schema).unwrap();
+    assert_eq!(row[0..9].to_vec(), b"Mock Name".to_vec());
+}
+
+    #[test]
+    fn test_write_data_by_index() {
+        let mut page = create_mock_page_data(2);
+        let schema = get_schema();
+
+        let mut new_row = vec![0u8; schema.data_length];
+        new_row[0..12].copy_from_slice(b"Updated Name");
+
+        Serializer::write_data_by_index(&mut page, 1, new_row.clone(), &schema).unwrap();
+        let row = Serializer::read_data_by_index(&page, 1, &schema).unwrap();
+
+        assert_eq!(row, new_row);
+    }
+
+    #[test]
+    fn test_expand_keys_with_vec() {
+        let mut page = create_mock_page_data(2);
+        let schema = get_schema();
+
+        let new_keys = vec![vec![5u8; 4], vec![6u8; 4]];
+        Serializer::expand_keys_with_vec(&new_keys, &mut page, &schema);
+
+        let expanded_keys = Serializer::read_keys_as_vec(&page, &schema).unwrap();
+        assert_eq!(expanded_keys[2], new_keys[0]);
+        assert_eq!(expanded_keys[3], new_keys[1]);
+    }
+
+    #[test]
+    fn test_read_keys_as_vec() {
+        let page = create_mock_page_data(2);
+        let schema = get_schema();
+
+        let keys = Serializer::read_keys_as_vec(&page, &schema).unwrap();
+        assert_eq!(keys.len(), 2);
+    }
+
+    #[test]
+    fn test_read_children_as_vec() {
+        let page = create_mock_page_data(2);
+        let schema = get_schema();
+
+        let children = Serializer::read_children_as_vec(&page, &schema).unwrap();
+        assert_eq!(children.len(), 3);
+    }
+
 
     #[test]
     fn test_compare_integers_equal() {
-        let a: Vec<u8> = vec![1, 0, 0, 0, 42]; // Type: Integer (1), Value: 42
-        let b: Vec<u8> = vec![1, 0, 0, 0, 42]; // Type: Integer (1), Value: 42
+        let a: Vec<u8> = vec![1, 0, 0, 0, 42];
+        let b: Vec<u8> = vec![1, 0, 0, 0, 42];
         assert_eq!(Serializer::compare(&a, &b), Ok(std::cmp::Ordering::Equal));
     }
     #[test]
     fn test_compare_integers_not_equal() {
-        let a: Vec<u8> = vec![1, 0, 0, 0, 42]; // Type: Integer (1), Value: 42
-        let b: Vec<u8> = vec![1, 0, 0, 0, 100]; // Type: Integer (1), Value: 100
+        let a: Vec<u8> = vec![1, 0, 0, 0, 42];
+        let b: Vec<u8> = vec![1, 0, 0, 0, 100];
         assert_eq!(Serializer::compare(&a, &b), Ok(std::cmp::Ordering::Less));
     }
 
     #[test]
     fn test_compare_strings_equal() {
-        let mut a: Vec<u8> = vec![2; 257]; // Type: String (2)
+        let mut a: Vec<u8> = vec![2; 257];
         a[TYPE_SIZE..TYPE_SIZE + 5].copy_from_slice(b"hello");
-        let mut b: Vec<u8> = vec![2; 257]; // Type: String (2)
+        let mut b: Vec<u8> = vec![2; 257];
         b[TYPE_SIZE..TYPE_SIZE + 5].copy_from_slice(b"hello");
 
         assert_eq!(Serializer::compare(&a, &b), Ok(std::cmp::Ordering::Equal));
@@ -28,9 +188,9 @@ mod tests {
 
     #[test]
     fn test_compare_strings_not_equal() {
-        let mut a: Vec<u8> = vec![2; 257]; // Type: String (2)
+        let mut a: Vec<u8> = vec![2; 257];
         a[TYPE_SIZE..TYPE_SIZE + 5].copy_from_slice(b"hello");
-        let mut b: Vec<u8> = vec![2; 257]; // Type: String (2)
+        let mut b: Vec<u8> = vec![2; 257];
         b[TYPE_SIZE..TYPE_SIZE + 5].copy_from_slice(b"world");
 
         assert_eq!(Serializer::compare(&a, &b), Ok(std::cmp::Ordering::Less));
@@ -38,40 +198,40 @@ mod tests {
 
     #[test]
     fn test_compare_dates_equal() {
-        let a: Vec<u8> = vec![3, 0x07, 0xE5, 0x91]; // Type: Date (3), Date: 2021-09-01
-        let b: Vec<u8> = vec![3, 0x07, 0xE5, 0x91]; // Type: Date (3), Date: 2021-09-01
+        let a: Vec<u8> = vec![3, 0x07, 0xE5, 0x91];
+        let b: Vec<u8> = vec![3, 0x07, 0xE5, 0x91];
 
         assert_eq!(Serializer::compare(&a, &b), Ok(std::cmp::Ordering::Equal));
     }
 
     #[test]
     fn test_compare_dates_not_equal() {
-        let a: Vec<u8> = vec![3, 0x07, 0xE5, 0x91]; // Type: Date (3), Date: 2021-09-01
-        let b: Vec<u8> = vec![3, 0x07, 0xE4, 0x91]; // Type: Date (3), Date: 2020-09-01
+        let a: Vec<u8> = vec![3, 0x07, 0xE5, 0x91];
+        let b: Vec<u8> = vec![3, 0x07, 0xE4, 0x91];
 
         assert_eq!(Serializer::compare(&a, &b), Ok(std::cmp::Ordering::Greater));
     }
 
     #[test]
     fn test_compare_booleans_equal() {
-        let a: Vec<u8> = vec![4, 1]; // Type: Boolean (4), Value: true
-        let b: Vec<u8> = vec![4, 1]; // Type: Boolean (4), Value: true
+        let a: Vec<u8> = vec![4, 1];
+        let b: Vec<u8> = vec![4, 1];
 
         assert_eq!(Serializer::compare(&a, &b), Ok(std::cmp::Ordering::Equal));
     }
 
     #[test]
     fn test_compare_booleans_not_equal() {
-        let a: Vec<u8> = vec![4, 1]; // Type: Boolean (4), Value: true
-        let b: Vec<u8> = vec![4, 0]; // Type: Boolean (4), Value: false
+        let a: Vec<u8> = vec![4, 1];
+        let b: Vec<u8> = vec![4, 0];
 
         assert_eq!(Serializer::compare(&a, &b), Ok(std::cmp::Ordering::Greater));
     }
 
     #[test]
     fn test_type_mismatch_error() {
-        let a: Vec<u8> = vec![1, 0, 0, 0, 42]; // Type: Integer (1)
-        let b: Vec<u8> = vec![2, 0, 0, 0, 42]; // Type: String (2)
+        let a: Vec<u8> = vec![1, 0, 0, 0, 42];
+        let b: Vec<u8> = vec![2, 0, 0, 0, 42];
 
         assert_eq!(
             Serializer::compare(&a, &b),
@@ -81,8 +241,8 @@ mod tests {
 
     #[test]
     fn test_invalid_schema_error() {
-        let a: Vec<u8> = vec![255, 0, 0, 0, 42]; // Invalid Type
-        let b: Vec<u8> = vec![1, 0, 0, 0, 42];   // Type: Integer (1)
+        let a: Vec<u8> = vec![255, 0, 0, 0, 42];
+        let b: Vec<u8> = vec![1, 0, 0, 0, 42];
 
         assert_eq!(
             Serializer::compare(&a, &b),
@@ -92,9 +252,8 @@ mod tests {
 
     #[test]
     fn test_bytes_to_ascii() {
-        // Ensure the size matches STRING_SIZE
         let mut input: [u8; STRING_SIZE] = [0; STRING_SIZE];
-        input[..5].copy_from_slice(b"hello"); // Copy "hello" into the beginning
+        input[..5].copy_from_slice(b"hello");
         let expected = "hello".to_string();
         assert_eq!(Serializer::bytes_to_ascii(&input), expected);
     }
@@ -102,80 +261,80 @@ mod tests {
     #[test]
     fn test_ascii_to_bytes() {
         let mut expected: [u8; STRING_SIZE] = [0; STRING_SIZE];
-        expected[..5].copy_from_slice(b"hello"); // Copy "hello" into the beginning
+        expected[..5].copy_from_slice(b"hello");
         let input = "hello".to_string();
         assert_eq!(Serializer::ascii_to_bytes(&input), expected);
     }
 
     #[test]
     fn test_bytes_to_position() {
-        let input: [u8; 4] = [0, 0, 0, 1]; // Represents the integer 1
+        let input: [u8; 4] = [0, 0, 0, 1];
         let expected: i32 = 1;
         assert_eq!(Serializer::bytes_to_position(&input), expected);
 
-        let input: [u8; 4] = [1, 0, 0, 0]; // Represents 2^24
+        let input: [u8; 4] = [1, 0, 0, 0];
         let expected: i32 = 1 << 24;
         assert_eq!(Serializer::bytes_to_position(&input), expected);
     }
 
     #[test]
     fn test_position_to_bytes() {
-        let expected: [u8; 4] = [0, 0, 0, 1]; // Represents the integer 1
+        let expected: [u8; 4] = [0, 0, 0, 1];
         let input: Position = 1;
         assert_eq!(Serializer::position_to_bytes(input), expected);
 
-        let expected: [u8; 4] = [1, 0, 0, 0]; // Represents 2^24
+        let expected: [u8; 4] = [1, 0, 0, 0];
         let input: Position = 1 << 24;
         assert_eq!(Serializer::position_to_bytes(input), expected);
     }
 
     #[test]
     fn test_bytes_to_int() {
-        let input: [u8; 4] = [0, 0, 0, 42]; // Represents the integer 42
+        let input: [u8; 4] = [0, 0, 0, 42];
         let expected: i32 = 42;
         assert_eq!(Serializer::bytes_to_int(&input), expected);
 
-        let input: [u8; 4] = [0, 1, 0, 0]; // Represents 2^16
+        let input: [u8; 4] = [0, 1, 0, 0];
         let expected: i32 = 1 << 16;
         assert_eq!(Serializer::bytes_to_int(&input), expected);
     }
 
     #[test]
     fn test_int_to_bytes() {
-        let expected: [u8; 4] = [0, 0, 0, 42]; // Represents the integer 42
+        let expected: [u8; 4] = [0, 0, 0, 42];
         let input: i32 = 42;
         assert_eq!(Serializer::int_to_bytes(input), expected);
 
-        let expected: [u8; 4] = [0, 1, 0, 0]; // Represents 2^16
+        let expected: [u8; 4] = [0, 1, 0, 0];
         let input: i32 = 1 << 16;
         assert_eq!(Serializer::int_to_bytes(input), expected);
     }
 
     #[test]
     fn test_bytes_to_int_variable_length() {
-        let input: [u8; 3] = [0, 1, 0]; // Represents 2^8
+        let input: [u8; 3] = [0, 1, 0];
         let expected: i32 = 1 << 8;
         assert_eq!(Serializer::bytes_to_int_variable_length(&input), expected);
     }
 
     #[test]
     fn test_bytes_to_date() {
-        let input: [u8; 3] = [0x07, 0xE5, 0x91]; // Encodes 2021-09-01
+        let input: [u8; 3] = [0x07, 0xE5, 0x91];
         let expected = (2021, 9, 1);
         assert_eq!(Serializer::bytes_to_date(&input), expected);
 
-        let input: [u8; 3] = [0x07, 0xE4, 0x21]; // Encodes 2020-02-01
+        let input: [u8; 3] = [0x07, 0xE4, 0x21];
         let expected = (2020, 2, 1);
         assert_eq!(Serializer::bytes_to_date(&input), expected);
     }
 
     #[test]
     fn test_date_to_bytes() {
-        let expected: [u8; 3] = [0x07, 0xE5, 0x91]; // Encodes 2021-09-01
+        let expected: [u8; 3] = [0x07, 0xE5, 0x91];
         let input = (2021, 9, 1);
         assert_eq!(Serializer::date_to_bytes(input.0, input.1, input.2), expected);
 
-        let expected: [u8; 3] = [0x07, 0xE4, 0x21]; // Encodes 2020-02-01
+        let expected: [u8; 3] = [0x07, 0xE4, 0x21];
         let input = (2020, 2, 1);
         assert_eq!(Serializer::date_to_bytes(input.0, input.1, input.2), expected);
     }
@@ -184,26 +343,26 @@ mod tests {
     fn test_byte_to_bool() {
         assert_eq!(Serializer::byte_to_bool(0), false);
         assert_eq!(Serializer::byte_to_bool(1), true);
-        assert_eq!(Serializer::byte_to_bool(2), false); // Only LSB matters
-        assert_eq!(Serializer::byte_to_bool(3), true);  // Only LSB matters
+        assert_eq!(Serializer::byte_to_bool(2), false);
+        assert_eq!(Serializer::byte_to_bool(3), true);
     }
 
     #[test]
     fn test_byte_to_bool_at_position() {
-        assert_eq!(Serializer::byte_to_bool_at_position(0b00000001, 0), true); // LSB
+        assert_eq!(Serializer::byte_to_bool_at_position(0b00000001, 0), true);
         assert_eq!(Serializer::byte_to_bool_at_position(0b00000010, 1), true);
         assert_eq!(Serializer::byte_to_bool_at_position(0b00000100, 2), true);
         assert_eq!(Serializer::byte_to_bool_at_position(0b00001000, 3), true);
-        assert_eq!(Serializer::byte_to_bool_at_position(0b11111111, 7), true); // MSB
+        assert_eq!(Serializer::byte_to_bool_at_position(0b11111111, 7), true);
         assert_eq!(Serializer::byte_to_bool_at_position(0b00000000, 0), false);
     }
 
     #[test]
     fn test_bytes_to_bits() {
-        let input: [u8; 2] = [0b10101010, 0b01010101]; // Alternating bits
+        let input: [u8; 2] = [0b10101010, 0b01010101];
         let expected = vec![
-            true, false, true, false, true, false, true, false, // First byte
-            false, true, false, true, false, true, false, true, // Second byte
+            true, false, true, false, true, false, true, false,
+            false, true, false, true, false, true, false, true,
         ];
         assert_eq!(Serializer::bytes_to_bits(&input), expected);
     }
@@ -215,6 +374,6 @@ mod tests {
         assert_eq!(Serializer::parse_type(2), Some(Type::String));
         assert_eq!(Serializer::parse_type(3), Some(Type::Date));
         assert_eq!(Serializer::parse_type(4), Some(Type::Boolean));
-        assert_eq!(Serializer::parse_type(255), None); // Invalid type
+        assert_eq!(Serializer::parse_type(255), None);
     }
 }
