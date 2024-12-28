@@ -1,8 +1,8 @@
 #[cfg(test)]
 mod tests {
     use rustql::pager::*;
-    use rustql::status::Status;
     use rustql::serializer::Serializer;
+    use rustql::status::Status;
     fn get_schema() -> TableSchema {
         TableSchema {
             col_count: 2,
@@ -30,7 +30,7 @@ mod tests {
             .collect();
         let children: Vec<Position> = vec![0; num_keys + 1];
         let rows: Vec<Row> = (0..num_keys)
-          .map(|i| {
+            .map(|i| {
                 let mut row = vec![0u8; schema.data_length];
                 row[0..9].copy_from_slice(b"Mock Name");
                 row
@@ -109,13 +109,13 @@ mod tests {
     }
 
     #[test]
-   fn test_read_data_by_index() {
-    let page = create_mock_page_data(2);
-    let schema = get_schema();
+    fn test_read_data_by_index() {
+        let page = create_mock_page_data(2);
+        let schema = get_schema();
 
-    let row = Serializer::read_data_by_index(&page, 1, &schema).unwrap();
-    assert_eq!(row[0..9].to_vec(), b"Mock Name".to_vec());
-}
+        let row = Serializer::read_data_by_index(&page, 1, &schema).unwrap();
+        assert_eq!(row[0..9].to_vec(), b"Mock Name".to_vec());
+    }
 
     #[test]
     fn test_write_data_by_index() {
@@ -161,7 +161,6 @@ mod tests {
         let children = Serializer::read_children_as_vec(&page, &schema).unwrap();
         assert_eq!(children.len(), 3);
     }
-
 
     #[test]
     fn test_compare_integers_equal() {
@@ -332,11 +331,17 @@ mod tests {
     fn test_date_to_bytes() {
         let expected: [u8; 3] = [0x07, 0xE5, 0x91];
         let input = (2021, 9, 1);
-        assert_eq!(Serializer::date_to_bytes(input.0, input.1, input.2), expected);
+        assert_eq!(
+            Serializer::date_to_bytes(input.0, input.1, input.2),
+            expected
+        );
 
         let expected: [u8; 3] = [0x07, 0xE4, 0x21];
         let input = (2020, 2, 1);
-        assert_eq!(Serializer::date_to_bytes(input.0, input.1, input.2), expected);
+        assert_eq!(
+            Serializer::date_to_bytes(input.0, input.1, input.2),
+            expected
+        );
     }
 
     #[test]
@@ -361,8 +366,8 @@ mod tests {
     fn test_bytes_to_bits() {
         let input: [u8; 2] = [0b10101010, 0b01010101];
         let expected = vec![
-            true, false, true, false, true, false, true, false,
-            false, true, false, true, false, true, false, true,
+            true, false, true, false, true, false, true, false, false, true, false, true, false,
+            true, false, true,
         ];
         assert_eq!(Serializer::bytes_to_bits(&input), expected);
     }

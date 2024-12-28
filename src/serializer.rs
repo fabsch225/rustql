@@ -3,7 +3,7 @@
 use crate::btree::BTreeNode;
 use crate::pager::{Field, Flag, Key, PageContainer, PageData, PagerAccessor, Position, Row, TableSchema, Type, BOOLEAN_SIZE, DATE_SIZE, INTEGER_SIZE, NULL_SIZE, POSITION_SIZE, ROW_NAME_SIZE, STRING_SIZE, TYPE_SIZE};
 use crate::status::Status;
-use crate::status::Status::{InternalExceptionIndexOutOfRange, InternalExceptionInvalidColCount, InternalExceptionInvalidRowLength, InternalExceptionInvalidSchema, InternalExceptionKeyNotFound, Success};
+use crate::status::Status::{InternalExceptionIndexOutOfRange, InternalExceptionInvalidColCount, InternalExceptionInvalidRowLength, InternalExceptionInvalidSchema, InternalExceptionKeyNotFound, InternalSuccess, Success};
 
 pub struct Serializer {}
 
@@ -160,7 +160,7 @@ impl Serializer {
         let start_pos = list_start_pos + index * key_length;
         let end_pos = start_pos + key_length;
         page[start_pos..end_pos].copy_from_slice(key);
-        Success
+        InternalSuccess
     }
     pub fn write_child(
         index: usize,
@@ -179,7 +179,7 @@ impl Serializer {
         let end_pos = start_pos + POSITION_SIZE;
         let child_bytes = Serializer::position_to_bytes(child);
         page[start_pos..end_pos].copy_from_slice(&child_bytes);
-        Success
+        InternalSuccess
     }
     pub fn read_keys_as_vec(page: &PageData, schema: &TableSchema) -> Result<Vec<Key>, Status> {
         let mut result: Vec<Key> = Vec::new();
@@ -204,10 +204,15 @@ impl Serializer {
         for i in 0..(num_keys + 1) {
             let start_pos = list_start_pos + i * POSITION_SIZE;
             let end_pos = start_pos + POSITION_SIZE;
-            result.push(Serializer::bytes_to_position(
+            let child_position = Serializer::bytes_to_position(
                 <&[u8; POSITION_SIZE]>::try_from(&page[start_pos..end_pos]).unwrap(),
-            ));
+            );
+            if child_position == 0 {
+                break; //0 means, none. we can break because of btree structure
+            }
+            result.push(child_position);
         }
+        println!("{:?}", result);
         Ok(result)
     }
     pub fn write_keys_vec(keys: &Vec<Key>, page: &mut PageData, schema: &TableSchema) -> Status {
@@ -219,7 +224,7 @@ impl Serializer {
             let end_pos = start_pos + key_length;
             page.splice(start_pos..end_pos, keys[i].to_vec());
         }
-        Success
+        InternalSuccess
     }
     pub fn write_children_vec(
         children: &Vec<Position>,
@@ -234,7 +239,7 @@ impl Serializer {
             let end_pos = start_pos + POSITION_SIZE;
             page.splice(start_pos..end_pos, Serializer::position_to_bytes(*child).to_vec());
         }
-        Success
+        InternalSuccess
     }
     pub fn read_data_by_key(
         page: &PageData,

@@ -1,8 +1,7 @@
 #[cfg(test)]
 mod tests {
-    use std::ffi::c_long;
-    use std::thread::scope;
-    use rustql::pager::{Field, Key, PagerCore, Serializer, TableSchema, Type};
+    use rustql::serializer::Serializer;
+    use rustql::pager::{Field, Key, PagerCore, TableSchema, Type};
 
     fn get_schema() -> TableSchema {
         TableSchema {
@@ -37,9 +36,8 @@ mod tests {
         let key : Key = vec![0, 0, 0, 1];
         let str = Serializer::ascii_to_bytes("Fabian").to_vec();
 
-        let w = p.access_pager_write(|s| PagerCore::create_page_at_position(
+        let w = p.access_pager_write(|s| PagerCore::create_page(
             s,
-            1,
             vec![key.clone()],
             vec![],
             vec![str.clone()],

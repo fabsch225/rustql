@@ -7,6 +7,7 @@ use crate::status::Status::{InternalExceptionIndexOutOfRange, InternalExceptionI
 use std::collections::HashMap;
 use std::ffi::CString;
 use std::fmt;
+use std::fmt::Debug;
 use std::fs::File;
 use std::io::{Read, Seek, Write};
 use std::marker::PhantomData;
@@ -85,8 +86,7 @@ impl fmt::Debug for Type {
 //represents a whole page except the position i.e. keys, child-position and data
 pub type PageData = Vec<u8>;
 
-#[derive(Clone)]
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct PageContainer {
     pub(crate) data: PageData, //not like this, look at my comments in BTreeNode
     pub(crate) position: Position,
@@ -102,7 +102,7 @@ pub type Flag = u8;
 pub type Position = i32;
 pub type Row = Vec<u8>;
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct TableSchema {
     pub col_count: usize,
     pub row_length: usize,
@@ -128,26 +128,37 @@ impl fmt::Display for TableSchema {
     }
 }
 
+#[derive(Debug)]
 pub struct PagerCore {
     pub cache: HashMap<Position, PageContainer>,
     pub schema: TableSchema,
     pub hash: String,
     file: File,
+    next_position: Position,
 }
 
 #[derive(Clone)]
 pub struct PagerAccessor {
     pager: Arc<RwLock<PagerCore>>,
     hash: String,
+    pub schema: Arc<TableSchema>,
+}
+
+impl Debug for PagerAccessor {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "[PagerAccessor]")
+    }
 }
 
 impl PagerAccessor {
     // looks like dependency injection?
     pub fn new(pager: PagerCore) -> Self {
         let h = pager.hash.clone();
+        let s = pager.schema.clone();
         Self {
             pager: Arc::new(RwLock::new(pager)),
             hash: h,
+            schema: Arc::new(s),
         }
     }
 
@@ -199,7 +210,7 @@ impl PagerAccessor {
 
     pub fn access_page_write<F>(&self, node: &BTreeNode, func: F) -> Status
     where
-        F: FnOnce(&mut PageData, &TableSchema) -> Status,
+        F: FnOnce(&mut PageContainer, &TableSchema) -> Status,
     {
         //TODO Optimize reading / writing to the pager by checking cache beforehand!?
         let mut pager = self
@@ -208,7 +219,7 @@ impl PagerAccessor {
             .expect("Failed to acquire write lock on Pager");
         let page: Result<&mut PageContainer, Status> = pager.access_page_write(node.page_position);
         if page.is_ok() {
-            func(&mut page.unwrap().data, &node.schema)
+            func(&mut page.unwrap(), &node.schema)
         } else {
             page.err().expect("there must be an err, i checked")
         }
@@ -238,10 +249,12 @@ impl PagerCore {
             cache: HashMap::new(),
             schema,
             file,
-            hash: generate_random_hash(16)
+            hash: generate_random_hash(16),
+            next_position: (row_length * (1 + 16)) as Position
         }))
     }
 
+    #[deprecated]
     pub fn init_from_schema(file_path: &str, schema: TableSchema) -> Result<PagerAccessor, Status> {
         if !Serializer::verify_schema(&schema).is_ok() {
             return Err(InternalExceptionInvalidSchema);
@@ -249,8 +262,10 @@ impl PagerCore {
         Ok(PagerAccessor::new(PagerCore {
             cache: HashMap::new(),
             schema,
+            //TODO this is a workaround for development
             file: File::open(file_path).unwrap(),
-            hash: generate_random_hash(16)
+            hash: generate_random_hash(16),
+            next_position: 1
         }))
     }
 
@@ -299,7 +314,20 @@ impl PagerCore {
         }
     }
 
-    pub fn create_page_at_position(
+    pub fn create_page(
+        &mut self,
+        keys: Vec<Key>,
+        children: Vec<Position>,
+        data: Vec<Row>,
+        schema: &TableSchema,
+        pager_facade: PagerAccessor
+    ) -> Result<BTreeNode, Status> {
+        let position = self.next_position;
+        self.next_position += self.schema.row_length as i32;
+        self.create_page_at_position(position, keys, children, data, schema, pager_facade)
+    }
+
+    fn create_page_at_position(
         &mut self,
         position: Position,
         keys: Vec<Key>,
@@ -331,7 +359,7 @@ impl PagerCore {
         })
     }
 
-    pub fn insert_page_at_position(&mut self, position: Position, page_data: PageData) -> Status {
+    fn insert_page_at_position(&mut self, position: Position, page_data: PageData) -> Status {
         let page = PageContainer {
             data: page_data,
             position,
