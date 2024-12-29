@@ -38,5 +38,7 @@ fn main() {
     }
 
     b.delete(vec![0, 0, 0, 2]);
-    println!("{:?}", b)
+    println!("{:?}", b);
+
+    println!("{:?}", b.scan())
 }

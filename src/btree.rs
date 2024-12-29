@@ -455,7 +455,6 @@ impl Btree {
     }
 
     fn in_order_traversal(&self, node: &BTreeNode, keys: &mut Vec<Key>, rows: &mut Vec<Row>) {
-        todo!();
         let key_count = node.get_keys_count().unwrap();
         for i in 0..key_count {
             if !node.is_leaf() {
