@@ -69,17 +69,20 @@ impl Serializer {
     }
 
     //TODO Error handling
-    pub fn init_page_data_with_children(keys: Vec<Key>, children: Vec<Position>, data: Vec<Row>) -> PageData {
+    pub fn init_page_data_with_children(keys: Vec<Key>, children: Vec<Position>, mut data: Vec<Row>) -> PageData {
         let mut result = PageData::new();
         let len = keys.len();
         result.push(len as u8);
         result.push(Serializer::create_flag(true));
+
         for key in keys {
             result.extend(key);
         }
+
         for child in children {
             result.extend(Serializer::position_to_bytes(child));
         }
+
         for row in data {
             result.extend(row);
         }
@@ -87,8 +90,9 @@ impl Serializer {
         result
     }
 
-    pub fn is_leaf(data: &PageData) -> Result<bool, Status> {
-        Ok(Self::byte_to_bool_at_position(data[1], 1))
+    pub fn is_leaf(data: &PageData, schema: &TableSchema) -> Result<bool, Status> {
+        //Ok(Self::byte_to_bool_at_position(data[1], 1))
+        Ok(Self::read_child(0, data, schema).unwrap() == 0)
     }
 
     //the expansion methods also expand the rows and children of course.
@@ -212,11 +216,17 @@ impl Serializer {
             }
             result.push(child_position);
         }
-        println!("{:?}", result);
         Ok(result)
     }
+
+    ///will adjust number of keys, delete children if necessary
+    /// - the original data will be intact, but empty rows will be padded.
+    /// - TODO: implement a second version with data overrides
     pub fn write_keys_vec(keys: &Vec<Key>, page: &mut PageData, schema: &TableSchema) -> Status {
         let num_keys = page[0] as usize;
+        if num_keys != keys.len() {
+            return Self::write_keys_vec_resize(keys, page, schema);
+        }
         let key_length = schema.key_length;
         let list_start_pos = 2;
         for i in 0..num_keys {
@@ -226,6 +236,61 @@ impl Serializer {
         }
         InternalSuccess
     }
+
+    pub fn write_keys_vec_resize_with_rows(keys: &Vec<Key>, rows: &Vec<Row>, page: &mut PageData, schema: &TableSchema) -> Status {
+        if keys.len() != rows.len() {panic!("keys and rows must have same len")}
+        let status = Self::write_keys_vec_resize(keys, page, schema);
+        if status != InternalSuccess { return status }
+        Self::write_data_by_vec(page, rows, schema)
+    }
+
+    pub fn write_keys_vec_resize(keys: &Vec<Key>, page: &mut PageData, schema: &TableSchema) -> Status {
+        let orig_num_keys = page[0] as usize;
+        let new_num_keys = keys.len();
+        let key_length = schema.key_length;
+        let data_length = schema.data_length;
+        let increase = new_num_keys > orig_num_keys;
+
+        let keys_start = 2;
+        let orig_keys_end = keys_start + orig_num_keys * key_length;
+        let new_keys_end = keys_start + new_num_keys * key_length;
+        if increase {
+            page.splice(orig_keys_end..orig_keys_end, vec![0; (new_num_keys - orig_num_keys) * key_length]);
+        } else {
+            page.drain(new_keys_end..orig_keys_end);
+        }
+
+        for (i, key) in keys.iter().enumerate() {
+            let start_pos = keys_start + i * key_length;
+            let end_pos = start_pos + key_length;
+            page[start_pos..end_pos].copy_from_slice(key);
+        }
+
+        let children_start = new_keys_end;
+        let orig_children_end = children_start + (orig_num_keys + 1) * POSITION_SIZE;
+        let new_children_end = children_start + (new_num_keys + 1) * POSITION_SIZE;
+        if increase {
+            page.splice(orig_children_end..orig_children_end, vec![0; (new_num_keys - orig_num_keys) * POSITION_SIZE]);
+        } else {
+            page.drain(new_children_end..orig_children_end);
+        }
+
+        let data_start = new_children_end;
+        let orig_data_end = data_start + orig_num_keys * data_length;
+        let new_data_end = data_start + new_num_keys * data_length;
+        if increase {
+            page.splice(orig_data_end..orig_data_end, vec![0; (new_num_keys - orig_num_keys) * data_length]);
+        } else {
+            page.drain(new_data_end..orig_data_end);
+        }
+
+        // Update the number of keys
+        page[0] = new_num_keys as u8;
+
+        InternalSuccess
+    }
+
+    ///will panic if wrong length
     pub fn write_children_vec(
         children: &Vec<Position>,
         page: &mut PageData,
@@ -235,6 +300,7 @@ impl Serializer {
         let key_length = schema.key_length;
         let list_start_pos = 2 + (num_keys * key_length);
         for (i, child) in children.iter().enumerate() {
+            if i >= num_keys + 1 {panic!("cannot extend children without extending keys first")}
             let start_pos = list_start_pos + i * POSITION_SIZE;
             let end_pos = start_pos + POSITION_SIZE;
             page.splice(start_pos..end_pos, Serializer::position_to_bytes(*child).to_vec());
@@ -320,8 +386,6 @@ impl Serializer {
         let data_start = children_start + (num_keys + 1) * POSITION_SIZE;
         let data_length = schema.data_length;
 
-        println!("{:?}", page);
-
         let mut rows = Vec::new();
         for index in 0..num_keys {
             let start = data_start + index * data_length;
@@ -336,13 +400,11 @@ impl Serializer {
 
     pub fn write_data_by_vec(
         page: &mut PageData,
-        rows: Vec<Row>,
+        rows: &Vec<Row>,
         schema: &TableSchema,
-    ) -> Result<(), Status> {
+    ) -> Status {
         let num_keys = page[0] as usize;
-        if rows.len() != num_keys {
-            return Err(InternalExceptionInvalidColCount);
-        }
+        if rows.len() != num_keys { return InternalExceptionInvalidColCount }
 
         let key_length = schema.key_length;
         let keys_start = 2;
@@ -351,17 +413,13 @@ impl Serializer {
         let data_length = schema.data_length;
 
         for (index, row) in rows.iter().enumerate() {
-            if row.len() != data_length {
-                return Err(InternalExceptionInvalidRowLength);
-            }
+            if row.len() != data_length { return InternalExceptionInvalidRowLength }
             let start = data_start + index * data_length;
             let end = start + data_length;
-            if start >= page.len() || end > page.len() {
-                return Err(InternalExceptionIndexOutOfRange);
-            }
+            if start >= page.len() || end > page.len() { return InternalExceptionIndexOutOfRange }
             page[start..end].copy_from_slice(row);
         }
-        Ok(())
+        InternalSuccess
     }
 
     pub fn get_data(page: &PageContainer, index: usize, schema: TableSchema) -> Vec<u8> {

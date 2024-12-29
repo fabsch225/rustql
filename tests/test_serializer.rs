@@ -28,7 +28,7 @@ mod tests {
         let keys: Vec<Key> = (0..num_keys)
             .map(|i| vec![i as u8; schema.key_length])
             .collect();
-        let children: Vec<Position> = vec![0; num_keys + 1];
+        let children: Vec<Position> = vec![2; num_keys + 1];
         let rows: Vec<Row> = (0..num_keys)
             .map(|i| {
                 let mut row = vec![0u8; schema.data_length];
@@ -48,6 +48,45 @@ mod tests {
         assert_eq!(page[0], 2);
         assert_eq!(page[2..6], vec![0u8, 0u8, 0u8, 0u8]);
         assert_eq!(page[6..10], vec![1u8, 1u8, 1u8, 1u8]);
+    }
+
+    #[test]
+    fn test_write_keys_vec_resize_increase() {
+        let schema = get_schema();
+        let mut page = create_mock_page_data(2);
+        let new_keys: Vec<Key> = vec![vec![3u8; 4], vec![4u8; 4], vec![5u8; 4]];
+
+        let status = Serializer::write_keys_vec_resize(&new_keys, &mut page, &schema);
+        assert_eq!(status, Status::InternalSuccess);
+        assert_eq!(page[0], 3);
+        assert_eq!(page[2..6], vec![3u8; 4]);
+        assert_eq!(page[6..10], vec![4u8; 4]);
+        assert_eq!(page[10..14], vec![5u8; 4]);
+    }
+
+    #[test]
+    fn test_write_keys_vec_resize_decrease() {
+        let schema = get_schema();
+        let mut page = create_mock_page_data(3);
+        let new_keys: Vec<Key> = vec![vec![6u8; 4]];
+
+        let status = Serializer::write_keys_vec_resize(&new_keys, &mut page, &schema);
+        assert_eq!(status, Status::InternalSuccess);
+        assert_eq!(page[0], 1);
+        assert_eq!(page[2..6], vec![6u8; 4]);
+    }
+
+    #[test]
+    fn test_write_keys_vec_resize_no_change() {
+        let schema = get_schema();
+        let mut page = create_mock_page_data(2);
+        let new_keys: Vec<Key> = vec![vec![7u8; 4], vec![8u8; 4]];
+
+        let status = Serializer::write_keys_vec_resize(&new_keys, &mut page, &schema);
+        assert_eq!(status, Status::InternalSuccess);
+        assert_eq!(page[0], 2);
+        assert_eq!(page[2..6], vec![7u8; 4]);
+        assert_eq!(page[6..10], vec![8u8; 4]);
     }
 
     #[test]
@@ -94,7 +133,7 @@ mod tests {
         let schema = get_schema();
 
         let child = Serializer::read_child(0, &page, &schema).unwrap();
-        assert_eq!(child, 0);
+        assert_eq!(child, 2);
     }
 
     #[test]
@@ -168,6 +207,7 @@ mod tests {
         let b: Vec<u8> = vec![1, 0, 0, 0, 42];
         assert_eq!(Serializer::compare(&a, &b), Ok(std::cmp::Ordering::Equal));
     }
+
     #[test]
     fn test_compare_integers_not_equal() {
         let a: Vec<u8> = vec![1, 0, 0, 0, 42];

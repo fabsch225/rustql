@@ -292,7 +292,7 @@ impl PagerCore {
     }
 
     pub fn access_page_write(&mut self, position: Position) -> Result<&mut PageContainer, Status> {
-        let miss = self.cache.contains_key(&position);
+        let miss = !self.cache.contains_key(&position);
         //TODO optimize this! lets hope the compiler does its magic for now
         if (miss) {
             let page = self.read_page_from_disk(position);
@@ -336,15 +336,34 @@ impl PagerCore {
         schema: &TableSchema,
         pager_facade: PagerAccessor //this will surely contain a reference to itself
     ) -> Result<BTreeNode, Status> {
-        if !(keys.len() as i32 >= (children.len() as i32) - 1 && keys.len() == data.len()) {
+        //TODO think about removing the padding (<= and <) and a cleaner implementation
+        if keys.len() as i32 <= (children.len() as i32) - 1 || keys.len() < data.len() {
             return Err(InternalExceptionInvalidColCount);
         }
-        if !(keys[0].len() == schema.key_length && data[0].len() == schema.data_length) {
+        if !(keys[0].len() == schema.key_length && (data.len() == 0 || data[0].len() == schema.data_length)) {
             return Err(InternalExceptionInvalidSchema);
         }
         if !pager_facade.verify(&self) {
             return Err(InternalExceptionPagerMismatch);
         }
+
+        //Development
+        if data.len() > 0 {
+            let data_length = data.first().map_or(0, |row| row.len());
+            assert_eq!(data_length, schema.data_length)
+        }
+
+        let mut data = data;
+        while data.len() < keys.len() {
+            data.push(vec![0; schema.data_length]);
+        }
+        let orig_children_len = children.len();
+        let mut children = children;
+        //<= is correct -- we want one more child
+        while children.len() <= keys.len() {
+            children.push(0)
+        }
+
         let page_data = Serializer::init_page_data(keys, data);
 
         let status_insert = self.insert_page_at_position(position, page_data);
@@ -353,7 +372,7 @@ impl PagerCore {
         }
         Ok(BTreeNode {
             page_position: position,
-            is_leaf: children.len() == 0,
+            is_leaf: orig_children_len == 0,
             schema: schema.clone(),
             pager_interface: pager_facade.clone()
         })
