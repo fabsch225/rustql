@@ -3,13 +3,14 @@ mod tests {
     use rustql::pager::*;
     use rustql::serializer::Serializer;
     use rustql::status::Status;
-    fn get_schema() -> TableSchema {
-        TableSchema {
+
+    fn get_schema() -> Schema {
+        Schema {
             col_count: 2,
-            row_length: 260,
+            col_length: 260,
             key_length: 4,
             key_type: Type::Integer,
-            data_length: 256,
+            row_length: 256,
             fields: vec![
                 Field {
                     name: "Id".to_string(),
@@ -31,13 +32,80 @@ mod tests {
         let children: Vec<Position> = vec![2; num_keys + 1];
         let rows: Vec<Row> = (0..num_keys)
             .map(|i| {
-                let mut row = vec![0u8; schema.data_length];
+                let mut row = vec![0u8; schema.row_length];
                 row[0..9].copy_from_slice(b"Mock Name");
                 row
             })
             .collect();
 
         Serializer::init_page_data_with_children(keys, children, rows)
+    }
+
+    #[test]
+    fn test_schema_to_bytes() {
+        let schema = Schema {
+            col_count: 3,
+            col_length: 20,
+            key_length: 4,
+            key_type: Type::Integer,
+            row_length: 16,
+            fields: vec![
+                Field { name: "id".to_string(), field_type: Type::Integer },
+                Field { name: "name".to_string(), field_type: Type::String },
+                Field { name: "active".to_string(), field_type: Type::Boolean },
+            ],
+        };
+
+        let expected_bytes = vec![
+            1, // Type::Integer
+            105, 100, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // "id"
+            2, // Type::String
+            110, 97, 109, 101, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // "name"
+            4, // Type::Boolean
+            97, 99, 116, 105, 118, 101, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // "active"
+        ];
+
+        let result_bytes = Serializer::schema_to_bytes(&schema);
+        assert_eq!(result_bytes, expected_bytes);
+    }
+
+    #[test]
+    fn test_schema_to_bytes_empty_schema() {
+        let schema = Schema {
+            col_count: 0,
+            col_length: 0,
+            key_length: 0,
+            key_type: Type::Null,
+            row_length: 0,
+            fields: vec![],
+        };
+
+        let expected_bytes: Vec<u8> = vec![];
+
+        let result_bytes = Serializer::schema_to_bytes(&schema);
+        assert_eq!(result_bytes, expected_bytes);
+    }
+
+    #[test]
+    fn test_schema_to_bytes_single_field() {
+        let schema = Schema {
+            col_count: 1,
+            col_length: 4,
+            key_length: 4,
+            key_type: Type::Integer,
+            row_length: 0,
+            fields: vec![
+                Field { name: "id".to_string(), field_type: Type::Integer },
+            ],
+        };
+
+        let expected_bytes = vec![
+            1, // Type::Integer
+            105, 100, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // "id"
+        ];
+
+        let result_bytes = Serializer::schema_to_bytes(&schema);
+        assert_eq!(result_bytes, expected_bytes);
     }
 
     #[test]
@@ -92,9 +160,9 @@ mod tests {
     #[test]
     fn test_is_leaf() {
         let page = create_mock_page_data(2);
-        let is_leaf = Serializer::is_leaf(&page).unwrap();
+        let is_leaf = Serializer::is_leaf(&page, &get_schema()).unwrap();
 
-        assert!(is_leaf);
+        assert!(!is_leaf);
     }
 
     #[test]
@@ -161,7 +229,7 @@ mod tests {
         let mut page = create_mock_page_data(2);
         let schema = get_schema();
 
-        let mut new_row = vec![0u8; schema.data_length];
+        let mut new_row = vec![0u8; schema.row_length];
         new_row[0..12].copy_from_slice(b"Updated Name");
 
         Serializer::write_data_by_index(&mut page, 1, new_row.clone(), &schema).unwrap();
@@ -414,11 +482,11 @@ mod tests {
 
     #[test]
     fn test_parse_type() {
-        assert_eq!(Serializer::parse_type(0), Some(Type::Null));
-        assert_eq!(Serializer::parse_type(1), Some(Type::Integer));
-        assert_eq!(Serializer::parse_type(2), Some(Type::String));
-        assert_eq!(Serializer::parse_type(3), Some(Type::Date));
-        assert_eq!(Serializer::parse_type(4), Some(Type::Boolean));
-        assert_eq!(Serializer::parse_type(255), None);
+        assert_eq!(Serializer::byte_to_type(0), Some(Type::Null));
+        assert_eq!(Serializer::byte_to_type(1), Some(Type::Integer));
+        assert_eq!(Serializer::byte_to_type(2), Some(Type::String));
+        assert_eq!(Serializer::byte_to_type(3), Some(Type::Date));
+        assert_eq!(Serializer::byte_to_type(4), Some(Type::Boolean));
+        assert_eq!(Serializer::byte_to_type(255), None);
     }
 }

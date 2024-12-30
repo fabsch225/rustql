@@ -1,15 +1,15 @@
 #[cfg(test)]
 mod tests {
     use rustql::serializer::Serializer;
-    use rustql::pager::{Field, Key, PagerCore, TableSchema, Type};
+    use rustql::pager::{Field, Key, PagerCore, Schema, Type};
 
-    fn get_schema() -> TableSchema {
-        TableSchema {
+    fn get_schema() -> Schema {
+        Schema {
             col_count: 2,
-            row_length: 260,
+            col_length: 260,
             key_length: 4,
             key_type: Type::Integer,
-            data_length: 256,
+            row_length: 256,
             fields: vec![
                 Field {
                     name: "Id".to_string(),

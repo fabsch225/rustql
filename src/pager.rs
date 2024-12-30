@@ -11,7 +11,7 @@ use std::fmt::Debug;
 use std::fs::File;
 use std::io::{Read, Seek, Write};
 use std::marker::PhantomData;
-use std::ops::Index;
+use std::ops::{Deref, Index};
 use std::ptr::null;
 use std::rc::Rc;
 use std::sync::{Arc, RwLock};
@@ -35,6 +35,7 @@ pub const ROW_NAME_SIZE: usize = 16;
 
 // Schema Information
 // 16 Bits: Specifies the length of a row.
+// 32 Bits: Root Position
 // Fields: Each field is defined as follows:
 // [TYPE_SIZE - Type of Field][128 Bits - Name of Field (Ascii)] -> 8 Chars
 // The first field is the ID.
@@ -102,13 +103,23 @@ pub type Flag = u8;
 pub type Position = i32;
 pub type Row = Vec<u8>;
 
+impl Serializer {
+    pub fn empty_key(schema: &Schema) -> Key {
+        vec![0; schema.key_length]
+    }
+    pub fn empty_row(schema: &Schema) -> Row {
+        vec![0; schema.row_length]
+    }
+}
+
 #[derive(Clone, Debug)]
-pub struct TableSchema {
+pub struct Schema {
+    pub root: Position, //if 0 -> no tree
     pub col_count: usize,
-    pub row_length: usize,
+    pub col_length: usize,
     pub key_length: usize,
     pub key_type: Type,
-    pub data_length: usize,
+    pub row_length: usize,
     pub fields: Vec<Field>,
 }
 
@@ -118,11 +129,11 @@ pub struct Field {
     pub name: String,     // The name of the field, extracted from 128 bits (16 bytes).
 }
 
-impl fmt::Display for TableSchema {
+impl fmt::Display for Schema {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("TableSchema")
             .field("col_count", &self.col_count)
-            .field("row_length", &self.row_length)
+            .field("row_length", &self.col_length)
             .field("row fields", &self.fields)
             .finish()
     }
@@ -131,7 +142,7 @@ impl fmt::Display for TableSchema {
 #[derive(Debug)]
 pub struct PagerCore {
     pub cache: HashMap<Position, PageContainer>,
-    pub schema: TableSchema,
+    pub schema: Schema,
     pub hash: String,
     file: File,
     next_position: Position,
@@ -141,7 +152,7 @@ pub struct PagerCore {
 pub struct PagerAccessor {
     pager: Arc<RwLock<PagerCore>>,
     hash: String,
-    pub schema: Arc<TableSchema>,
+    pub schema: Arc<Schema>,
 }
 
 impl Debug for PagerAccessor {
@@ -160,6 +171,10 @@ impl PagerAccessor {
             hash: h,
             schema: Arc::new(s),
         }
+    }
+
+    pub fn get_schema(&self) -> Schema {
+        self.schema.deref().clone()
     }
 
     //this does create lots of overhead / could be removed
@@ -193,7 +208,7 @@ impl PagerAccessor {
     // (now we have to account for the possibility of loading a page from disk, which requires mutating the filestream)
     pub fn access_page_read<F, T>(&self, node: &BTreeNode, func: F) -> Result<T, Status>
     where
-        F: FnOnce(&PageData, &TableSchema) -> Result<T, Status>,
+        F: FnOnce(&PageData, &Schema) -> Result<T, Status>,
     {
         let mut pager = self
             .pager
@@ -210,7 +225,7 @@ impl PagerAccessor {
 
     pub fn access_page_write<F>(&self, node: &BTreeNode, func: F) -> Status
     where
-        F: FnOnce(&mut PageContainer, &TableSchema) -> Status,
+        F: FnOnce(&mut PageContainer, &Schema) -> Status,
     {
         //TODO Optimize reading / writing to the pager by checking cache beforehand!?
         let mut pager = self
@@ -236,7 +251,7 @@ impl PagerCore {
         let mut schema_data = vec![0u8; row_length * (1 + 16)];
         file.read_exact(&mut schema_data)
             .map_err(|_| Status::InternalExceptionReadFailed)?;
-        let schema = Serializer::create_table_schema_from_bytes(&*schema_data, row_length);
+        let schema = Serializer::bytes_to_schema(&*schema_data, row_length);
         if !schema.is_ok() {
             return Err(Status::InternalExceptionInvalidSchema);
         }
@@ -255,7 +270,7 @@ impl PagerCore {
     }
 
     #[deprecated]
-    pub fn init_from_schema(file_path: &str, schema: TableSchema) -> Result<PagerAccessor, Status> {
+    pub fn init_from_schema(file_path: &str, schema: Schema) -> Result<PagerAccessor, Status> {
         if !Serializer::verify_schema(&schema).is_ok() {
             return Err(InternalExceptionInvalidSchema);
         }
@@ -267,6 +282,10 @@ impl PagerCore {
             hash: generate_random_hash(16),
             next_position: 1
         }))
+    }
+
+    pub fn invalidate_cache() -> Status {
+        todo!()
     }
 
     pub fn access_page_read(&mut self, position: Position) -> Result<PageContainer, Status> {
@@ -319,11 +338,11 @@ impl PagerCore {
         keys: Vec<Key>,
         children: Vec<Position>,
         data: Vec<Row>,
-        schema: &TableSchema,
+        schema: &Schema,
         pager_facade: PagerAccessor
     ) -> Result<BTreeNode, Status> {
         let position = self.next_position;
-        self.next_position += self.schema.row_length as i32;
+        self.next_position += self.schema.col_length as i32;
         self.create_page_at_position(position, keys, children, data, schema, pager_facade)
     }
 
@@ -333,14 +352,14 @@ impl PagerCore {
         keys: Vec<Key>,
         children: Vec<Position>,
         data: Vec<Row>,
-        schema: &TableSchema,
+        schema: &Schema,
         pager_facade: PagerAccessor //this will surely contain a reference to itself
     ) -> Result<BTreeNode, Status> {
         //TODO think about removing the padding (<= and <) and a cleaner implementation
-        if keys.len() as i32 <= (children.len() as i32) - 1 || keys.len() < data.len() {
+        if keys.len() + 1 < children.len() || keys.len() < data.len() {
             return Err(InternalExceptionInvalidColCount);
         }
-        if !(keys[0].len() == schema.key_length && (data.len() == 0 || data[0].len() == schema.data_length)) {
+        if !(keys[0].len() == schema.key_length && (data.len() == 0 || data[0].len() == schema.row_length)) {
             return Err(InternalExceptionInvalidSchema);
         }
         if !pager_facade.verify(&self) {
@@ -350,12 +369,12 @@ impl PagerCore {
         //Development
         if data.len() > 0 {
             let data_length = data.first().map_or(0, |row| row.len());
-            assert_eq!(data_length, schema.data_length)
+            assert_eq!(data_length, schema.row_length)
         }
 
         let mut data = data;
         while data.len() < keys.len() {
-            data.push(vec![0; schema.data_length]);
+            data.push(vec![0; schema.row_length]);
         }
         let orig_children_len = children.len();
         let mut children = children;

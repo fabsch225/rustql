@@ -2,12 +2,14 @@ use std::cmp::PartialEq;
 use std::fmt::{Debug, Formatter};
 use crate::btree::Btree;
 
-#[derive(PartialEq)]
+#[derive(PartialEq, Debug)]
 pub enum Status {
     //status codes to be sent to the end user
+    Error,
     Success,
     ExceptionSchemaUnclear,
     ExceptionFileNotFoundOrPermissionDenied,
+    ExceptionQueryMisformed,
 
     //internal status codes
     InternalSuccess,
@@ -26,6 +28,7 @@ pub enum Status {
     InternalExceptionPagerMismatch,
 }
 
+/*
 impl Debug for Status {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -49,4 +52,4 @@ impl Debug for Status {
         }.expect("Wierd Error");
         Ok(())
     }
-}
+}*/
