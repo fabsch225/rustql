@@ -60,7 +60,7 @@ impl Executor {
     fn exec_intern(&self, query: String) -> Result<QueryResult, QueryResult> {
         let mut parser = Parser::new(query);
         let parsed_query = parser.parse_query().map_err(|s|QueryResult::user_input_wrong(s))?;
-        let compiled_query = Compiler::compile(&self.pager_accessor.get_schema(), parsed_query)?;
+        let compiled_query = Compiler::compile(&self.pager_accessor.get_schema_read(), parsed_query)?;
 
         match compiled_query {
             CompiledQuery::CreateTable(q) => { todo!() }

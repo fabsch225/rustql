@@ -9,7 +9,7 @@ use std::ffi::CString;
 use std::fmt;
 use std::fmt::Debug;
 use std::fs::File;
-use std::io::{Read, Seek, Write};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::marker::PhantomData;
 use std::ops::{Deref, Index};
 use std::ptr::null;
@@ -173,8 +173,16 @@ impl PagerAccessor {
         }
     }
 
-    pub fn get_schema(&self) -> Schema {
-        self.schema.deref().clone()
+    pub fn set_root(&mut self, node: &BTreeNode) {
+        self.pager.write().expect("failed to w-lock pager").schema.root = node.page_position;
+    }
+
+    pub fn has_root(&self) -> bool {
+        self.get_schema_read().root != 0
+    }
+
+    pub fn get_schema_read(&self) -> Schema {
+        self.pager.read().unwrap().schema.clone()
     }
 
     //this does create lots of overhead / could be removed
@@ -217,7 +225,7 @@ impl PagerAccessor {
         let page = pager.access_page_read(node.page_position);
 
         if page.is_ok() {
-            func(&page?.data, &node.schema)
+            func(&page?.data, &pager.schema.clone())
         } else {
             Err(page.err().expect("there must be an err, i checked"))
         }
@@ -232,9 +240,10 @@ impl PagerAccessor {
             .pager
             .write()
             .expect("Failed to acquire write lock on Pager");
+        let schema = pager.schema.clone();
         let page: Result<&mut PageContainer, Status> = pager.access_page_write(node.page_position);
         if page.is_ok() {
-            func(&mut page.unwrap(), &node.schema)
+            func(&mut page.unwrap(), &schema)
         } else {
             page.err().expect("there must be an err, i checked")
         }
@@ -247,11 +256,12 @@ impl PagerCore {
         let mut schema_length_bytes = [0u8; 2];
         file.read_exact(&mut schema_length_bytes)
             .map_err(|_| Status::InternalExceptionReadFailed)?;
-        let row_length = u16::from_be_bytes(schema_length_bytes) as usize;
-        let mut schema_data = vec![0u8; row_length * (1 + 16)];
+        file.seek(SeekFrom::Start(0));
+        let col_count = u16::from_be_bytes(schema_length_bytes) as usize;
+        let mut schema_data = vec![0u8; col_count * (1 + 16) + 6];
         file.read_exact(&mut schema_data)
             .map_err(|_| Status::InternalExceptionReadFailed)?;
-        let schema = Serializer::bytes_to_schema(&*schema_data, row_length);
+        let schema = Serializer::bytes_to_schema(&*schema_data);
         if !schema.is_ok() {
             return Err(Status::InternalExceptionInvalidSchema);
         }
@@ -265,7 +275,7 @@ impl PagerCore {
             schema,
             file,
             hash: generate_random_hash(16),
-            next_position: (row_length * (1 + 16)) as Position
+            next_position: (col_count * (1 + 16) + 4) as Position
         }))
     }
 
@@ -392,7 +402,6 @@ impl PagerCore {
         Ok(BTreeNode {
             page_position: position,
             is_leaf: orig_children_len == 0,
-            schema: schema.clone(),
             pager_interface: pager_facade.clone()
         })
     }

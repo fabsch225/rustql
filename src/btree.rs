@@ -19,8 +19,6 @@ pub struct BTreeNode {
     //pub keys: Vec<Key>,         // Cached keys (loaded from pager)
     //pub children: Vec<Position>,    // Child page IDs (loaded from pager)
     pub pager_interface: PagerAccessor,           // Reference to the pager for disk-backed storage
-
-    pub schema: Schema,
     //maybe dont store so much in memory! !? :)
     //dont store everything double in memory. TODO: concept clean up system in the btree (wont rust to that by itself!?), for example, when getting a new node, check if we can delete the old one!
     //#### doing the same: implement getters and setters on the page cache
@@ -230,36 +228,42 @@ pub struct Btree {
 
 impl Btree {
     pub fn new(t: usize, pager_accessor: PagerAccessor) -> Self {
+        let mut root = None;
+        //TODO revisit this
+        if pager_accessor.has_root() {
+            root = Some(PagerFrontend::get_node(pager_accessor.clone(), pager_accessor.get_schema_read().root).unwrap());
+        }
         Btree {
-            root: None,
+            root,
             t,
             pager_accessor
         }
     }
 
     pub fn insert(&mut self, k: Key, v: Row) {
-        if let Some(ref mut root) = self.root {
+        if let Some(ref root) = self.root {
             if root.get_keys_count().unwrap() == (2 * self.t) - 1 {
-                //dummy key for now
-                let mut new_root = PagerFrontend::create_singular_node(self.pager_accessor.get_schema(), self.pager_accessor.clone(), Serializer::empty_key(&root.schema), Serializer::empty_row(&root.schema)).unwrap();
+                let mut new_root = PagerFrontend::create_singular_node(self.pager_accessor.get_schema_read(), self.pager_accessor.clone(), Serializer::empty_key(&self.pager_accessor.get_schema_read()), Serializer::empty_row(&self.pager_accessor.get_schema_read())).unwrap();
                 new_root.push_child(root.clone()).unwrap();
-                Btree::split_child(&new_root, 0, self.t, true);
+                self.split_child(&new_root, 0, self.t, true);
 
-                Btree::insert_non_full(&new_root, k, v, self.t);
+                self.insert_non_full(&new_root, k, v, self.t);
+                self.pager_accessor.set_root(&new_root);
                 self.root = Some(new_root);
-
             } else {
-                Btree::insert_non_full(root, k, v, self.t);
+                self.insert_non_full(root, k, v, self.t);
             }
         } else {
-            self.root = Some(PagerFrontend::create_singular_node(self.pager_accessor.get_schema(), self.pager_accessor.clone(), k.clone(), v).unwrap());
+            let new_root = PagerFrontend::create_singular_node(self.pager_accessor.get_schema_read(), self.pager_accessor.clone(), k.clone(), v).unwrap();
+            self.pager_accessor.set_root(&new_root);
+            self.root = Some(new_root);
         }
     }
 
-    fn insert_non_full(x: &BTreeNode, key: Key, row: Row, t: usize) {
+    fn insert_non_full(&self, x: &BTreeNode, key: Key, row: Row, t: usize) {
         let mut i = x.get_keys_count().unwrap() as isize - 1;
         if x.is_leaf() {
-            x.push_key(Serializer::empty_key(&x.schema), Serializer::empty_row(&x.schema)); // Add a dummy value
+            x.push_key(Serializer::empty_key(&self.pager_accessor.get_schema_read()), Serializer::empty_row(&self.pager_accessor.get_schema_read())); // Add a dummy value
             let key_and_row = x.get_key(i as usize).unwrap();
             while i >= 0 && Serializer::compare(&key, &key_and_row.0).unwrap() == std::cmp::Ordering::Less {
                 let key_and_row = x.get_key(i as usize).unwrap(); //TODO slight optimization
@@ -274,20 +278,20 @@ impl Btree {
             }
             let mut i = (i + 1) as usize;
             if x.get_child(i).unwrap().get_keys_count().unwrap() == (2 * t) - 1 {
-                Btree::split_child(x, i, t, false);
+                self.split_child(x, i, t, false);
                 let key_and_row = x.get_key(i).unwrap();
                 if Serializer::compare(&key, &key_and_row.0).unwrap() == std::cmp::Ordering::Greater {
                     i += 1;
                 }
             }
-            Btree::insert_non_full(&x.get_child(i).unwrap(), key, row, t);
+            self.insert_non_full(&x.get_child(i).unwrap(), key, row, t);
         }
     }
 
-    fn split_child(x: &BTreeNode, i: usize, t: usize, is_root: bool) {
+    fn split_child(&self, x: &BTreeNode, i: usize, t: usize, is_root: bool) {
         let mut y = x.get_child(i).unwrap().clone();
         let keys_and_rows = y.get_keys_from(t).unwrap();
-        let mut z = PagerFrontend::create_node(y.schema.clone(), y.pager_interface.clone(), keys_and_rows.0, vec![], keys_and_rows.1).unwrap();
+        let mut z = PagerFrontend::create_node(self.pager_accessor.get_schema_read(), y.pager_interface.clone(), keys_and_rows.0, vec![], keys_and_rows.1).unwrap();
 
         let key_and_row = y.get_key(t - 1).unwrap();
         //TODO suboptimal
@@ -463,7 +467,7 @@ impl Display for Btree {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         if let Some(ref root) = self.root {
             let mut queue = std::collections::VecDeque::new();
-            let schema = root.schema.clone();
+            let schema = self.pager_accessor.get_schema_read();
             queue.push_back(root.clone());
 
             writeln!(f, "Btree Level-Order Traversal:")?;

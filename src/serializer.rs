@@ -23,38 +23,45 @@ impl Serializer {
     //TODO think more about architecture -- where to move this for example!?
     pub fn bytes_to_schema(
         bytes: &[u8],
-        row_count: usize,
     ) -> Result<Schema, Status> {
         let mut fields = Vec::new();
-        let mut offset = 0;
+        let mut fields_start = 6;
         let mut length = 0;
         let mut key_length = 0;
-        while offset < bytes.len() {
+        let root_position = Self::bytes_to_position(&[bytes[2], bytes[3], bytes[4], bytes[5]]);
+        let col_count = bytes[0] as usize * 256usize + bytes[1] as usize;
+        let mut current_field = 0;
+        while current_field < col_count {
+            let mut offset = fields_start + current_field * 17;
             if offset + 1 > bytes.len() {
-                return Err(Status::InternalExceptionInvalidSchema);
+                return Err(InternalExceptionInvalidSchema);
             }
             let field_type = bytes[offset];
+            println!("{:?}", offset);
+            println!("{:?}", bytes);
             offset += 1;
             if offset + 16 > bytes.len() {
-                return Err(Status::InternalExceptionInvalidSchema);
+                return Err(InternalExceptionInvalidSchema);
             }
             let name_bytes = &bytes[offset..offset + ROW_NAME_SIZE];
             offset += ROW_NAME_SIZE;
             let name =
                 String::from_utf8(name_bytes.iter().copied().take_while(|&b| b != 0).collect())
-                    .map_err(|_| Status::InternalExceptionInvalidSchema)?;
+                    .map_err(|_| InternalExceptionInvalidSchema)?;
             let field_type =
-                Serializer::byte_to_type(field_type).ok_or(Status::InternalExceptionInvalidSchema)?;
+                Serializer::byte_to_type(field_type).ok_or(InternalExceptionInvalidSchema)?;
             let field_length = Self::get_size_of_type(&field_type).unwrap();
             if key_length == 0 {
                 key_length = field_length;
             }
             length += field_length;
+            current_field += 1;
             fields.push(Field { field_type, name });
         }
 
         Ok(Schema {
-            col_count: row_count,
+            root: root_position,
+            col_count,
             col_length: length,
             key_length,
             key_type: fields[0].field_type.clone(),
