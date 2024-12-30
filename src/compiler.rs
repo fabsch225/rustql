@@ -24,7 +24,7 @@ pub enum SelectStatementOpCode {
 }
 
 #[repr(u8)]
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Copy, Clone)]
 pub enum SqlStatementComparisonOperator {
     None = 0u8,
     Lesser = 1u8,
@@ -98,21 +98,27 @@ impl Compiler {
             },
             ParsedQuery::Select(select_query) => {
                 let mut result_fields = Vec::new();
+                let mut op = SelectStatementOpCode::SelectFTS;
+                let mut conditions = Vec::new();
                 for field in select_query.result.iter() {
                     let field_schema = schema.fields.iter().find(|f| &f.name == field)
                         .ok_or(QueryResult::user_input_wrong(format!("at least one invalid field")))?;
                     result_fields.push(field_schema.clone());
                 }
 
-                let mut op = SelectStatementOpCode::SelectFTS;
-                let mut conditions = Vec::new();
-                for (field, operator, value) in select_query.conditions.iter() {
-                    let field_schema = schema.fields.iter().find(|f| &f.name == field)
-                        .ok_or(QueryResult::user_input_wrong(format!("at least one invalid field in the WHERE")))?;
+                let mut at_id = true;
+                for field in schema.fields.iter() {
+                    let cond = select_query.conditions.iter().find(|f| &f.0 == &field.name);
+                    if !cond.is_some() {
+                        conditions.push((SqlStatementComparisonOperator::None, vec![]));
+                        at_id = false;
+                        continue;
+                    }
+                    let cond = cond.unwrap();
+                    let comparison_operator = Compiler::compile_comparison_operator(&cond.1)?;
 
-                    let comparison_operator = Compiler::compile_comparison_operator(operator)?;
-
-                    if &schema.fields[0].name == field {
+                    if at_id {
+                        at_id = false;
                         if comparison_operator == SqlStatementComparisonOperator::Equal {
                             op = SelectStatementOpCode::SelectAtKey;
                         } else {
@@ -120,7 +126,7 @@ impl Compiler {
                         }
                     }
 
-                    let pre_compiled_value = Self::compile_value(value, field_schema)?;
+                    let pre_compiled_value = Self::compile_value(&cond.2, field)?;
 
                     conditions.push((comparison_operator, pre_compiled_value));
                 }

@@ -490,7 +490,7 @@ impl Serializer {
         Ok(())
     }
 
-    pub fn compare_with_type(a: &Key, b: &Key, key_type: Type) -> Result<std::cmp::Ordering, Status> {
+    pub fn compare_with_type(a: &Vec<u8>, b: &Vec<u8>, key_type: Type) -> Result<std::cmp::Ordering, Status> {
         match key_type {
             Type::String => Ok(Self::compare_strings(
                 &<[u8; 256]>::try_from(a.to_vec()).unwrap(),

@@ -1,10 +1,12 @@
 use crate::btree::Btree;
-use crate::compiler::{CompiledQuery, Compiler};
-use crate::pager::{PagerAccessor, PagerCore};
+use crate::compiler::{CompiledQuery, Compiler, SqlStatementComparisonOperator};
+use crate::pager::{PagerAccessor, PagerCore, Row, Schema};
 use crate::status::Status;
 use crate::status::Status::ExceptionQueryMisformed;
 use std::collections::HashMap;
+use crate::compiler::SqlStatementComparisonOperator::{Equal, Greater, GreaterOrEqual, LesserOrEqual, Lesser};
 use crate::parser::Parser;
+use crate::serializer::Serializer;
 
 #[derive(Debug)]
 pub struct QueryResult {
@@ -65,16 +67,57 @@ impl Executor {
         match compiled_query {
             CompiledQuery::CreateTable(q) => { todo!() }
             CompiledQuery::DropTable(q) => { todo!() }
-            CompiledQuery::Select(q) => { todo!() }
+            CompiledQuery::Select(q) => {
+                let mut btree = Btree::new(self.btree_node_width, self.pager_accessor.clone());
+                let schema = self.pager_accessor.get_schema_read();
+                let scan_data = btree.scan();
+                //let mut result_data = (vec![], vec![]);
+                for i in 0..scan_data.0.len() {
+                    if Self::exec_condition(&scan_data.1[i], &q.conditions, &schema) {
+                        //result_data.0.push(scan_data.0[i].clone());
+                        //result_data.1.push(scan_data.1[i].clone());
+                        print!("{}", Serializer::format_key(&scan_data.0[i], &schema).unwrap());
+                        print!("; ");
+                        print!("{}", Serializer::format_row(&scan_data.1[i], &schema).unwrap());
+                        println!();
+                    }
+                }
+                //println!("{:?}", result_data);
+                Ok(QueryResult::went_fine())
+            }
             CompiledQuery::Insert(q) => {
-                //the btree creates a new root everytime
-                //we should store the tree root in the table schema!
                 let mut btree = Btree::new(self.btree_node_width, self.pager_accessor.clone());
                 btree.insert(q.data.0, q.data.1);
                 println!("{}", btree);
-                println!("{:?}", btree.scan());
                 Ok(QueryResult::went_fine())
             }
         }
+    }
+
+    pub fn exec_condition(row: &Row, condition: &Vec<(SqlStatementComparisonOperator, Vec<u8>)>, schema: &Schema) -> bool {
+        let mut position = 0;
+        let mut skip = true;
+        for i in 0..schema.fields.len() {
+            if skip { skip = false; continue } //in schema.fields, the key is listed
+            let schema_field = &schema.fields[i];
+            let field_condition = condition[i].0.clone();
+            let field_type = &schema_field.field_type;
+            let field_len = Serializer::get_size_of_type(field_type).unwrap();
+            if field_condition == SqlStatementComparisonOperator::None {
+                position += field_len;
+                continue;
+            }
+            let row_field = row[position..(position + field_len)].to_vec();
+            position += field_len;
+            let cmp_result = Serializer::compare_with_type(&row_field, &condition[i].1, field_type.clone()).unwrap();
+            if !match cmp_result {
+                std::cmp::Ordering::Equal => {
+                    field_condition == LesserOrEqual || field_condition == GreaterOrEqual || field_condition == Equal
+                },
+                std::cmp::Ordering::Greater => { field_condition == Greater },
+                std::cmp::Ordering::Less => { field_condition == Lesser },
+            } { return false }
+        }
+        true
     }
 }

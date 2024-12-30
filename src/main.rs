@@ -13,7 +13,8 @@ use rustql::pager::{Field, PagerCore};
 /// - Think about how to store / cache is_leaf information. The current state is horrible...
 ///
 /// ## IMMEDIATE NEXT STEPS
-///
+/// - implement the select from query on b-tree level
+/// - think about a data-frame struct
 
 //Important: Our BTrees always start at position 1. Root is Position 1.
 
@@ -50,4 +51,10 @@ fn main() {
     }
 
     e.exec(format!("INSERT INTO table (Id, Name) VALUES ({}, 'Test Name Nummer {}')", 2, 22));
+
+    e.exec(format!("SELECT Id, Name FROM table"));
+
+    e.exec(format!("SELECT Id, Name FROM table WHERE Name = 'Test Name Nummer 29'"));
+
+    e.exec(format!("SELECT Id FROM table WHERE Name > 'Test Name Nummer 23'"));
 }
