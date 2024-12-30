@@ -490,7 +490,28 @@ impl Serializer {
         Ok(())
     }
 
+    pub fn compare_with_type(a: &Key, b: &Key, key_type: Type) -> Result<std::cmp::Ordering, Status> {
+        match key_type {
+            Type::String => Ok(Self::compare_strings(
+                &<[u8; 256]>::try_from(a.to_vec()).unwrap(),
+                &<[u8; 256]>::try_from(b.to_vec()).unwrap(),
+            )),
+            Type::Integer => Ok(Self::compare_integers(
+                &<[u8; 4]>::try_from(a.to_vec()).unwrap(),
+                &<[u8; 4]>::try_from(b.to_vec()).unwrap(),
+            )),
+            Type::Date => Ok(Self::compare_dates(
+                &<[u8; 3]>::try_from(a.to_vec()).unwrap(),
+                &<[u8; 3]>::try_from(b.to_vec()).unwrap(),
+            )),
+            Type::Boolean => Ok(Self::compare_booleans(a[1], b[1])),
+            Type::Null => Ok(std::cmp::Ordering::Equal),
+        }
+    }
+
+    //TODO think if this is useful
     //TODO Error handling
+    #[deprecated]
     pub fn compare(a: &Key, b: &Key) -> Result<std::cmp::Ordering, Status> {
         let type_a_byte = a[0];
         let type_b_byte = b[0];
@@ -541,6 +562,7 @@ impl Serializer {
     pub fn compare_integers(a: &[u8; INTEGER_SIZE], b: &[u8; INTEGER_SIZE]) -> std::cmp::Ordering {
         let int_a = Self::bytes_to_int(a);
         let int_b = Self::bytes_to_int(b);
+
         int_a.cmp(&int_b)
     }
 

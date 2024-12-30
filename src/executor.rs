@@ -72,6 +72,7 @@ impl Executor {
                 let mut btree = Btree::new(self.btree_node_width, self.pager_accessor.clone());
                 btree.insert(q.data.0, q.data.1);
                 println!("{}", btree);
+                println!("{:?}", btree.scan());
                 Ok(QueryResult::went_fine())
             }
         }

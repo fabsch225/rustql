@@ -45,7 +45,9 @@ fn main() {
     */
 
     let e = Executor::init("./default.db.bin", T);
-    for i in 0..7 {
-        e.exec(format!("INSERT INTO table (Id, Name) VALUES ({}, Fabian)", i));
+    for i in 0..30 {
+        e.exec(format!("INSERT INTO table (Id, Name) VALUES ({}, 'Test Name Nummer {}')", i, i));
     }
+
+    e.exec(format!("INSERT INTO table (Id, Name) VALUES ({}, 'Test Name Nummer {}')", 2, 22));
 }

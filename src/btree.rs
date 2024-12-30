@@ -240,6 +240,10 @@ impl Btree {
         }
     }
 
+    fn compare(&self, a: &Key, b: &Key) -> Result<std::cmp::Ordering, Status> {
+        Serializer::compare_with_type(a, b, self.pager_accessor.get_schema_read().key_type)
+    }
+
     pub fn insert(&mut self, k: Key, v: Row) {
         if let Some(ref root) = self.root {
             if root.get_keys_count().unwrap() == (2 * self.t) - 1 {
@@ -265,7 +269,7 @@ impl Btree {
         if x.is_leaf() {
             x.push_key(Serializer::empty_key(&self.pager_accessor.get_schema_read()), Serializer::empty_row(&self.pager_accessor.get_schema_read())); // Add a dummy value
             let key_and_row = x.get_key(i as usize).unwrap();
-            while i >= 0 && Serializer::compare(&key, &key_and_row.0).unwrap() == std::cmp::Ordering::Less {
+            while i >= 0 && self.compare(&key, &key_and_row.0).unwrap() == std::cmp::Ordering::Less {
                 let key_and_row = x.get_key(i as usize).unwrap(); //TODO slight optimization
                 x.set_key((i + 1) as usize, key_and_row.0, key_and_row.1);
                 i -= 1;
@@ -273,14 +277,14 @@ impl Btree {
             x.set_key((i + 1) as usize, key, row);
         } else {
             let key_and_row = x.get_key(i as usize).unwrap();
-            while i >= 0 && Serializer::compare(&key, &key_and_row.0).unwrap() == std::cmp::Ordering::Less {
+            while i >= 0 && self.compare(&key, &key_and_row.0).unwrap() == std::cmp::Ordering::Less {
                 i -= 1;
             }
             let mut i = (i + 1) as usize;
             if x.get_child(i).unwrap().get_keys_count().unwrap() == (2 * t) - 1 {
                 self.split_child(x, i, t, false);
                 let key_and_row = x.get_key(i).unwrap();
-                if Serializer::compare(&key, &key_and_row.0).unwrap() == std::cmp::Ordering::Greater {
+                if self.compare(&key, &key_and_row.0).unwrap() == std::cmp::Ordering::Greater {
                     i += 1;
                 }
             }
@@ -313,16 +317,16 @@ impl Btree {
     //force borrow checker here...
     pub fn delete(&mut self, k: Key) {
         if let Some(ref root) = self.root {
-            Self::delete_from(root, k, self.t);
+            self.delete_from(root, k, self.t);
         } else {
             panic!();
         }
     }
 
-    fn delete_from(x: &BTreeNode, k: Key, t: usize) {
+    fn delete_from(&self, x: &BTreeNode, k: Key, t: usize) {
         let mut i = 0;
         let key_and_row = x.get_key(i).unwrap();
-        while i < x.get_keys_count().unwrap() && Serializer::compare(&k, &key_and_row.0).unwrap() == std::cmp::Ordering::Greater {
+        while i < x.get_keys_count().unwrap() && self.compare(&k, &key_and_row.0).unwrap() == std::cmp::Ordering::Greater {
             i += 1;
         }
 
@@ -334,33 +338,33 @@ impl Btree {
         } else {
             // Case 2: Key is in an internal node
             if i < x.get_keys_count().unwrap() && k == x.get_key(i).unwrap().0 {
-                Btree::delete_internal_node(x, k, i, t);
+                self.delete_internal_node(x, k, i, t);
             } else {
                 if x.get_child(i).unwrap().get_keys_count().unwrap() < t {
-                    Btree::fill(x, i, t);
+                    self.fill(x, i, t);
                 }
-                Btree::delete_from(&x.get_child(i).unwrap(), k, t);
+                self.delete_from(&x.get_child(i).unwrap(), k, t);
             }
         }
     }
 
-    fn delete_internal_node(x: &BTreeNode, k: Key, i: usize, t: usize) {
+    fn delete_internal_node(&self, x: &BTreeNode, k: Key, i: usize, t: usize) {
         if x.get_child(i).unwrap().get_keys_count().unwrap() >= t {
-            let pred_key_and_row = Btree::get_predecessor(&x.get_child(i).unwrap()).unwrap();
+            let pred_key_and_row = self.get_predecessor(&x.get_child(i).unwrap()).unwrap();
             x.set_key(i, pred_key_and_row.0.clone(), pred_key_and_row.1);
-            Btree::delete_from(&mut x.get_child(i).unwrap(), pred_key_and_row.0, t);
+            self.delete_from(&mut x.get_child(i).unwrap(), pred_key_and_row.0, t);
         } else if x.get_child(i + 1).unwrap().get_keys_count().unwrap() >= t {
-            let succ_key_and_row = Btree::get_successor(&x.get_child(i + 1).unwrap()).unwrap();
+            let succ_key_and_row = self.get_successor(&x.get_child(i + 1).unwrap()).unwrap();
             x.set_key(i, succ_key_and_row.0.clone(), succ_key_and_row.1);
-            Btree::delete_from(&mut x.get_child(i + 1).unwrap(), succ_key_and_row.0, t);
+            self.delete_from(&mut x.get_child(i + 1).unwrap(), succ_key_and_row.0, t);
         } else {
-            Btree::merge(x, i, t);
-            Btree::delete_from(&mut x.get_child(i).unwrap(), k, t);
+            self.merge(x, i, t);
+            self.delete_from(&mut x.get_child(i).unwrap(), k, t);
         }
     }
 
     //TODO optimize this!!!!
-    fn get_predecessor(x: &BTreeNode) -> Result<(Key, Row), Status> {
+    fn get_predecessor(&self, x: &BTreeNode) -> Result<(Key, Row), Status> {
         let mut cur = x.clone();
         while !cur.is_leaf() {
             cur = cur.get_child(cur.get_children_count().unwrap() - 1).unwrap().clone();
@@ -369,7 +373,7 @@ impl Btree {
     }
 
     //TODO optimize this!!!!
-    fn get_successor(x: &BTreeNode) -> Result<(Key, Row), Status> {
+    fn get_successor(&self, x: &BTreeNode) -> Result<(Key, Row), Status> {
         let mut cur = x.clone();
         while !cur.is_leaf() {
             cur = cur.get_child(0).unwrap().clone();
@@ -378,7 +382,7 @@ impl Btree {
     }
 
     #[deprecated]
-    fn merge(x: &BTreeNode, i: usize, t: usize) {
+    fn merge(&self, x: &BTreeNode, i: usize, t: usize) {
         let child = x.get_child(i).unwrap().clone();
         let key_and_row = x.get_key(i).unwrap();
         child.push_key(key_and_row.0, key_and_row.1);
@@ -393,22 +397,22 @@ impl Btree {
         x.set_child(i, child);
     }
 
-    fn fill(x: &BTreeNode, i: usize, t: usize) {
+    fn fill(&self, x: &BTreeNode, i: usize, t: usize) {
         if i != 0 && x.get_child(i - 1).unwrap().get_keys_count().unwrap() >= t {
-            Btree::borrow_from_prev(x, i);
+            self.borrow_from_prev(x, i);
         } else if i != x.get_children_count().unwrap() - 1 && x.get_child(i + 1).unwrap().get_keys_count().unwrap() >= t {
-            Btree::borrow_from_next(x, i);
+            self.borrow_from_next(x, i);
         } else {
             if i != x.get_children_count().unwrap() - 1 {
-                Btree::merge(x, i, t);
+                self.merge(x, i, t);
             } else {
-                Btree::merge(x, i - 1, t);
+                self.merge(x, i - 1, t);
             }
         }
     }
 
     #[deprecated]
-    fn borrow_from_prev(x: &BTreeNode, i: usize) {
+    fn borrow_from_prev(&self, x: &BTreeNode, i: usize) {
         x.children_move_key_left(i, i - 1);
 
         let parent_key_and_row = x.get_key(i - 1).unwrap().clone();
@@ -423,7 +427,7 @@ impl Btree {
     }
 
     #[deprecated]
-    fn borrow_from_next(x: &BTreeNode, i: usize) {
+    fn borrow_from_next(&self, x: &BTreeNode, i: usize) {
         x.children_move_key_right(i, i + 1);
         let parent_key_and_row = x.get_key(i).unwrap().clone();
         x.child_push_key(i, parent_key_and_row.0, parent_key_and_row.1);
