@@ -100,10 +100,15 @@ impl Compiler {
                 let mut result_fields = Vec::new();
                 let mut op = SelectStatementOpCode::SelectFTS;
                 let mut conditions = Vec::new();
-                for field in select_query.result.iter() {
-                    let field_schema = schema.fields.iter().find(|f| &f.name == field)
-                        .ok_or(QueryResult::user_input_wrong(format!("at least one invalid field")))?;
-                    result_fields.push(field_schema.clone());
+
+                if select_query.result[0] == "*" {
+                    result_fields.append(&mut schema.fields.clone());
+                } else {
+                    for field in select_query.result.iter() {
+                        let field_schema = schema.fields.iter().find(|f| &f.name == field)
+                            .ok_or(QueryResult::user_input_wrong(format!("at least one invalid field")))?;
+                        result_fields.push(field_schema.clone());
+                    }
                 }
 
                 let mut at_id = true;

@@ -1,6 +1,5 @@
 #[cfg(test)]
 mod tests {
-    use rustql::pager::Type;
     use rustql::parser::{Parser, ParsedQuery};
 
     #[test]

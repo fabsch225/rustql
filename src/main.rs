@@ -1,3 +1,5 @@
+use std::io;
+use std::io::Write;
 use rustql::btree::Btree;
 use rustql::executor::Executor;
 use rustql::pager::{Field, PagerCore};
@@ -43,18 +45,46 @@ fn main() {
     println!("{}", b);
 
     //println!("{:?}", b.scan())
-    */
+
 
     let e = Executor::init("./default.db.bin", T);
     for i in 0..30 {
         e.exec(format!("INSERT INTO table (Id, Name) VALUES ({}, 'Test Name Nummer {}')", i, i));
     }
 
-    e.exec(format!("INSERT INTO table (Id, Name) VALUES ({}, 'Test Name Nummer {}')", 2, 22));
+    let r = e.exec(format!("INSERT INTO table (Id, Name) VALUES ({}, 'Test Name Nummer {}')", 2, 22));
+    println!("{}", r);
+    let r = e.exec(format!("SELECT Id, Name FROM table"));
+    println!("{}", r);
+    let r = e.exec(format!("SELECT Id, Name FROM table WHERE Name = 'Test Name Nummer 29'"));
+    println!("{}", r);
+    let r =  e.exec(format!("SELECT Id FROM table WHERE Name > 'Test Name Nummer 23'"));
+    println!("{}", r);
+     */
 
-    e.exec(format!("SELECT Id, Name FROM table"));
+    let executor = Executor::init("./default.db.bin", T);
+/*
+    for i in 0..5 {
+        executor.exec(format!("INSERT INTO table (Id, Name) VALUES ({}, 'Test Name Nummer {}')", i, i));
+    }
 
-    e.exec(format!("SELECT Id, Name FROM table WHERE Name = 'Test Name Nummer 29'"));
+    executor.exit();
+*/
+    executor.exec("SELECT * FROM table WHERE Id = 3".to_string());
 
-    e.exec(format!("SELECT Id FROM table WHERE Name > 'Test Name Nummer 23'"));
+    loop {
+        io::stdout().flush().unwrap();
+
+        let mut command = String::new();
+        io::stdin().read_line(&mut command).unwrap();
+        let command = command.trim();
+
+        if command.eq_ignore_ascii_case("exit") {
+            executor.exit();
+            break;
+        }
+
+        let result = executor.exec(command.to_string());
+        println!("{}", result);
+    }
 }

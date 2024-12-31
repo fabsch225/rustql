@@ -72,7 +72,15 @@ impl Serializer {
 
     pub fn schema_to_bytes(schema: &Schema) -> Vec<u8> {
         let mut bytes = Vec::new();
-
+        let schema_len = schema.col_count;
+        let root_position = schema.root;
+        let root_position_bytes = Self::position_to_bytes(root_position);
+        let schema_len_bytes = Self::int_to_bytes(schema_len as i32);
+        bytes.push(schema_len_bytes[2]);
+        bytes.push(schema_len_bytes[3]);
+        for i in 0..4 {
+            bytes.push(root_position_bytes[i]);
+        }
         for field in &schema.fields {
             bytes.push(Serializer::type_to_byte(&field.field_type));
             let mut name_bytes = field.name.clone().into_bytes();
@@ -488,6 +496,26 @@ impl Serializer {
             return Err(InternalExceptionInvalidSchema);
         }
         Ok(())
+    }
+
+    pub fn infinity(field_type: &Type) -> Vec<u8> {
+        match field_type {
+            Type::String => vec![u8::MAX; STRING_SIZE],
+            Type::Integer => vec![0x7F; INTEGER_SIZE], // Max positive value for signed integer
+            Type::Date => vec![0xFF; DATE_SIZE], // Max value for date
+            Type::Boolean => vec![1], // True as infinity for boolean
+            Type::Null => vec![0], // Null has no concept of infinity
+        }
+    }
+
+    pub fn negative_infinity(field_type: &Type) -> Vec<u8> {
+        match field_type {
+            Type::String => vec![u8::MIN; STRING_SIZE],
+            Type::Integer => vec![0x80; INTEGER_SIZE], // Min negative value for signed integer
+            Type::Date => vec![0x00; DATE_SIZE], // Min value for date
+            Type::Boolean => vec![0], // False as negative infinity for boolean
+            Type::Null => vec![0], // Null has no concept of negative infinity
+        }
     }
 
     pub fn compare_with_type(a: &Vec<u8>, b: &Vec<u8>, key_type: Type) -> Result<std::cmp::Ordering, Status> {

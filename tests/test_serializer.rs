@@ -6,6 +6,7 @@ mod tests {
 
     fn get_schema() -> Schema {
         Schema {
+            root: 0,
             col_count: 2,
             col_length: 260,
             key_length: 4,
@@ -44,6 +45,7 @@ mod tests {
     #[test]
     fn test_schema_to_bytes() {
         let schema = Schema {
+            root: 1,
             col_count: 3,
             col_length: 20,
             key_length: 4,
@@ -57,6 +59,8 @@ mod tests {
         };
 
         let expected_bytes = vec![
+            0, 3, //Schema Length
+            0, 0, 0, 1, // Root
             1, // Type::Integer
             105, 100, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // "id"
             2, // Type::String
@@ -72,6 +76,7 @@ mod tests {
     #[test]
     fn test_schema_to_bytes_empty_schema() {
         let schema = Schema {
+            root: 1,
             col_count: 0,
             col_length: 0,
             key_length: 0,
@@ -80,7 +85,10 @@ mod tests {
             fields: vec![],
         };
 
-        let expected_bytes: Vec<u8> = vec![];
+        let expected_bytes: Vec<u8> = vec![
+            0, 0, //Schema Length
+            0, 0, 0, 1, // Root
+        ];
 
         let result_bytes = Serializer::schema_to_bytes(&schema);
         assert_eq!(result_bytes, expected_bytes);
@@ -89,6 +97,7 @@ mod tests {
     #[test]
     fn test_schema_to_bytes_single_field() {
         let schema = Schema {
+            root: 0,
             col_count: 1,
             col_length: 4,
             key_length: 4,
@@ -100,6 +109,8 @@ mod tests {
         };
 
         let expected_bytes = vec![
+            0, 1, //Schema Length
+            0, 0, 0, 0, // Root
             1, // Type::Integer
             105, 100, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // "id"
         ];

@@ -10,6 +10,7 @@ mod tests {
 
     fn get_schema() -> Schema {
         Schema {
+            root: 0,
             col_count: 2,
             col_length: 260,
             key_length: 4,

@@ -1,9 +1,11 @@
 use std::fmt::Display;
 use std::fmt::{Debug, Formatter};
-use crate::pager::{Key, PagerAccessor, Position, Row, Schema};
+use crate::compiler::SqlStatementComparisonOperator;
+use crate::pager::{Key, PagerAccessor, PagerCore, Position, Row, Schema};
 use crate::serializer::Serializer;
 use crate::pager_frontend::PagerFrontend;
 use crate::status::Status;
+use crate::status::Status::InternalExceptionKeyNotFound;
 //TODO implement error handling with unwraps or else
 
 //Thought: If we balance children, we will move a Childs Position to another Node,
@@ -63,7 +65,6 @@ impl BTreeNode {
         Ok((removed_key, removed_row))
     }
 
-    //TODO exchange data
     fn exchange_key(&self, prev_key: Key, new_key: Key) -> Result<(), Status> {
         let mut keys_and_rows = self.get_keys()?.clone();
         if let Some(index) = keys_and_rows.0.iter().position(|x| *x == prev_key) {
@@ -151,7 +152,6 @@ impl BTreeNode {
         PagerFrontend::set_children(self, children)
     }
 
-    //TODO manage rows
     fn extend_over_keys(&self, index_from: usize, index_to: usize) -> Result<(), Status> {
         let mut children = PagerFrontend::get_children(self)?;
         let new_keys_and_rows = children[index_to].get_keys()?.clone();
@@ -231,7 +231,7 @@ impl Btree {
         let mut root = None;
         //TODO revisit this
         if pager_accessor.has_root() {
-            root = Some(PagerFrontend::get_node(pager_accessor.clone(), pager_accessor.get_schema_read().root).unwrap());
+            root = Some(PagerFrontend::get_node(pager_accessor.clone(), pager_accessor.read_schema().root).unwrap());
         }
         Btree {
             root,
@@ -241,13 +241,13 @@ impl Btree {
     }
 
     fn compare(&self, a: &Key, b: &Key) -> Result<std::cmp::Ordering, Status> {
-        Serializer::compare_with_type(a, b, self.pager_accessor.get_schema_read().key_type)
+        Serializer::compare_with_type(a, b, self.pager_accessor.read_schema().key_type)
     }
 
     pub fn insert(&mut self, k: Key, v: Row) {
         if let Some(ref root) = self.root {
             if root.get_keys_count().unwrap() == (2 * self.t) - 1 {
-                let mut new_root = PagerFrontend::create_singular_node(self.pager_accessor.get_schema_read(), self.pager_accessor.clone(), Serializer::empty_key(&self.pager_accessor.get_schema_read()), Serializer::empty_row(&self.pager_accessor.get_schema_read())).unwrap();
+                let mut new_root = PagerFrontend::create_singular_node(self.pager_accessor.read_schema(), self.pager_accessor.clone(), Serializer::empty_key(&self.pager_accessor.read_schema()), Serializer::empty_row(&self.pager_accessor.read_schema())).unwrap();
                 new_root.push_child(root.clone()).unwrap();
                 self.split_child(&new_root, 0, self.t, true);
 
@@ -258,7 +258,7 @@ impl Btree {
                 self.insert_non_full(root, k, v, self.t);
             }
         } else {
-            let new_root = PagerFrontend::create_singular_node(self.pager_accessor.get_schema_read(), self.pager_accessor.clone(), k.clone(), v).unwrap();
+            let new_root = PagerFrontend::create_singular_node(self.pager_accessor.read_schema(), self.pager_accessor.clone(), k.clone(), v).unwrap();
             self.pager_accessor.set_root(&new_root);
             self.root = Some(new_root);
         }
@@ -267,7 +267,7 @@ impl Btree {
     fn insert_non_full(&self, x: &BTreeNode, key: Key, row: Row, t: usize) {
         let mut i = x.get_keys_count().unwrap() as isize - 1;
         if x.is_leaf() {
-            x.push_key(Serializer::empty_key(&self.pager_accessor.get_schema_read()), Serializer::empty_row(&self.pager_accessor.get_schema_read())); // Add a dummy value
+            x.push_key(Serializer::empty_key(&self.pager_accessor.read_schema()), Serializer::empty_row(&self.pager_accessor.read_schema())); // Add a dummy value
             let key_and_row = x.get_key(i as usize).unwrap();
             while i >= 0 && self.compare(&key, &key_and_row.0).unwrap() == std::cmp::Ordering::Less {
                 let key_and_row = x.get_key(i as usize).unwrap(); //TODO slight optimization
@@ -295,7 +295,7 @@ impl Btree {
     fn split_child(&self, x: &BTreeNode, i: usize, t: usize, is_root: bool) {
         let mut y = x.get_child(i).unwrap().clone();
         let keys_and_rows = y.get_keys_from(t).unwrap();
-        let mut z = PagerFrontend::create_node(self.pager_accessor.get_schema_read(), y.pager_interface.clone(), keys_and_rows.0, vec![], keys_and_rows.1).unwrap();
+        let mut z = PagerFrontend::create_node(self.pager_accessor.read_schema(), y.pager_interface.clone(), keys_and_rows.0, vec![], keys_and_rows.1).unwrap();
 
         let key_and_row = y.get_key(t - 1).unwrap();
         //TODO suboptimal
@@ -440,30 +440,100 @@ impl Btree {
         }
     }
 
-    pub fn scan(&self) -> (Vec<Key>, Vec<Row>) {
-        let mut keys = Vec::new();
-        let mut rows = Vec::new();
+    pub fn scan<C>(&self, collect: &C)
+        where C: Fn(&Key, &Row)
+    {
         if let Some(ref root) = self.root {
-            self.in_order_traversal(root, &mut keys, &mut rows);
+            self.in_order_traversal(root, collect);
         }
-        (keys, rows)
     }
 
-    fn in_order_traversal(&self, node: &BTreeNode, keys: &mut Vec<Key>, rows: &mut Vec<Row>) {
+    fn in_order_traversal<C>(&self, node: &BTreeNode, collect: &C) -> Result<(), Status>
+        where C: Fn(&Key, &Row)
+    {
         let key_count = node.get_keys_count().unwrap();
         for i in 0..key_count {
             if !node.is_leaf() {
                 let child = node.get_child(i).unwrap();
-                self.in_order_traversal(&child, keys, rows);
+                self.in_order_traversal(&child, collect)?;
             }
             let key_and_row = node.get_key(i).unwrap();
-            keys.push(key_and_row.0);
-            rows.push(key_and_row.1)
+            collect(&key_and_row.0, &key_and_row.1)
         }
         if !node.is_leaf() {
             let child = node.get_child(key_count).unwrap();
-            self.in_order_traversal(&child, keys, rows);
+            self.in_order_traversal(&child, collect)?;
         }
+        Ok(())
+    }
+
+    pub fn find<C>(&self, key: Key, collect: &C) -> Result<(), Status>
+        where C: Fn(&Key, &Row)
+    {
+        if let Some(ref root) = self.root {
+            self.find_in_node(root, key, collect)?
+        }
+        Ok(())
+    }
+
+    fn find_in_node<C>(&self, node: &BTreeNode, key: Key, collect: &C) -> Result<(), Status>
+        where C: Fn(&Key, &Row)
+    {
+        let mut i = 0;
+        let key_count = node.get_keys_count()?;
+
+        while i < key_count && self.compare(&key, &node.get_key(i)?.0)? == std::cmp::Ordering::Greater {
+            i += 1;
+        }
+
+        if i < key_count && self.compare(&key, &node.get_key(i)?.0)? == std::cmp::Ordering::Equal {
+            let key_and_row = node.get_key(i)?;
+            collect(&key_and_row.0, &key_and_row.1);
+            return Ok(())
+        }
+
+        if node.is_leaf {
+            return Err(InternalExceptionKeyNotFound);
+        }
+
+        self.find_in_node(&node.get_child(i)?, key, collect)
+    }
+
+    pub fn find_range<C>(&self, a: Key, b: Key, include_a: bool, include_b: bool, collect: &C) -> Result<(), Status>
+        where C: Fn(&Key, &Row)
+    {
+        if let Some(ref root) = self.root {
+            self.find_range_in_node(root, a, b, include_a, include_b, collect)?;
+        }
+        Ok(())
+    }
+
+    fn find_range_in_node<C>(&self, node: &BTreeNode, a: Key, b: Key, include_a: bool, include_b: bool, collect: &C) -> Result<(), Status>
+        where C: Fn(&Key, &Row)
+    {
+        let key_count = node.get_keys_count()?;
+        for i in 0..key_count {
+            let key_and_row = node.get_key(i)?;
+            if self.compare(&key_and_row.0, &a)? == std::cmp::Ordering::Less {
+                continue;
+            }
+            if !node.is_leaf() {
+                let child = node.get_child(i)?;
+                self.find_range_in_node(&child, a.clone(), b.clone(), include_a, include_b, collect)?;
+            }
+            let in_lower_bound = if include_a { self.compare(&key_and_row.0, &a)? != std::cmp::Ordering::Less } else { self.compare(&key_and_row.0, &a)? == std::cmp::Ordering::Greater };
+            let in_upper_bound = if include_b { self.compare(&key_and_row.0, &b)? != std::cmp::Ordering::Greater } else { self.compare(&key_and_row.0, &b)? == std::cmp::Ordering::Less };
+            if in_lower_bound && in_upper_bound {
+                collect(&key_and_row.0, &key_and_row.1)
+            } else if self.compare(&key_and_row.0, &b)? == std::cmp::Ordering::Greater {
+                break;
+            }
+        }
+        if !node.is_leaf() {
+            let child = node.get_child(key_count)?;
+            self.find_range_in_node(&child, a, b, include_a, include_b, collect)?;
+        }
+        Ok(())
     }
 }
 
@@ -471,7 +541,7 @@ impl Display for Btree {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         if let Some(ref root) = self.root {
             let mut queue = std::collections::VecDeque::new();
-            let schema = self.pager_accessor.get_schema_read();
+            let schema = self.pager_accessor.read_schema();
             queue.push_back(root.clone());
 
             writeln!(f, "Btree Level-Order Traversal:")?;

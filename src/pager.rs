@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::ffi::CString;
 use std::fmt;
 use std::fmt::Debug;
-use std::fs::File;
+use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::marker::PhantomData;
 use std::ops::{Deref, Index};
@@ -173,15 +173,20 @@ impl PagerAccessor {
         }
     }
 
-    pub fn set_root(&mut self, node: &BTreeNode) {
+    pub fn set_schema(&self, new_schema: Schema) {
+        self.pager.write().expect("failed to w-lock pager").schema = new_schema;
+        self.pager.write().expect("failed to w-lock pager").invalidate_cache();
+    }
+
+    pub fn set_root(&self, node: &BTreeNode) {
         self.pager.write().expect("failed to w-lock pager").schema.root = node.page_position;
     }
 
     pub fn has_root(&self) -> bool {
-        self.get_schema_read().root != 0
+        self.read_schema().root != 0
     }
 
-    pub fn get_schema_read(&self) -> Schema {
+    pub fn read_schema(&self) -> Schema {
         self.pager.read().unwrap().schema.clone()
     }
 
@@ -251,11 +256,35 @@ impl PagerAccessor {
 }
 
 impl PagerCore {
+    pub fn flush(&mut self) -> Result<(), Status> {
+        let schema_bytes = Serializer::schema_to_bytes(&self.schema);
+        self.file.seek(SeekFrom::Start(0)).map_err(|_| Status::InternalExceptionWriteFailed)?;
+        self.file.write_all(&schema_bytes).map_err(|e| {
+            eprintln!("Failed to write schema bytes to disk: {:?}", e);
+            Status::InternalExceptionWriteFailed
+        })?;
+
+        //TODO super inefficient
+        let pages: Vec<PageContainer> = self.cache.values().cloned().collect();
+
+        for page in pages {
+            self.write_page_to_disk(&page)?;
+        }
+
+        Ok(())
+    }
+
     pub fn init_from_file(file_path: &str) -> Result<PagerAccessor, Status> {
-        let mut file = File::open(file_path).map_err(|_| Status::InternalExceptionFileNotFound)?;
+        let mut file = OpenOptions::new().write(true).read(true).open(file_path).map_err(|e| {
+            eprintln!("Failed to open file: {:?}", e);
+            Status::InternalExceptionFileNotFound
+        })?;
         let mut schema_length_bytes = [0u8; 2];
         file.read_exact(&mut schema_length_bytes)
-            .map_err(|_| Status::InternalExceptionReadFailed)?;
+            .map_err(|e| {
+                eprintln!("Failed to read schema: {:?}", e);
+                Status::InternalExceptionReadFailed
+            })?;
         file.seek(SeekFrom::Start(0));
         let col_count = u16::from_be_bytes(schema_length_bytes) as usize;
         let mut schema_data = vec![0u8; col_count * (1 + 16) + 6];
@@ -275,7 +304,7 @@ impl PagerCore {
             schema,
             file,
             hash: generate_random_hash(16),
-            next_position: (col_count * (1 + 16) + 4) as Position
+            next_position: (col_count * (1 + 16) + 8) as Position
         }))
     }
 
@@ -294,8 +323,9 @@ impl PagerCore {
         }))
     }
 
-    pub fn invalidate_cache() -> Status {
-        todo!()
+    pub fn invalidate_cache(&mut self) -> Status {
+        self.cache.clear();
+        InternalSuccess
     }
 
     pub fn access_page_read(&mut self, position: Position) -> Result<PageContainer, Status> {
