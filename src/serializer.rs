@@ -62,7 +62,7 @@ impl Serializer {
         Ok(Schema {
             root: root_position,
             col_count,
-            col_length: length,
+            whole_row_length: length,
             key_length,
             key_type: fields[0].field_type.clone(),
             row_length: length - key_length,
@@ -489,7 +489,7 @@ impl Serializer {
             .map(|field| Self::get_size_of_type(&field.field_type).unwrap_or(0))
             .sum();
 
-        if computed_row_length != schema.col_length {
+        if computed_row_length != schema.whole_row_length {
             return Err(InternalExceptionInvalidSchema);
         }
         if schema.fields.len() != schema.col_count {

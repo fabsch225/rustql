@@ -153,7 +153,7 @@ impl Compiler {
                 let schema = Schema {
                     root: 0,
                     col_count: fields.len(),
-                    col_length: fields.iter().map(|f| Serializer::get_size_of_type(&f.field_type).unwrap()).sum(),
+                    whole_row_length: fields.iter().map(|f| Serializer::get_size_of_type(&f.field_type).unwrap()).sum(),
                     key_length: Serializer::get_size_of_type(&fields[0].field_type).unwrap(),
                     key_type: fields[0].field_type.clone(),
                     row_length: fields.iter().map(|f| Serializer::get_size_of_type(&f.field_type).unwrap()).sum::<usize>() - Serializer::get_size_of_type(&fields[0].field_type).unwrap(),

@@ -116,7 +116,7 @@ impl Serializer {
 pub struct Schema {
     pub root: Position, //if 0 -> no tree
     pub col_count: usize,
-    pub col_length: usize,
+    pub whole_row_length: usize,
     pub key_length: usize,
     pub key_type: Type,
     pub row_length: usize,
@@ -127,16 +127,6 @@ pub struct Schema {
 pub struct Field {
     pub field_type: Type, // Assuming the type size is a single byte.
     pub name: String,     // The name of the field, extracted from 128 bits (16 bytes).
-}
-
-impl fmt::Display for Schema {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("TableSchema")
-            .field("col_count", &self.col_count)
-            .field("row_length", &self.col_length)
-            .field("row fields", &self.fields)
-            .finish()
-    }
 }
 
 #[derive(Debug)]
@@ -297,7 +287,7 @@ impl PagerCore {
         let schema = schema?;
 
         println!("Found Schema");
-        println!("{}", schema);
+        println!("{:?}", schema);
 
         Ok(PagerAccessor::new(PagerCore {
             cache: HashMap::new(),
@@ -382,7 +372,7 @@ impl PagerCore {
         pager_facade: PagerAccessor
     ) -> Result<BTreeNode, Status> {
         let position = self.next_position;
-        self.next_position += self.schema.col_length as i32;
+        self.next_position += self.schema.whole_row_length as i32;
         self.create_page_at_position(position, keys, children, data, schema, pager_facade)
     }
 
@@ -450,14 +440,20 @@ impl PagerCore {
         self.file
             .seek(std::io::SeekFrom::Start(position as u64))
             .map_err(|_| Status::InternalExceptionReadFailed)?;
-
-        let mut buffer = vec![0u8; self.schema.col_count];
+        let mut meta_data_buffer = vec![0u8; 2];
         self.file
-            .read_exact(&mut buffer)
+            .read_exact(&mut meta_data_buffer)
             .map_err(|_| Status::InternalExceptionReadFailed)?;
-        let size_on_disk = buffer.len();
+        let key_count = meta_data_buffer[0] as usize;
+        let mut main_buffer = vec![0u8; key_count * (self.schema.whole_row_length + POSITION_SIZE) + POSITION_SIZE];
+        self.file
+            .read_exact(&mut main_buffer)
+            .map_err(|_| Status::InternalExceptionReadFailed)?;
+        let size_on_disk = meta_data_buffer.len() + main_buffer.len();
+        let mut data = meta_data_buffer;
+        data.append(&mut main_buffer);
         Ok(PageContainer {
-            data: buffer,
+            data,
             position,
             size_on_disk,
         })

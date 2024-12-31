@@ -8,7 +8,7 @@ mod tests {
         Schema {
             root: 0,
             col_count: 2,
-            col_length: 260,
+            whole_row_length: 260,
             key_length: 4,
             key_type: Type::Integer,
             row_length: 256,
@@ -47,7 +47,7 @@ mod tests {
         let schema = Schema {
             root: 1,
             col_count: 3,
-            col_length: 20,
+            whole_row_length: 20,
             key_length: 4,
             key_type: Type::Integer,
             row_length: 16,
@@ -78,7 +78,7 @@ mod tests {
         let schema = Schema {
             root: 1,
             col_count: 0,
-            col_length: 0,
+            whole_row_length: 0,
             key_length: 0,
             key_type: Type::Null,
             row_length: 0,
@@ -99,7 +99,7 @@ mod tests {
         let schema = Schema {
             root: 0,
             col_count: 1,
-            col_length: 4,
+            whole_row_length: 4,
             key_length: 4,
             key_type: Type::Integer,
             row_length: 0,
