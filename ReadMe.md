@@ -8,6 +8,7 @@
 cargo run
 ```
 - write SQL queries in c-in, read the results from c-out
+- `exit` saves the Database to disk
 
 # Currently implemented SQL
 - CREATE TABLE (tablename will always be ignored, there is one table)
