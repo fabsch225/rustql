@@ -1,6 +1,6 @@
 # Rust-SQL
 - Relational Database in Rust
-- currently, there is ever only one table, CREATE TABLE drops the old one
+- currently, there is only ever one table, CREATE TABLE drops the old one
 
 # Running the Database
 - to run the database, use
