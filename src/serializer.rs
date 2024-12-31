@@ -37,8 +37,6 @@ impl Serializer {
                 return Err(InternalExceptionInvalidSchema);
             }
             let field_type = bytes[offset];
-            println!("{:?}", offset);
-            println!("{:?}", bytes);
             offset += 1;
             if offset + 16 > bytes.len() {
                 return Err(InternalExceptionInvalidSchema);
