@@ -2,21 +2,16 @@
 //for now, just use vecs
 
 use crate::btree::BTreeNode;
+use crate::crypto::generate_random_hash;
+use crate::serializer::Serializer;
 use crate::status::Status;
-use crate::status::Status::{InternalExceptionIndexOutOfRange, InternalExceptionInvalidColCount, InternalExceptionInvalidRowLength, InternalExceptionInvalidSchema, InternalExceptionKeyNotFound, InternalExceptionPagerMismatch, InternalSuccess, Success};
+use crate::status::Status::{InternalExceptionInvalidColCount, InternalExceptionInvalidSchema, InternalExceptionPagerMismatch, InternalSuccess};
 use std::collections::HashMap;
-use std::ffi::CString;
 use std::fmt;
 use std::fmt::Debug;
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
-use std::marker::PhantomData;
-use std::ops::{Deref, Index};
-use std::ptr::null;
-use std::rc::Rc;
 use std::sync::{Arc, RwLock};
-use crate::crypto::generate_random_hash;
-use crate::serializer::Serializer;
 
 //in byte
 pub const STRING_SIZE: usize = 256;
@@ -69,7 +64,7 @@ pub enum Type {
     //Blob    future feature
 }
 
-impl fmt::Debug for Type {
+impl Debug for Type {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
             Type::Null => write!(f, "Null"),
@@ -163,6 +158,7 @@ impl PagerAccessor {
         }
     }
 
+    //TODO these methods dont belong here
     pub fn set_schema(&self, new_schema: Schema) {
         self.pager.write().expect("failed to w-lock pager").schema = new_schema;
         self.pager.write().expect("failed to w-lock pager").invalidate_cache();
@@ -438,7 +434,7 @@ impl PagerCore {
 
     pub fn read_page_from_disk(&mut self, position: Position) -> Result<PageContainer, Status> {
         self.file
-            .seek(std::io::SeekFrom::Start(position as u64))
+            .seek(SeekFrom::Start(position as u64))
             .map_err(|_| Status::InternalExceptionReadFailed)?;
         let mut meta_data_buffer = vec![0u8; 2];
         self.file
@@ -461,7 +457,7 @@ impl PagerCore {
 
     pub fn write_page_to_disk(&mut self, page: &PageContainer) -> Result<(), Status> {
         self.file
-            .seek(std::io::SeekFrom::Start(page.position as u64))
+            .seek(SeekFrom::Start(page.position as u64))
             .map_err(|_| Status::InternalExceptionWriteFailed)?;
         self.file
             .write_all(&page.data)

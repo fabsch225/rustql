@@ -68,7 +68,7 @@ pub enum CompiledQuery {
 
 impl Compiler {
     /// make ParsedQuery -> CompiledQuery
-    pub fn compile(schema: &Schema, query: ParsedQuery) -> Result<CompiledQuery, QueryResult> {
+    pub fn compile_and_plan(schema: &Schema, query: ParsedQuery) -> Result<CompiledQuery, QueryResult> {
         match query {
             ParsedQuery::Insert(insert_query) => {
                 if insert_query.fields.len() != insert_query.values.len() {
@@ -193,7 +193,6 @@ impl Compiler {
             _ => Err(QueryResult::user_input_wrong(format!("Illegal Comparator: {}", token))),
         }
     }
-
 }
 
 impl FromStr for Type {
