@@ -19,8 +19,6 @@ use rustql::executor::Executor;
 /// - SELECT * FROM table WHERE id = 0 -> returns empty, = 2  works
 ///     - WHERE id < 1 does not work
 
-//Important: Our BTrees always start at position 1. Root is Position 1.
-
 //C in/out
 //Executor <-> Parser
 //B-Tree
