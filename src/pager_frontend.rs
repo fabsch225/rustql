@@ -41,7 +41,6 @@ impl PagerFrontend {
     pub fn get_node(pager_accessor: PagerAccessor, position: Position) -> Result<BTreeNode, Status> {
         Ok(BTreeNode {
             page_position: position,
-            is_leaf: Self::is_leaf(position, pager_accessor.clone())?,
             pager_interface: pager_accessor.clone(),
         })
     }
@@ -56,7 +55,6 @@ impl PagerFrontend {
 
         Ok(BTreeNode {
             page_position: position,
-            is_leaf: Self::is_leaf(position, parent.pager_interface.clone())?,
             pager_interface: parent.pager_interface.clone(),
         })
     }
@@ -98,7 +96,6 @@ impl PagerFrontend {
         for position in positions {
             result.push(BTreeNode{
                 page_position: position,
-                is_leaf: Self::is_leaf(position, parent.pager_interface.clone())?,
                 pager_interface: parent.pager_interface.clone(),
             })
         }
@@ -201,7 +198,6 @@ impl PagerFrontend {
         for position in positions {
             children.push(BTreeNode{
                 page_position: position,
-                is_leaf: Self::is_leaf(position, parent.pager_interface.clone())?,
                 pager_interface: parent.pager_interface.clone(),
             })
         }

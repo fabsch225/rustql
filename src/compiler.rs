@@ -1,6 +1,6 @@
 use std::str::FromStr;
 use crate::executor::QueryResult;
-use crate::pager::{Field, Key, Row, Schema, Type};
+use crate::pager::{Field, Key, Position, Row, Schema, Type};
 use crate::parser::ParsedQuery;
 use crate::serializer::Serializer;
 use crate::status::Status;
@@ -146,20 +146,22 @@ impl Compiler {
             ParsedQuery::CreateTable(create_table_query) => {
                 let mut fields = Vec::new();
                 for (name, type_str) in create_table_query.table_fields.iter().zip(create_table_query.table_types.iter()) {
-                    let field_type = Type::from_str(type_str).map_err(|_| QueryResult::user_input_wrong(format!("wrong type")))?;
+                    let field_type = Type::from_str(type_str).map_err(|_| QueryResult::user_input_wrong("wrong type".to_string()))?;
                     fields.push(Field { name: name.clone(), field_type });
                 }
-
+                let col_count = fields.len();
                 let schema = Schema {
                     root: 0,
-                    col_count: fields.len(),
+                    next_position: (14 + fields.len() * (128 + 4)) as Position,
+                    col_count,
                     whole_row_length: fields.iter().map(|f| Serializer::get_size_of_type(&f.field_type).unwrap()).sum(),
                     key_length: Serializer::get_size_of_type(&fields[0].field_type).unwrap(),
                     key_type: fields[0].field_type.clone(),
                     row_length: fields.iter().map(|f| Serializer::get_size_of_type(&f.field_type).unwrap()).sum::<usize>() - Serializer::get_size_of_type(&fields[0].field_type).unwrap(),
                     fields,
+                    offset: 0,
                 };
-
+                println!("{:?}", schema);
                 Ok(CompiledQuery::CreateTable(CompiledCreateTableQuery { schema }))
             },
             ParsedQuery::DropTable(_) => {

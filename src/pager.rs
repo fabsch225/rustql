@@ -16,7 +16,7 @@ use std::sync::{Arc, RwLock};
 //in byte
 pub const STRING_SIZE: usize = 256;
 pub const INTEGER_SIZE: usize = 4;
-pub const DATE_SIZE: usize = 3;
+pub const DATE_SIZE: usize = 4;
 pub const BOOLEAN_SIZE: usize = 1; //why fucking not
 pub const NULL_SIZE: usize = 1;
 pub const TYPE_SIZE: usize = 1;
@@ -31,6 +31,8 @@ pub const ROW_NAME_SIZE: usize = 16;
 // Schema Information
 // 16 Bits: Specifies the length of a row.
 // 32 Bits: Root Position
+// 32 Bits: Next Position
+// 32 Bits: Offset Position
 // Fields: Each field is defined as follows:
 // [TYPE_SIZE - Type of Field][128 Bits - Name of Field (Ascii)] -> 8 Chars
 // The first field is the ID.
@@ -107,9 +109,13 @@ impl Serializer {
     }
 }
 
+//TODO Schema does not comply with s.o.c.
+
 #[derive(Clone, Debug)]
 pub struct Schema {
+    pub next_position: Position,
     pub root: Position, //if 0 -> no tree
+    pub offset: Position,
     pub col_count: usize,
     pub whole_row_length: usize,
     pub key_length: usize,
@@ -129,8 +135,7 @@ pub struct PagerCore {
     pub cache: HashMap<Position, PageContainer>,
     pub schema: Schema,
     pub hash: String,
-    file: File,
-    next_position: Position,
+    file: File
 }
 
 #[derive(Clone)]
@@ -271,9 +276,9 @@ impl PagerCore {
                 eprintln!("Failed to read schema: {:?}", e);
                 Status::InternalExceptionReadFailed
             })?;
-        file.seek(SeekFrom::Start(0));
+        file.seek(SeekFrom::Start(0)).expect("TODO: panic message");
         let col_count = u16::from_be_bytes(schema_length_bytes) as usize;
-        let mut schema_data = vec![0u8; col_count * (1 + 16) + 6];
+        let mut schema_data = vec![0u8; col_count * (1 + 16) + 14];
         file.read_exact(&mut schema_data)
             .map_err(|_| Status::InternalExceptionReadFailed)?;
         let schema = Serializer::bytes_to_schema(&*schema_data);
@@ -289,8 +294,7 @@ impl PagerCore {
             cache: HashMap::new(),
             schema,
             file,
-            hash: generate_random_hash(16),
-            next_position: (col_count * (1 + 16) + 8) as Position
+            hash: generate_random_hash(16)
         }))
     }
 
@@ -305,7 +309,6 @@ impl PagerCore {
             //TODO this is a workaround for development
             file: File::open(file_path).unwrap(),
             hash: generate_random_hash(16),
-            next_position: 1
         }))
     }
 
@@ -367,8 +370,8 @@ impl PagerCore {
         schema: &Schema,
         pager_facade: PagerAccessor
     ) -> Result<BTreeNode, Status> {
-        let position = self.next_position;
-        self.next_position += self.schema.whole_row_length as i32;
+        let position = self.schema.next_position;
+        self.schema.next_position += self.schema.whole_row_length as i32;
         self.create_page_at_position(position, keys, children, data, schema, pager_facade)
     }
 
@@ -417,7 +420,6 @@ impl PagerCore {
         }
         Ok(BTreeNode {
             page_position: position,
-            is_leaf: orig_children_len == 0,
             pager_interface: pager_facade.clone()
         })
     }

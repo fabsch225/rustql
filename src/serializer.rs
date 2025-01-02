@@ -30,10 +30,13 @@ impl Serializer {
         bytes: &[u8],
     ) -> Result<Schema, Status> {
         let mut fields = Vec::new();
-        let mut fields_start = 6;
+        let mut fields_start = 14;
         let mut length = 0;
         let mut key_length = 0;
         let root_position = Self::bytes_to_position(&[bytes[2], bytes[3], bytes[4], bytes[5]]);
+        let next_position = Self::bytes_to_position(&[bytes[6], bytes[7], bytes[8], bytes[9]]);
+        let offset_position = Self::bytes_to_position(&[bytes[10], bytes[11], bytes[12], bytes[13]]);
+        println!("{:?}", bytes);
         let col_count = bytes[0] as usize * 256usize + bytes[1] as usize;
         let mut current_field = 0;
         while current_field < col_count {
@@ -64,6 +67,8 @@ impl Serializer {
 
         Ok(Schema {
             root: root_position,
+            next_position,
+            offset: offset_position,
             col_count,
             whole_row_length: length,
             key_length,
@@ -76,14 +81,19 @@ impl Serializer {
     pub fn schema_to_bytes(schema: &Schema) -> Vec<u8> {
         let mut bytes = Vec::new();
         let schema_len = schema.col_count;
-        let root_position = schema.root;
-        let root_position_bytes = Self::position_to_bytes(root_position);
         let schema_len_bytes = Self::int_to_bytes(schema_len as i32);
+        let root_position_bytes = Self::position_to_bytes(schema.root);
+        let next_position_bytes = Self::position_to_bytes(schema.next_position);
+        let offset_position_bytes = Self::position_to_bytes(schema.offset);
+
         bytes.push(schema_len_bytes[2]);
         bytes.push(schema_len_bytes[3]);
-        for i in 0..4 {
-            bytes.push(root_position_bytes[i]);
+        for bs in vec![root_position_bytes, next_position_bytes, offset_position_bytes] {
+            for i in 0..4 {
+                bytes.push(bs[i]);
+            }
         }
+
         for field in &schema.fields {
             bytes.push(Serializer::type_to_byte(&field.field_type));
             let mut name_bytes = field.name.clone().into_bytes();
@@ -131,7 +141,7 @@ impl Serializer {
     }
 
     pub fn set_is_leaf(data: &mut PageData, new_value: bool) -> Result<(), Status> {
-        Self::write_byte_at_position(&mut data[1], 2, new_value);
+        Self::write_byte_at_position(&mut data[1], 1, new_value);
         Ok(())
     }
 
@@ -361,9 +371,11 @@ impl Serializer {
             page.splice(start_pos..end_pos, Serializer::position_to_bytes(*child).to_vec());
             if *child != 0 && check_for_leaf {
                 check_for_leaf = false;
-                Self::set_is_leaf(page, false);
+                Self::set_is_leaf(page, false).expect("TODO: panic message");
+                //println!("{:?}", Self::is_leaf(page));
             }
         }
+        //println!("{:?}", Self::is_leaf(page));
         InternalSuccess
     }
 
@@ -546,16 +558,16 @@ impl Serializer {
     pub fn compare_with_type(a: &Vec<u8>, b: &Vec<u8>, key_type: Type) -> Result<std::cmp::Ordering, Status> {
         match key_type {
             Type::String => Ok(Self::compare_strings(
-                &<[u8; 256]>::try_from(a.to_vec()).unwrap(),
-                &<[u8; 256]>::try_from(b.to_vec()).unwrap(),
+                &<[u8; STRING_SIZE]>::try_from(a.to_vec()).unwrap(),
+                &<[u8; STRING_SIZE]>::try_from(b.to_vec()).unwrap(),
             )),
             Type::Integer => Ok(Self::compare_integers(
-                &<[u8; 4]>::try_from(a.to_vec()).unwrap(),
-                &<[u8; 4]>::try_from(b.to_vec()).unwrap(),
+                &<[u8; INTEGER_SIZE]>::try_from(a.to_vec()).unwrap(),
+                &<[u8; INTEGER_SIZE]>::try_from(b.to_vec()).unwrap(),
             )),
             Type::Date => Ok(Self::compare_dates(
-                &<[u8; 3]>::try_from(a.to_vec()).unwrap(),
-                &<[u8; 3]>::try_from(b.to_vec()).unwrap(),
+                &<[u8; DATE_SIZE]>::try_from(a.to_vec()).unwrap(),
+                &<[u8; DATE_SIZE]>::try_from(b.to_vec()).unwrap(),
             )),
             Type::Boolean => Ok(Self::compare_booleans(a[1], b[1])),
             Type::Null => Ok(std::cmp::Ordering::Equal),
@@ -585,16 +597,16 @@ impl Serializer {
 
         match final_type {
             Type::String => Ok(Self::compare_strings(
-                <&[u8; 256]>::try_from(&a[TYPE_SIZE..end_position]).unwrap(),
-                <&[u8; 256]>::try_from(&b[TYPE_SIZE..end_position]).unwrap(),
+                <&[u8; STRING_SIZE]>::try_from(&a[TYPE_SIZE..end_position]).unwrap(),
+                <&[u8; STRING_SIZE]>::try_from(&b[TYPE_SIZE..end_position]).unwrap(),
             )),
             Type::Integer => Ok(Self::compare_integers(
-                <&[u8; 4]>::try_from(&a[TYPE_SIZE..end_position]).unwrap(),
-                <&[u8; 4]>::try_from(&b[TYPE_SIZE..end_position]).unwrap(),
+                <&[u8; INTEGER_SIZE]>::try_from(&a[TYPE_SIZE..end_position]).unwrap(),
+                <&[u8; INTEGER_SIZE]>::try_from(&b[TYPE_SIZE..end_position]).unwrap(),
             )),
             Type::Date => Ok(Self::compare_dates(
-                <&[u8; 3]>::try_from(&a[TYPE_SIZE..end_position]).unwrap(),
-                <&[u8; 3]>::try_from(&b[TYPE_SIZE..end_position]).unwrap(),
+                <&[u8; DATE_SIZE]>::try_from(&a[TYPE_SIZE..end_position]).unwrap(),
+                <&[u8; DATE_SIZE]>::try_from(&b[TYPE_SIZE..end_position]).unwrap(),
             )),
             Type::Boolean => Ok(Self::compare_booleans(a[1], b[1])),
             Type::Null => Ok(std::cmp::Ordering::Equal),
@@ -767,21 +779,25 @@ impl Serializer {
         value
     }
 
-    pub fn bytes_to_date(bytes: &[u8; DATE_SIZE]) -> (i32, i32, i32) {
-        let year = ((bytes[0] as i32) << 8) | (bytes[1] as i32);
-
-        let month = ((bytes[2] >> 4) & 0b1111) as i32;
-        let day = (bytes[2] & 0b1111) as i32;
-
-        (year, month, day)
-    }
-
     pub fn date_to_bytes(year: i32, month: i32, day: i32) -> [u8; DATE_SIZE] {
+        //assert!(month >= 1 && month <= 12, "Month must be between 1 and 12");
+        //assert!(day >= 1 && day <= 31, "Day must be between 1 and 31");
+
         let mut bytes = [0u8; DATE_SIZE];
         bytes[0] = (year >> 8) as u8;
         bytes[1] = (year & 0xFF) as u8;
-        bytes[2] = ((month << 4) as u8) | (day as u8);
+        bytes[2] = month as u8;
+        bytes[3] = day as u8;
+
         bytes
+    }
+
+    pub fn bytes_to_date(bytes: &[u8; DATE_SIZE]) -> (i32, i32, i32) {
+        let year = ((bytes[0] as i32) << 8) | (bytes[1] as i32);
+        let month = bytes[2] as i32;
+        let day = bytes[3] as i32;
+
+        (year, month, day)
     }
 
     pub fn byte_to_bool(byte: u8) -> bool {

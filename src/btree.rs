@@ -16,7 +16,6 @@ use crate::status::Status::InternalExceptionKeyNotFound;
 #[derive(Clone, Debug)]
 pub struct BTreeNode {
     pub page_position: Position,          // Unique ID for the node (corresponds to a page in the pager)
-    pub is_leaf: bool,          // Indicates if the node is a leaf
     //#### dont cache this stuff **twice**. use f.ex. pager_interface -> readKeysFromCache() -> ((modify the vector as needed)) -> writeKeysToCache(vec) [or is it not a cache but a buffer!?]
     //pub keys: Vec<Key>,         // Cached keys (loaded from pager)
     //pub children: Vec<Position>,    // Child page IDs (loaded from pager)
@@ -305,7 +304,7 @@ impl Btree {
             x.insert_key(i, key_and_row.0, key_and_row.1);
         }
 
-        if !y.is_leaf {
+        if !y.is_leaf() {
             z.set_children(y.get_children_from(t).unwrap()).unwrap();
         }
 
@@ -492,7 +491,7 @@ impl Btree {
             return Ok(())
         }
 
-        if node.is_leaf {
+        if node.is_leaf() {
             return Err(InternalExceptionKeyNotFound);
         }
 
