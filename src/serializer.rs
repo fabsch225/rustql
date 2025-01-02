@@ -1,6 +1,6 @@
 //also look at pager.rs for comments
 
-use crate::pager::{Field, Flag, Key, PageContainer, PageData, PagerAccessor, Position, Row, Schema, Type, BOOLEAN_SIZE, DATE_SIZE, INTEGER_SIZE, NULL_SIZE, POSITION_SIZE, ROW_NAME_SIZE, STRING_SIZE, TYPE_SIZE};
+use crate::pager::{Field, Flag, Key, PageContainer, PageData, PagerAccessor, Position, Row, Schema, Type, BOOLEAN_SIZE, DATE_SIZE, INTEGER_SIZE, INTEGER_SIZE_WITHOUT_FLAG, NULL_SIZE, POSITION_SIZE, ROW_NAME_SIZE, STRING_SIZE, TYPE_SIZE};
 use crate::status::Status;
 use crate::status::Status::{InternalExceptionIndexOutOfRange, InternalExceptionInvalidColCount, InternalExceptionInvalidRowLength, InternalExceptionInvalidSchema, InternalExceptionKeyNotFound, InternalExceptionTypeMismatch, InternalSuccess, Success};
 
@@ -12,14 +12,13 @@ use crate::status::Status::{InternalExceptionIndexOutOfRange, InternalExceptionI
 pub struct Serializer {}
 
 impl Serializer {
-    pub(crate) fn get_size_of_type(ty: &Type) -> Option<usize> {
+    pub(crate) fn get_size_of_type(ty: &Type) -> Result<usize,Status> {
         match ty {
-            Type::String => Some(STRING_SIZE),
-            Type::Integer => Some(INTEGER_SIZE),
-            Type::Date => Some(DATE_SIZE),
-            Type::Boolean => Some(BOOLEAN_SIZE),
-            Type::Null => Some(NULL_SIZE),
-            _ => None,
+            Type::String => Ok(STRING_SIZE),
+            Type::Integer => Ok(INTEGER_SIZE),
+            Type::Date => Ok(DATE_SIZE),
+            Type::Boolean => Ok(BOOLEAN_SIZE),
+            Type::Null => Ok(NULL_SIZE),
         }
     }
 
@@ -130,17 +129,38 @@ impl Serializer {
         result
     }
 
-    pub fn is_deleted(data: &PageData) -> Result<bool, Status> {
-        Ok(Self::byte_to_bool_at_position(data[1], 2))
+    pub fn is_dirty(data: &PageData) -> Result<bool, Status> {
+        Ok(Self::byte_to_bool_at_position(data[1], 0))
     }
-
+    pub fn set_is_dirty(data: &mut PageData, new_value: bool) -> Result<(), Status> {
+        Self::write_byte_at_position(&mut data[1], 0, new_value);
+        Ok(())
+    }
     pub fn is_leaf(data: &PageData) -> Result<bool, Status> {
         Ok(Self::byte_to_bool_at_position(data[1], 1))
     }
-
     pub fn set_is_leaf(data: &mut PageData, new_value: bool) -> Result<(), Status> {
         Self::write_byte_at_position(&mut data[1], 1, new_value);
         Ok(())
+    }
+    pub fn is_deleted(data: &PageData) -> Result<bool, Status> {
+        Ok(Self::byte_to_bool_at_position(data[1], 2))
+    }
+    pub fn set_is_deleted(data: &mut PageData, new_value: bool) -> Result<(), Status> {
+        Self::write_byte_at_position(&mut data[1], 2, new_value);
+        Ok(())
+    }
+    pub fn is_tomb(key: &Key, schema: &Schema) -> Result<bool, Status> {
+        Self::get_flag_at_position(key, 0, &schema.key_type)
+    }
+    pub fn set_is_tomb(key: &mut Key, value: bool, schema: &Schema) -> Result<(), Status> {
+        Self::set_flag_at_position(key, 0, value, &schema.key_type)
+    }
+    pub fn is_null(field: &Vec<u8>, field_type: &Type) -> Result<bool, Status> {
+        Self::get_flag_at_position(field, 0, field_type)
+    }
+    pub fn set_is_null(field: &mut Vec<u8>, value: bool, field_type: &Type) -> Result<(), Status> {
+        Self::set_flag_at_position(field, 0, value, field_type)
     }
 
     //the expansion methods also expand the rows and children of course.
@@ -207,17 +227,17 @@ impl Serializer {
         ))
     }
 
-    pub fn write_key(index: usize, key: &Key, page: &mut PageData, schema: &Schema) -> Status {
+    pub fn write_key(index: usize, key: &Key, page: &mut PageData, schema: &Schema) -> Result<(), Status> {
         let num_keys = page[0] as usize;
         if index >= num_keys {
-            return InternalExceptionIndexOutOfRange;
+            return Err(InternalExceptionIndexOutOfRange);
         }
         let key_length = schema.key_length;
         let list_start_pos = 2; // Start position of keys in the page
         let start_pos = list_start_pos + index * key_length;
         let end_pos = start_pos + key_length;
         page[start_pos..end_pos].copy_from_slice(key);
-        InternalSuccess
+        Ok(())
     }
 
     pub fn write_child(
@@ -225,11 +245,11 @@ impl Serializer {
         child: Position,
         page: &mut PageData,
         schema: &Schema,
-    ) -> Status {
+    ) -> Result<(), Status> {
         let num_keys = page[0] as usize;
         let num_children = num_keys + 1;
         if index >= num_children {
-            return InternalExceptionIndexOutOfRange;
+            return Err(InternalExceptionIndexOutOfRange);
         }
         let key_length = schema.key_length;
         let list_start_pos = 2 + (num_keys * key_length);
@@ -238,9 +258,9 @@ impl Serializer {
         let child_bytes = Serializer::position_to_bytes(child);
         page[start_pos..end_pos].copy_from_slice(&child_bytes);
         if child != 0 {
-            Self::set_is_leaf(page, false);
+            Self::set_is_leaf(page, false)?;
         }
-        InternalSuccess
+        Ok(())
     }
 
     pub fn read_keys_as_vec(page: &PageData, schema: &Schema) -> Result<Vec<Key>, Status> {
@@ -280,12 +300,12 @@ impl Serializer {
 
     ///will adjust number of keys, delete children if necessary
     /// - the original data will be intact, but empty rows will be padded.
-    pub fn write_keys_vec(keys: &Vec<Key>, page: &mut PageData, schema: &Schema) -> Status {
+    pub fn write_keys_vec(keys: &Vec<Key>, page: &mut PageData, schema: &Schema) -> Result<(), Status> {
         let num_keys = page[0] as usize;
         if num_keys != keys.len() {
             return Self::write_keys_vec_resize(keys, page, schema);
         }
-        Self::set_is_leaf(page, false);
+        Self::set_is_leaf(page, false)?;
         let key_length = schema.key_length;
         let list_start_pos = 2;
         for i in 0..num_keys {
@@ -293,17 +313,16 @@ impl Serializer {
             let end_pos = start_pos + key_length;
             page.splice(start_pos..end_pos, keys[i].to_vec());
         }
-        InternalSuccess
+        Ok(())
     }
 
-    pub fn write_keys_vec_resize_with_rows(keys: &Vec<Key>, rows: &Vec<Row>, page: &mut PageData, schema: &Schema) -> Status {
+    pub fn write_keys_vec_resize_with_rows(keys: &Vec<Key>, rows: &Vec<Row>, page: &mut PageData, schema: &Schema) -> Result<(), Status> {
         if keys.len() != rows.len() { panic!("keys and rows must have same len") }
-        let status = Self::write_keys_vec_resize(keys, page, schema);
-        if status != InternalSuccess { return status }
+        Self::write_keys_vec_resize(keys, page, schema)?;
         Self::write_data_by_vec(page, rows, schema)
     }
 
-    pub fn write_keys_vec_resize(keys: &Vec<Key>, page: &mut PageData, schema: &Schema) -> Status {
+    pub fn write_keys_vec_resize(keys: &Vec<Key>, page: &mut PageData, schema: &Schema) -> Result<(), Status> {
         let orig_num_keys = page[0] as usize;
         let new_num_keys = keys.len();
         let key_length = schema.key_length;
@@ -345,7 +364,7 @@ impl Serializer {
 
         page[0] = new_num_keys as u8;
 
-        InternalSuccess
+        Ok(())
     }
 
     ///will panic if wrong length
@@ -353,24 +372,22 @@ impl Serializer {
         children: &Vec<Position>,
         page: &mut PageData,
         schema: &Schema,
-    ) -> Status {
+    ) -> Result<(), Status> {
         let num_keys = page[0] as usize;
         let key_length = schema.key_length;
         let list_start_pos = 2 + (num_keys * key_length);
         let mut check_for_leaf = true;
         for (i, child) in children.iter().enumerate() {
-            if i >= num_keys + 1 {panic!("cannot extend children without extending keys first")}
+            if i >= num_keys + 1 { panic!("cannot extend children without extending keys first") }
             let start_pos = list_start_pos + i * POSITION_SIZE;
             let end_pos = start_pos + POSITION_SIZE;
             page.splice(start_pos..end_pos, Serializer::position_to_bytes(*child).to_vec());
             if *child != 0 && check_for_leaf {
                 check_for_leaf = false;
-                Self::set_is_leaf(page, false).expect("TODO: panic message");
-                //println!("{:?}", Self::is_leaf(page));
+                Self::set_is_leaf(page, false)?;
             }
         }
-        //println!("{:?}", Self::is_leaf(page));
-        InternalSuccess
+       Ok(())
     }
 
     pub fn read_data_by_key(
@@ -469,9 +486,9 @@ impl Serializer {
         page: &mut PageData,
         rows: &Vec<Row>,
         schema: &Schema,
-    ) -> Status {
+    ) -> Result<(), Status> {
         let num_keys = page[0] as usize;
-        if rows.len() != num_keys { return InternalExceptionInvalidColCount }
+        if rows.len() != num_keys { return Err(InternalExceptionInvalidColCount) }
 
         let key_length = schema.key_length;
         let keys_start = 2;
@@ -479,21 +496,13 @@ impl Serializer {
         let data_start = children_start + (num_keys + 1) * POSITION_SIZE;
         let data_length = schema.row_length;
         for (index, row) in rows.iter().enumerate() {
-            if row.len() != data_length { return InternalExceptionInvalidRowLength }
+            if row.len() != data_length { return Err(InternalExceptionInvalidRowLength) }
             let start = data_start + index * data_length;
             let end = start + data_length;
-            if end > page.len() { return InternalExceptionIndexOutOfRange }
+            if end > page.len() { return Err(InternalExceptionIndexOutOfRange) }
             page[start..end].copy_from_slice(row);
         }
-        InternalSuccess
-    }
-
-    pub fn get_data(page: &PageContainer, index: usize, schema: Schema) -> Vec<u8> {
-        let num_keys = page.data[0] as usize;
-        let header_length = num_keys * schema.key_length + (num_keys + 1) * POSITION_SIZE;
-        let offset = header_length + index * schema.row_length;
-
-        page.data[offset..offset + schema.row_length].to_vec()
+        Ok(())
     }
 
     //TODO i dont know if this is up-to-date
@@ -528,6 +537,7 @@ impl Serializer {
         Ok(())
     }
 
+    //TODO adjust for NULL-flag
     pub fn infinity(field_type: &Type) -> Vec<u8> {
         match field_type {
             Type::String => vec![u8::MAX; STRING_SIZE],
@@ -548,58 +558,35 @@ impl Serializer {
         }
     }
 
-    pub fn compare_with_type(a: &Vec<u8>, b: &Vec<u8>, key_type: Type) -> Result<std::cmp::Ordering, Status> {
-        match key_type {
-            Type::String => Ok(Self::compare_strings(
-                &<[u8; STRING_SIZE]>::try_from(a.to_vec()).unwrap(),
-                &<[u8; STRING_SIZE]>::try_from(b.to_vec()).unwrap(),
-            )),
-            Type::Integer => Ok(Self::compare_integers(
-                &<[u8; INTEGER_SIZE]>::try_from(a.to_vec()).unwrap(),
-                &<[u8; INTEGER_SIZE]>::try_from(b.to_vec()).unwrap(),
-            )),
-            Type::Date => Ok(Self::compare_dates(
-                &<[u8; DATE_SIZE]>::try_from(a.to_vec()).unwrap(),
-                &<[u8; DATE_SIZE]>::try_from(b.to_vec()).unwrap(),
-            )),
-            Type::Boolean => Ok(Self::compare_booleans(a[1], b[1])),
-            Type::Null => Ok(std::cmp::Ordering::Equal),
+    pub fn set_flag_at_position(v: &mut Vec<u8>, position: u8, value: bool, field_type: &Type) -> Result<(), Status> {
+        match field_type {
+            Type::Null => { Err(Status::InternalExceptionInvalidFieldType) }
+            Type::Boolean => { Ok(Self::write_byte_at_position(&mut v[0], position, value)) }
+            _ => { Ok(Self::write_byte_at_position(&mut v[Self::get_size_of_type(&field_type)? - 1], position, value)) }
         }
     }
 
-    //TODO think if this is useful
-    //TODO Error handling
-    #[deprecated]
-    pub fn compare(a: &Key, b: &Key) -> Result<std::cmp::Ordering, Status> {
-        let type_a_byte = a[0];
-        let type_b_byte = b[0];
-
-        let type_a = Serializer::byte_to_type(type_a_byte);
-        let type_b = Serializer::byte_to_type(type_b_byte);
-
-        if !type_a.is_some() || !type_b.is_some() {
-            return Err(Status::InternalExceptionInvalidSchema);
+    pub fn get_flag_at_position(v: &Vec<u8>, position: u8, field_type: &Type) -> Result<bool, Status> {
+        match field_type {
+            Type::Null => { Err(Status::InternalExceptionInvalidFieldType) }
+            Type::Boolean => { Ok(Self::byte_to_bool_at_position(v[0], position)) }
+            _ => { Ok(Self::byte_to_bool_at_position(v[Self::get_size_of_type(field_type)? - 1], position)) }
         }
+    }
 
-        if type_a != type_b {
-            return Err(Status::InternalExceptionTypeMismatch);
-        }
-        let final_type = type_a.unwrap();
-        let size = Serializer::get_size_of_type(&final_type).unwrap();
-        let end_position = TYPE_SIZE + size;
-
-        match final_type {
+    pub fn compare_with_type(a: &Vec<u8>, b: &Vec<u8>, field_type: &Type) -> Result<std::cmp::Ordering, Status> {
+        match field_type {
             Type::String => Ok(Self::compare_strings(
-                <&[u8; STRING_SIZE]>::try_from(&a[TYPE_SIZE..end_position]).unwrap(),
-                <&[u8; STRING_SIZE]>::try_from(&b[TYPE_SIZE..end_position]).unwrap(),
+                <[u8; STRING_SIZE]>::try_from(a.to_vec()).unwrap(),
+                <[u8; STRING_SIZE]>::try_from(b.to_vec()).unwrap(),
             )),
             Type::Integer => Ok(Self::compare_integers(
-                <&[u8; INTEGER_SIZE]>::try_from(&a[TYPE_SIZE..end_position]).unwrap(),
-                <&[u8; INTEGER_SIZE]>::try_from(&b[TYPE_SIZE..end_position]).unwrap(),
+                <[u8; INTEGER_SIZE]>::try_from(a.to_vec()).unwrap(),
+                <[u8; INTEGER_SIZE]>::try_from(b.to_vec()).unwrap(),
             )),
             Type::Date => Ok(Self::compare_dates(
-                <&[u8; DATE_SIZE]>::try_from(&a[TYPE_SIZE..end_position]).unwrap(),
-                <&[u8; DATE_SIZE]>::try_from(&b[TYPE_SIZE..end_position]).unwrap(),
+                <[u8; DATE_SIZE]>::try_from(a.to_vec()).unwrap(),
+                <[u8; DATE_SIZE]>::try_from(b.to_vec()).unwrap(),
             )),
             Type::Boolean => Ok(Self::compare_booleans(a[1], b[1])),
             Type::Null => Ok(std::cmp::Ordering::Equal),
@@ -611,20 +598,20 @@ impl Serializer {
         Serializer::bits_to_bytes(&bits)[0]
     }
 
-    pub fn compare_strings(a: &[u8; STRING_SIZE], b: &[u8; STRING_SIZE]) -> std::cmp::Ordering {
+    pub fn compare_strings(a: [u8; STRING_SIZE], b: [u8; STRING_SIZE]) -> std::cmp::Ordering {
         let str_a = Self::bytes_to_ascii(a);
         let str_b = Self::bytes_to_ascii(b);
         str_a.cmp(&str_b)
     }
 
-    pub fn compare_integers(a: &[u8; INTEGER_SIZE], b: &[u8; INTEGER_SIZE]) -> std::cmp::Ordering {
+    pub fn compare_integers(a: [u8; INTEGER_SIZE], b: [u8; INTEGER_SIZE]) -> std::cmp::Ordering {
         let int_a = Self::bytes_to_int(a);
         let int_b = Self::bytes_to_int(b);
 
         int_a.cmp(&int_b)
     }
 
-    pub fn compare_dates(a: &[u8; DATE_SIZE], b: &[u8; DATE_SIZE]) -> std::cmp::Ordering {
+    pub fn compare_dates(a: [u8; DATE_SIZE], b: [u8; DATE_SIZE]) -> std::cmp::Ordering {
         let date_a = Self::bytes_to_date(a);
         let date_b = Self::bytes_to_date(b);
         date_a.cmp(&date_b)
@@ -659,24 +646,24 @@ impl Serializer {
 
     pub fn format_field(bytes: &Vec<u8>, field_type: &Type) -> Result<String, Status> {
         match field_type {
-            Type::String => Ok(Self::format_string(&<[u8; STRING_SIZE]>::try_from(bytes.clone()).expect("wrong len for type String"))),
-            Type::Date => Ok(Self::format_date(&<[u8; DATE_SIZE]>::try_from(bytes.clone()).expect("wrong len for type Date"))),
-            Type::Integer => Ok(Self::format_int(&<[u8; INTEGER_SIZE]>::try_from(bytes.clone()).expect("wrong len for type Integer"))),
+            Type::String => Ok(Self::format_string(<[u8; STRING_SIZE]>::try_from(bytes.clone()).expect("wrong len for type String"))),
+            Type::Date => Ok(Self::format_date(<[u8; DATE_SIZE]>::try_from(bytes.clone()).expect("wrong len for type Date"))),
+            Type::Integer => Ok(Self::format_int(<[u8; INTEGER_SIZE]>::try_from(bytes.clone()).expect("wrong len for type Integer"))),
             Type::Boolean => Ok(Self::format_bool(&bytes[0])),
             _ => Err(InternalExceptionTypeMismatch)
         }
     }
 
-    pub fn format_string(bytes: &[u8; STRING_SIZE]) -> String {
+    pub fn format_string(bytes: [u8; STRING_SIZE]) -> String {
         String::from_utf8(bytes.iter().copied().take_while(|&b| b != 0).collect()).unwrap()
     }
 
-    pub fn format_int(bytes: &[u8; INTEGER_SIZE]) -> String {
+    pub fn format_int(bytes: [u8; INTEGER_SIZE]) -> String {
         let int_value = Self::bytes_to_int(bytes);
         int_value.to_string()
     }
 
-    pub fn format_date(bytes: &[u8; DATE_SIZE]) -> String {
+    pub fn format_date(bytes: [u8; DATE_SIZE]) -> String {
         let (year, month, day) = Self::bytes_to_date(bytes);
         format!("{:04}-{:02}-{:02}", year, month, day)
     }
@@ -697,29 +684,34 @@ impl Serializer {
         bytes
     }
 
-    pub fn parse_int(s: &str) -> [u8; INTEGER_SIZE] {
-        let int_value: i32 = s.parse().unwrap();
-        Self::int_to_bytes(int_value)
+    pub fn parse_int(s: &str) -> Result<[u8; INTEGER_SIZE], Status> {
+        let int_value: i32 = s.parse().map_err(|_| Status::CannotParseInteger)?;
+        Ok(Self::int_to_bytes(int_value))
     }
 
-    pub fn parse_date(s: &str) -> [u8; DATE_SIZE] {
+    pub fn parse_date(s: &str) -> Result<[u8; DATE_SIZE], Status> {
         let parts: Vec<&str> = s.split('-').collect();
-        let year: i32 = parts[0].parse().unwrap();
-        let month: i32 = parts[1].parse().unwrap();
-        let day: i32 = parts[2].parse().unwrap();
+        if parts.len() < 2 {
+            Err(Status::CannotParseDate)?
+        }
+        let year: i32 = parts[0].parse().map_err(|_| Status::CannotParseDate)?;
+        let month: i32 = parts[1].parse().map_err(|_| Status::CannotParseDate)?;
+        let day: i32 = parts[2].parse().map_err(|_| Status::CannotParseDate)?;
         Self::date_to_bytes(year, month, day)
     }
 
-    pub fn parse_bool(s: &str) -> u8 {
+    pub fn parse_bool(s: &str) -> Result<u8, Status> {
         if s.to_ascii_lowercase() == "true" {
-            1
+            Ok(1)
+        } else if s.to_ascii_lowercase() == "false" {
+            Ok(0)
         } else {
-            0
+            Err(Status::CannotParseBoolean)
         }
     }
 
-    pub fn bytes_to_ascii(bytes: &[u8; STRING_SIZE]) -> String {
-        bytes
+    pub fn bytes_to_ascii(bytes: [u8; STRING_SIZE]) -> String {
+        bytes[0..STRING_SIZE - 1]
             .iter()
             .map(|&byte| byte as char)
             .take_while(|&c| c != '\0')
@@ -728,7 +720,7 @@ impl Serializer {
 
     pub fn ascii_to_bytes(ascii: &str) -> [u8; STRING_SIZE] {
         let mut bytes = [0u8; STRING_SIZE];
-        for (i, &c) in ascii.as_bytes().iter().take(STRING_SIZE).enumerate() {
+        for (i, &c) in ascii.as_bytes().iter().take(STRING_SIZE - 1).enumerate() {
             bytes[i] = c;
         }
         bytes
@@ -750,33 +742,26 @@ impl Serializer {
         bytes
     }
 
-    pub fn bytes_to_int(bytes: &[u8; INTEGER_SIZE]) -> i32 {
+    pub fn bytes_to_int(bytes: [u8; INTEGER_SIZE]) -> i32 {
         let mut value = 0i32;
-        for &byte in bytes {
-            value = (value << 8) | (byte as i32);
+        for i in 0..INTEGER_SIZE - 1 {
+            value = (value << 8) | (bytes[i] as i32);
         }
         value
     }
 
     pub fn int_to_bytes(value: i32) -> [u8; INTEGER_SIZE] {
         let mut bytes = [0u8; INTEGER_SIZE];
-        for i in 0..INTEGER_SIZE {
-            bytes[INTEGER_SIZE - 1 - i] = ((value >> (i * 8)) & 0xFF) as u8;
+        for i in 0..INTEGER_SIZE - 1 {
+            bytes[INTEGER_SIZE - 2 - i] = ((value >> (i * 8)) & 0xFF) as u8;
         }
         bytes
     }
 
-    pub fn bytes_to_int_variable_length(bytes: &[u8]) -> i32 {
-        let mut value = 0i32;
-        for &byte in bytes {
-            value = (value << 8) | (byte as i32);
-        }
-        value
-    }
-
-    pub fn date_to_bytes(year: i32, month: i32, day: i32) -> [u8; DATE_SIZE] {
-        //assert!(month >= 1 && month <= 12, "Month must be between 1 and 12");
-        //assert!(day >= 1 && day <= 31, "Day must be between 1 and 31");
+    pub fn date_to_bytes(year: i32, month: i32, day: i32) -> Result<[u8; DATE_SIZE], Status> {
+        if !(month >= 1 && month <= 12 && day >= 1 && day <= 31 && year > 0) {
+            Err(Status::CannotParseIllegalDate)?
+        };
 
         let mut bytes = [0u8; DATE_SIZE];
         bytes[0] = (year >> 8) as u8;
@@ -784,10 +769,10 @@ impl Serializer {
         bytes[2] = month as u8;
         bytes[3] = day as u8;
 
-        bytes
+        Ok(bytes)
     }
 
-    pub fn bytes_to_date(bytes: &[u8; DATE_SIZE]) -> (i32, i32, i32) {
+    pub fn bytes_to_date(bytes: [u8; DATE_SIZE]) -> (i32, i32, i32) {
         let year = ((bytes[0] as i32) << 8) | (bytes[1] as i32);
         let month = bytes[2] as i32;
         let day = bytes[3] as i32;

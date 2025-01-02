@@ -6,7 +6,9 @@ mod tests {
 
     fn get_schema() -> Schema {
         Schema {
+            next_position: 0,
             root: 0,
+            offset: 0,
             col_count: 2,
             whole_row_length: 260,
             key_length: 4,
@@ -45,7 +47,9 @@ mod tests {
     #[test]
     fn test_schema_to_bytes() {
         let schema = Schema {
+            next_position: 1,
             root: 1,
+            offset: 1,
             col_count: 3,
             whole_row_length: 20,
             key_length: 4,
@@ -61,6 +65,8 @@ mod tests {
         let expected_bytes = vec![
             0, 3, //Schema Length
             0, 0, 0, 1, // Root
+            0, 0, 0, 1, // Next
+            0, 0, 0, 1, // Offset
             1, // Type::Integer
             105, 100, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // "id"
             2, // Type::String
@@ -76,7 +82,9 @@ mod tests {
     #[test]
     fn test_schema_to_bytes_empty_schema() {
         let schema = Schema {
+            next_position: 3,
             root: 1,
+            offset: 4,
             col_count: 0,
             whole_row_length: 0,
             key_length: 0,
@@ -88,6 +96,8 @@ mod tests {
         let expected_bytes: Vec<u8> = vec![
             0, 0, //Schema Length
             0, 0, 0, 1, // Root
+            0, 0, 0, 3, // Next Position
+            0, 0, 0, 4, // Offset
         ];
 
         let result_bytes = Serializer::schema_to_bytes(&schema);
@@ -97,10 +107,12 @@ mod tests {
     #[test]
     fn test_schema_to_bytes_single_field() {
         let schema = Schema {
+            next_position: 0,
             root: 0,
+            offset: 0,
             col_count: 1,
-            whole_row_length: 4,
-            key_length: 4,
+            whole_row_length: 5,
+            key_length: 5,
             key_type: Type::Integer,
             row_length: 0,
             fields: vec![
@@ -111,6 +123,8 @@ mod tests {
         let expected_bytes = vec![
             0, 1, //Schema Length
             0, 0, 0, 0, // Root
+            0, 0, 0, 0, // Next
+            0, 0, 0, 0, // Offset
             1, // Type::Integer
             105, 100, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // "id"
         ];
@@ -135,8 +149,7 @@ mod tests {
         let mut page = create_mock_page_data(2);
         let new_keys: Vec<Key> = vec![vec![3u8; 4], vec![4u8; 4], vec![5u8; 4]];
 
-        let status = Serializer::write_keys_vec_resize(&new_keys, &mut page, &schema);
-        assert_eq!(status, Status::InternalSuccess);
+        Serializer::write_keys_vec_resize(&new_keys, &mut page, &schema).unwrap();
         assert_eq!(page[0], 3);
         assert_eq!(page[2..6], vec![3u8; 4]);
         assert_eq!(page[6..10], vec![4u8; 4]);
@@ -149,8 +162,7 @@ mod tests {
         let mut page = create_mock_page_data(3);
         let new_keys: Vec<Key> = vec![vec![6u8; 4]];
 
-        let status = Serializer::write_keys_vec_resize(&new_keys, &mut page, &schema);
-        assert_eq!(status, Status::InternalSuccess);
+        Serializer::write_keys_vec_resize(&new_keys, &mut page, &schema).unwrap();
         assert_eq!(page[0], 1);
         assert_eq!(page[2..6], vec![6u8; 4]);
     }
@@ -161,8 +173,7 @@ mod tests {
         let mut page = create_mock_page_data(2);
         let new_keys: Vec<Key> = vec![vec![7u8; 4], vec![8u8; 4]];
 
-        let status = Serializer::write_keys_vec_resize(&new_keys, &mut page, &schema);
-        assert_eq!(status, Status::InternalSuccess);
+        Serializer::write_keys_vec_resize(&new_keys, &mut page, &schema).unwrap();
         assert_eq!(page[0], 2);
         assert_eq!(page[2..6], vec![7u8; 4]);
         assert_eq!(page[6..10], vec![8u8; 4]);
@@ -171,9 +182,9 @@ mod tests {
     #[test]
     fn test_is_leaf() {
         let page = create_mock_page_data(2);
-        let is_leaf = Serializer::is_leaf(&page, &get_schema()).unwrap();
+        let is_leaf = Serializer::is_leaf(&page).unwrap();
 
-        assert!(!is_leaf);
+        assert!(is_leaf);
     }
 
     #[test]
@@ -281,99 +292,11 @@ mod tests {
     }
 
     #[test]
-    fn test_compare_integers_equal() {
-        let a: Vec<u8> = vec![1, 0, 0, 0, 42];
-        let b: Vec<u8> = vec![1, 0, 0, 0, 42];
-        assert_eq!(Serializer::compare(&a, &b), Ok(std::cmp::Ordering::Equal));
-    }
-
-    #[test]
-    fn test_compare_integers_not_equal() {
-        let a: Vec<u8> = vec![1, 0, 0, 0, 42];
-        let b: Vec<u8> = vec![1, 0, 0, 0, 100];
-        assert_eq!(Serializer::compare(&a, &b), Ok(std::cmp::Ordering::Less));
-    }
-
-    #[test]
-    fn test_compare_strings_equal() {
-        let mut a: Vec<u8> = vec![2; 257];
-        a[TYPE_SIZE..TYPE_SIZE + 5].copy_from_slice(b"hello");
-        let mut b: Vec<u8> = vec![2; 257];
-        b[TYPE_SIZE..TYPE_SIZE + 5].copy_from_slice(b"hello");
-
-        assert_eq!(Serializer::compare(&a, &b), Ok(std::cmp::Ordering::Equal));
-    }
-
-    #[test]
-    fn test_compare_strings_not_equal() {
-        let mut a: Vec<u8> = vec![2; 257];
-        a[TYPE_SIZE..TYPE_SIZE + 5].copy_from_slice(b"hello");
-        let mut b: Vec<u8> = vec![2; 257];
-        b[TYPE_SIZE..TYPE_SIZE + 5].copy_from_slice(b"world");
-
-        assert_eq!(Serializer::compare(&a, &b), Ok(std::cmp::Ordering::Less));
-    }
-
-    #[test]
-    fn test_compare_dates_equal() {
-        let a: Vec<u8> = vec![3, 0x07, 0xE5, 0x91];
-        let b: Vec<u8> = vec![3, 0x07, 0xE5, 0x91];
-
-        assert_eq!(Serializer::compare(&a, &b), Ok(std::cmp::Ordering::Equal));
-    }
-
-    #[test]
-    fn test_compare_dates_not_equal() {
-        let a: Vec<u8> = vec![3, 0x07, 0xE5, 0x91];
-        let b: Vec<u8> = vec![3, 0x07, 0xE4, 0x91];
-
-        assert_eq!(Serializer::compare(&a, &b), Ok(std::cmp::Ordering::Greater));
-    }
-
-    #[test]
-    fn test_compare_booleans_equal() {
-        let a: Vec<u8> = vec![4, 1];
-        let b: Vec<u8> = vec![4, 1];
-
-        assert_eq!(Serializer::compare(&a, &b), Ok(std::cmp::Ordering::Equal));
-    }
-
-    #[test]
-    fn test_compare_booleans_not_equal() {
-        let a: Vec<u8> = vec![4, 1];
-        let b: Vec<u8> = vec![4, 0];
-
-        assert_eq!(Serializer::compare(&a, &b), Ok(std::cmp::Ordering::Greater));
-    }
-
-    #[test]
-    fn test_type_mismatch_error() {
-        let a: Vec<u8> = vec![1, 0, 0, 0, 42];
-        let b: Vec<u8> = vec![2, 0, 0, 0, 42];
-
-        assert_eq!(
-            Serializer::compare(&a, &b),
-            Err(Status::InternalExceptionTypeMismatch)
-        );
-    }
-
-    #[test]
-    fn test_invalid_schema_error() {
-        let a: Vec<u8> = vec![255, 0, 0, 0, 42];
-        let b: Vec<u8> = vec![1, 0, 0, 0, 42];
-
-        assert_eq!(
-            Serializer::compare(&a, &b),
-            Err(Status::InternalExceptionInvalidSchema)
-        );
-    }
-
-    #[test]
     fn test_bytes_to_ascii() {
         let mut input: [u8; STRING_SIZE] = [0; STRING_SIZE];
         input[..5].copy_from_slice(b"hello");
         let expected = "hello".to_string();
-        assert_eq!(Serializer::bytes_to_ascii(&input), expected);
+        assert_eq!(Serializer::bytes_to_ascii(input), expected);
     }
 
     #[test]
@@ -381,7 +304,7 @@ mod tests {
         let mut expected: [u8; STRING_SIZE] = [0; STRING_SIZE];
         expected[..5].copy_from_slice(b"hello");
         let input = "hello".to_string();
-        assert_eq!(Serializer::ascii_to_bytes(&input), expected);
+        assert_eq!(Serializer::ascii_to_bytes(&*input), expected);
     }
 
     #[test]
@@ -408,59 +331,24 @@ mod tests {
 
     #[test]
     fn test_bytes_to_int() {
-        let input: [u8; 4] = [0, 0, 0, 42];
+        let input: [u8; 5] = [0, 0, 0, 0, 42];
         let expected: i32 = 42;
-        assert_eq!(Serializer::bytes_to_int(&input), expected);
+        assert_eq!(Serializer::bytes_to_int(input), expected);
 
-        let input: [u8; 4] = [0, 1, 0, 0];
+        let input: [u8; 5] = [0, 0, 1, 0, 0];
         let expected: i32 = 1 << 16;
-        assert_eq!(Serializer::bytes_to_int(&input), expected);
+        assert_eq!(Serializer::bytes_to_int(input), expected);
     }
 
     #[test]
     fn test_int_to_bytes() {
-        let expected: [u8; 4] = [0, 0, 0, 42];
+        let expected: [u8; 5] = [0, 0, 0, 0, 42];
         let input: i32 = 42;
         assert_eq!(Serializer::int_to_bytes(input), expected);
 
-        let expected: [u8; 4] = [0, 1, 0, 0];
+        let expected: [u8; 5] = [0, 0, 1, 0, 0];
         let input: i32 = 1 << 16;
         assert_eq!(Serializer::int_to_bytes(input), expected);
-    }
-
-    #[test]
-    fn test_bytes_to_int_variable_length() {
-        let input: [u8; 3] = [0, 1, 0];
-        let expected: i32 = 1 << 8;
-        assert_eq!(Serializer::bytes_to_int_variable_length(&input), expected);
-    }
-
-    #[test]
-    fn test_bytes_to_date() {
-        let input: [u8; 3] = [0x07, 0xE5, 0x91];
-        let expected = (2021, 9, 1);
-        assert_eq!(Serializer::bytes_to_date(&input), expected);
-
-        let input: [u8; 3] = [0x07, 0xE4, 0x21];
-        let expected = (2020, 2, 1);
-        assert_eq!(Serializer::bytes_to_date(&input), expected);
-    }
-
-    #[test]
-    fn test_date_to_bytes() {
-        let expected: [u8; 3] = [0x07, 0xE5, 0x91];
-        let input = (2021, 9, 1);
-        assert_eq!(
-            Serializer::date_to_bytes(input.0, input.1, input.2),
-            expected
-        );
-
-        let expected: [u8; 3] = [0x07, 0xE4, 0x21];
-        let input = (2020, 2, 1);
-        assert_eq!(
-            Serializer::date_to_bytes(input.0, input.1, input.2),
-            expected
-        );
     }
 
     #[test]

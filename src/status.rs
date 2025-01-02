@@ -12,6 +12,7 @@ pub enum Status {
     ExceptionQueryMisformed,
 
     //internal status codes
+    CacheMiss,
     InternalSuccess,
     InternalExceptionTypeMismatch,
     InternalExceptionIndexOutOfRange,
@@ -27,4 +28,12 @@ pub enum Status {
     InternalExceptionInvalidColCount,
     InternalExceptionPagerMismatch,
     InternalExceptionNoRoot,
+    InternalExceptionCacheDenied,
+    InternalExceptionPageCorrupted,
+    CannotParseDate,
+    CannotParseInteger,
+    CannotParseBoolean,
+    CannotParseIllegalDate,
+    InternalExceptionPagerWriteLock,
+    InternalExceptionCompilerError,
 }

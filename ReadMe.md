@@ -11,6 +11,7 @@ cargo run
 - `exit` saves the Database to disk
 
 # Currently implemented SQL
-- CREATE TABLE (tablename will always be ignored, there is one table)
+- CREATE TABLE (table name will always be ignored, there is only one table)
 - INSERT INTO ...
 - SELECT ... WHERE x <= 2 AND ... AND (only AND)
+- DELETE ... WHERE ...

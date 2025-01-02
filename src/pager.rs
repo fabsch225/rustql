@@ -14,15 +14,15 @@ use std::io::{Read, Seek, SeekFrom, Write};
 use std::sync::{Arc, RwLock};
 
 //in byte
-pub const STRING_SIZE: usize = 256;
-pub const INTEGER_SIZE: usize = 4;
-pub const DATE_SIZE: usize = 4;
-pub const BOOLEAN_SIZE: usize = 1; //why fucking not
+pub const STRING_SIZE: usize = 256; //len: 255
+pub const INTEGER_SIZE: usize = 5;
+pub const DATE_SIZE: usize = 5;
+pub const BOOLEAN_SIZE: usize = 1; //bit 8 is NULL-Flag
 pub const NULL_SIZE: usize = 1;
 pub const TYPE_SIZE: usize = 1;
 pub const POSITION_SIZE: usize = 4; //during development. should be like 16
 pub const ROW_NAME_SIZE: usize = 16;
-
+pub const INTEGER_SIZE_WITHOUT_FLAG: usize = INTEGER_SIZE - 1;
 // Database Structure Overview
 
 // Table Storage
@@ -50,10 +50,16 @@ pub const ROW_NAME_SIZE: usize = 16;
 
 // - so the size of a pages Header (until the actual data) is like this: n * (Number Of Keys) + (n + 1) * POSITION_SIZE
 
-// Flag Definition
-// - Bit 0: Indicates if the page is cached.
+// ## Each Flag is a Byte =>
+// Page-Flag Definition
+// - Bit 0: Indicates if the page is dirty
 // - Bit 1: Indicates if the Btree Node is a Leaf
-// - Bit 2: Indicates if a page (= node) is deleted
+// - Bit 2: Indicates if a page is deleted
+// - Bit 3: Lock
+
+// Key-Flag Definition
+// - Bit 0: Indicates if the Key is marked for deletion
+
 
 #[derive(PartialEq, Clone)]
 pub enum Type {
@@ -118,7 +124,7 @@ pub struct Schema {
     pub offset: Position,
     pub col_count: usize,
     pub whole_row_length: usize,
-    pub key_length: usize,
+    pub key_length: usize, //includes flag
     pub key_type: Type,
     pub row_length: usize,
     pub fields: Vec<Field>,
@@ -132,7 +138,7 @@ pub struct Field {
 
 #[derive(Debug)]
 pub struct PagerCore {
-    pub cache: HashMap<Position, PageContainer>,
+    cache: HashMap<Position, PageContainer>,
     pub schema: Schema,
     pub hash: String,
     pub btree_width: usize,
@@ -166,6 +172,11 @@ impl PagerAccessor {
     pub fn set_schema(&self, new_schema: Schema) {
         self.pager.write().expect("failed to w-lock pager").schema = new_schema;
         self.pager.write().expect("failed to w-lock pager").invalidate_cache();
+    }
+
+    pub fn set_root_to_none(&self) -> Result<(), Status> {
+        self.pager.write().expect("failed to w-lock pager").schema.root = 0;
+        Ok(())
     }
 
     pub fn set_root(&self, node: &BTreeNode) -> Result<(), Status> {
@@ -217,31 +228,36 @@ impl PagerAccessor {
         let mut pager = self
             .pager
             .write()
-            .expect("Failed to acquire write lock on Pager");
+            .map_err(|e|{
+                println!("{:?}", e);
+                Status::InternalExceptionPagerWriteLock
+            })?;
         let page = pager.access_page_read(node.page_position);
 
         if page.is_ok() {
             func(&page?.data, &pager.schema.clone())
         } else {
-            Err(page.err().expect("there must be an err, i checked"))
+            Err(page.unwrap_err())
         }
     }
 
-    pub fn access_page_write<F>(&self, node: &BTreeNode, func: F) -> Status
+    pub fn access_page_write<F>(&self, node: &BTreeNode, func: F) -> Result<(), Status>
     where
-        F: FnOnce(&mut PageContainer, &Schema) -> Status,
+        F: FnOnce(&mut PageContainer, &Schema) -> Result<(), Status>,
     {
         //TODO Optimize reading / writing to the pager by checking cache beforehand!?
         let mut pager = self
             .pager
-            .write()
-            .expect("Failed to acquire write lock on Pager");
+            .write().map_err(|e|{
+                eprintln!("{:?}", e);
+                Status::InternalExceptionPagerWriteLock
+        })?;
         let schema = pager.schema.clone();
         let page: Result<&mut PageContainer, Status> = pager.access_page_write(node.page_position);
         if page.is_ok() {
-            func(&mut page.unwrap(), &schema)
+            func(page?, &schema)
         } else {
-            page.err().expect("there must be an err, i checked")
+            Err(page.unwrap_err())
         }
     }
 }
@@ -255,11 +271,13 @@ impl PagerCore {
             Status::InternalExceptionWriteFailed
         })?;
 
-        //TODO super inefficient
-        let pages: Vec<PageContainer> = self.cache.values().cloned().collect();
+        let positions: Vec<Position> = self.cache.keys().cloned().collect();
 
-        for page in pages {
-            self.write_page_to_disk(&page)?;
+        for position in positions {
+            let page = self.cache[&position].clone();
+            if Serializer::is_dirty(&page.data)? {
+                self.write_page_to_disk(&page)?;
+            }
         }
 
         Ok(())
@@ -296,6 +314,7 @@ impl PagerCore {
         }))
     }
 
+    //used for unit tests which typically do not interact with the file
     #[deprecated]
     pub fn init_from_schema(file_path: &str, schema: Schema, btree_width: usize) -> Result<PagerAccessor, Status> {
         if !Serializer::verify_schema(&schema).is_ok() {
@@ -317,7 +336,7 @@ impl PagerCore {
     }
 
     pub fn get_page_length(&self) -> i32 {
-        ((2 * self.btree_width - 1) * self.schema.whole_row_length + self.btree_width * POSITION_SIZE + 2) as i32
+        ((2 * self.btree_width - 1) + (2 * self.btree_width - 1) * self.schema.whole_row_length + self.btree_width * POSITION_SIZE + 2) as i32
     }
 
     pub fn access_page_read(&mut self, position: Position) -> Result<PageContainer, Status> {
@@ -342,13 +361,15 @@ impl PagerCore {
         }
     }
 
+    //this should be the only function that writes to pages, so we can keep track of the dirty-flag
     pub fn access_page_write(&mut self, position: Position) -> Result<&mut PageContainer, Status> {
         let miss = !self.cache.contains_key(&position);
-        //TODO optimize this! lets hope the compiler does its magic for now
-        if (miss) {
+        //TODO optimize this ?
+        if miss {
             let page = self.read_page_from_disk(position);
-            if (page.is_ok()) {
-                let page = page?;
+            if page.is_ok() {
+                let mut page = page?;
+                Serializer::set_is_dirty(&mut page.data, true)?;
                 self.cache.insert(position, page);
                 Ok(self
                     .cache
@@ -360,8 +381,12 @@ impl PagerCore {
         } else {
             Ok(self
                 .cache
-                .get_mut(&position)
-                .expect("This should not happen, i checked just now"))
+                .get_mut(&position).map(|pc| {
+                    Serializer::set_is_dirty(&mut pc.data, true)?;
+                    return Ok(pc);
+                })
+                .ok_or(Status::InternalExceptionCacheDenied)??
+            )
         }
     }
 
@@ -423,7 +448,7 @@ impl PagerCore {
         }
         Ok(BTreeNode {
             page_position: position,
-            pager_interface: pager_facade.clone()
+            pager_accessor: pager_facade.clone()
         })
     }
 
@@ -437,7 +462,7 @@ impl PagerCore {
         InternalSuccess
     }
 
-    pub fn read_page_from_disk(&mut self, position: Position) -> Result<PageContainer, Status> {
+    fn read_page_from_disk(&mut self, position: Position) -> Result<PageContainer, Status> {
         self.file
             .seek(SeekFrom::Start(position as u64))
             .map_err(|_| Status::InternalExceptionReadFailed)?;
@@ -463,7 +488,7 @@ impl PagerCore {
         })
     }
 
-    pub fn write_page_to_disk(&mut self, page: &PageContainer) -> Result<(), Status> {
+    fn write_page_to_disk(&mut self, page: &PageContainer) -> Result<(), Status> {
         self.file
             .seek(SeekFrom::Start(page.position as u64))
             .map_err(|_| Status::InternalExceptionWriteFailed)?;

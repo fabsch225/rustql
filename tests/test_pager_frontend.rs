@@ -159,7 +159,7 @@ mod tests {
     fn test_is_leaf() {
         let pager_interface = PagerCore::init_from_schema("./default.db.bin", get_schema(), 6).unwrap();
         let node = create_and_insert_mock_btree_node(2, pager_interface.clone());
-        let is_leaf = PagerFrontend::is_leaf(node.page_position, node.pager_interface.clone()).unwrap();
+        let is_leaf = PagerFrontend::is_leaf(node.page_position, node.pager_accessor.clone()).unwrap();
         assert!(is_leaf);
     }
 

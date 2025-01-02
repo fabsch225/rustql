@@ -1,3 +1,4 @@
+use std::cell::RefCell;
 use crate::pager::{Key, PagerAccessor, Position, Row};
 use crate::pager_frontend::PagerFrontend;
 use crate::serializer::Serializer;
@@ -10,25 +11,30 @@ use std::fmt::{Debug, Formatter};
 #[derive(Clone, Debug)]
 pub struct BTreeNode {
     pub page_position: Position,
-    pub pager_interface: PagerAccessor,
+    pub pager_accessor: PagerAccessor,
 }
 
 impl BTreeNode {
     fn is_leaf(&self) -> bool {
-       PagerFrontend::is_leaf(self.page_position, self.pager_interface.clone()).unwrap()
+       PagerFrontend::is_leaf(self.page_position, self.pager_accessor.clone()).unwrap()
     }
+
     fn get_keys_count(&self) -> Result<usize, Status> {
         PagerFrontend::get_keys_count(&self)
     }
+
     fn get_children_count(&self) -> Result<usize, Status> {
         PagerFrontend::get_children_count(&self)
     }
+
     fn get_keys_from(&self, index: usize) -> Result<(Vec<Key>, Vec<Row>), Status> {
         PagerFrontend::get_keys(&self).map(|v|(v.0[index..].to_vec(), v.1[index..].to_vec()))
     }
+
     fn get_key(&self, index: usize) -> Result<(Key, Row), Status> {
         PagerFrontend::get_key(index, &self)
     }
+
     fn set_key(&self, index: usize, key: Key, row: Row) -> Result<(), Status> {
         PagerFrontend::set_key(index, self, key, row)
     }
@@ -55,7 +61,7 @@ impl BTreeNode {
             keys_and_rows.0[index] = new_key;
             PagerFrontend::set_keys(self, keys_and_rows.0, keys_and_rows.1)
         } else {
-            Err(Status::InternalExceptionKeyNotFound)
+            Err(InternalExceptionKeyNotFound)
         }
     }
 
@@ -207,7 +213,7 @@ impl BTreeNode {
 #[derive(Debug)]
 pub struct Btree {
     pub root: Option<BTreeNode>,
-    pub t: usize, // Minimum degree
+    pub t: usize,
     pub pager_accessor: PagerAccessor
 }
 
@@ -225,7 +231,7 @@ impl Btree {
     }
 
     fn compare(&self, a: &Key, b: &Key) -> Result<std::cmp::Ordering, Status> {
-        Serializer::compare_with_type(a, b, self.pager_accessor.read_schema().key_type)
+        Serializer::compare_with_type(a, b, &self.pager_accessor.read_schema().key_type)
     }
 
     pub fn insert(&mut self, k: Key, v: Row) -> Result<(), Status> {
@@ -282,7 +288,7 @@ impl Btree {
     fn split_child(&self, x: &BTreeNode, i: usize, t: usize, is_root: bool) -> Result<(), Status> {
         let mut y = x.get_child(i)?.clone();
         let keys_and_rows = y.get_keys_from(t)?;
-        let mut z = PagerFrontend::create_node(self.pager_accessor.read_schema(), y.pager_interface.clone(), keys_and_rows.0, vec![], keys_and_rows.1)?;
+        let mut z = PagerFrontend::create_node(self.pager_accessor.read_schema(), y.pager_accessor.clone(), keys_and_rows.0, vec![], keys_and_rows.1)?;
 
         let key_and_row = y.get_key(t - 1)?;
         //TODO suboptimal
@@ -426,46 +432,109 @@ impl Btree {
         Ok(())
     }
 
-    pub fn scan<C>(&self, collect: &C) -> Result<(), Status>
-        where C: Fn(&Key, &Row)
+    pub fn tomb_cleanup(&mut self) -> Result<(), Status> {
+        if let Some(ref root) = self.root {
+            self.cleanup_node(root, self.t)?;
+
+            if root.get_keys_count()? == 0 {
+                if !root.is_leaf() {
+                    let new_root = root.get_child(0)?.clone();
+                    self.pager_accessor.set_root(&new_root)?;
+                    self.root = Some(new_root);
+                } else {
+                    self.pager_accessor.set_root_to_none()?;
+                    self.root = None;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn cleanup_node(&self, node: &BTreeNode, t: usize) -> Result<(), Status> {
+        let mut i = 0;
+        while i < node.get_keys_count()? {
+            let key_and_row = node.get_key(i)?;
+
+            if Serializer::is_tomb(&key_and_row.0, &node.pager_accessor.read_schema())? {
+                if node.is_leaf() {
+                    node.remove_key(i)?;
+                } else {
+                    self.cleanup_internal_node(node, i, t)?;
+                }
+            } else {
+                i += 1;
+            }
+        }
+        if !node.is_leaf() {
+            for j in 0..node.get_children_count()? {
+                self.cleanup_node(&node.get_child(j)?, t)?;
+            }
+        }
+
+        Ok(())
+    }
+
+    fn cleanup_internal_node(&self, node: &BTreeNode, i: usize, t: usize) -> Result<(), Status> {
+        let left_child = node.get_child(i)?.clone();
+        let right_child = node.get_child(i + 1)?.clone();
+        if left_child.get_keys_count()? >= t {
+            let pred_key_and_row = self.get_predecessor(&left_child)?;
+            node.set_key(i, pred_key_and_row.0.clone(), pred_key_and_row.1)?;
+            self.delete_from(&left_child, pred_key_and_row.0, t)?;
+        } else if right_child.get_keys_count()? >= t {
+            let succ_key_and_row = self.get_successor(&right_child)?;
+            node.set_key(i, succ_key_and_row.0.clone(), succ_key_and_row.1)?;
+            self.delete_from(&right_child, succ_key_and_row.0, t)?;
+        } else {
+            self.merge(node, i, t)?;
+        }
+        Ok(())
+    }
+
+
+    pub fn scan<Action>(&self, exec: &Action) -> Result<(), Status>
+       where Action: Fn(&mut Key, &mut Row) -> Result<bool, Status> + Copy
     {
         if let Some(ref root) = self.root {
-            self.in_order_traversal(root, collect)
+            self.in_order_traversal(root, exec)
         } else {
             Err(Status::InternalExceptionNoRoot)
         }
     }
 
-    fn in_order_traversal<C>(&self, node: &BTreeNode, collect: &C) -> Result<(), Status>
-        where C: Fn(&Key, &Row)
+    fn in_order_traversal<Action>(&self, node: &BTreeNode, exec: &Action) -> Result<(), Status>
+       where Action: Fn(&mut Key, &mut Row) -> Result<bool, Status> + Copy
     {
         let key_count = node.get_keys_count()?;
         for i in 0..key_count {
             if !node.is_leaf() {
                 let child = node.get_child(i)?;
-                self.in_order_traversal(&child, collect)?;
+                self.in_order_traversal(&child, exec)?;
             }
-            let key_and_row = node.get_key(i)?;
-            collect(&key_and_row.0, &key_and_row.1)
+            let mut key_and_row = node.get_key(i)?;
+            let modified = exec(&mut key_and_row.0, &mut key_and_row.1)?;
+            if modified {
+                node.set_key(i, key_and_row.0, key_and_row.1)?
+            }
         }
         if !node.is_leaf() {
             let child = node.get_child(key_count)?;
-            self.in_order_traversal(&child, collect)?;
+            self.in_order_traversal(&child, exec)?;
         }
         Ok(())
     }
 
-    pub fn find<C>(&self, key: Key, collect: &C) -> Result<(), Status>
-        where C: Fn(&Key, &Row)
+    pub fn find<Action>(&self, key: Key, exec: &Action) -> Result<(), Status>
+       where Action: Fn(&mut Key, &mut Row) -> Result<bool, Status> + Copy
     {
         if let Some(ref root) = self.root {
-            self.find_in_node(root, key, collect)?
+            self.find_in_node(root, key, exec)?
         }
         Ok(())
     }
 
-    fn find_in_node<C>(&self, node: &BTreeNode, key: Key, collect: &C) -> Result<(), Status>
-        where C: Fn(&Key, &Row)
+    fn find_in_node<Action>(&self, node: &BTreeNode, key: Key, exec: &Action) -> Result<(), Status>
+       where Action: Fn(&mut Key, &mut Row) -> Result<bool, Status> + Copy
     {
         let mut i = 0;
         let key_count = node.get_keys_count()?;
@@ -475,8 +544,11 @@ impl Btree {
         }
 
         if i < key_count && self.compare(&key, &node.get_key(i)?.0)? == std::cmp::Ordering::Equal {
-            let key_and_row = node.get_key(i)?;
-            collect(&key_and_row.0, &key_and_row.1);
+            let mut key_and_row = node.get_key(i)?;
+            let modified = exec(&mut key_and_row.0, &mut key_and_row.1)?;
+            if modified {
+                node.set_key(i, key_and_row.0, key_and_row.1)?
+            }
             return Ok(())
         }
 
@@ -484,20 +556,20 @@ impl Btree {
             return Err(InternalExceptionKeyNotFound);
         }
 
-        self.find_in_node(&node.get_child(i)?, key, collect)
+        self.find_in_node(&node.get_child(i)?, key, exec)
     }
 
-    pub fn find_range<C>(&self, a: Key, b: Key, include_a: bool, include_b: bool, collect: &C) -> Result<(), Status>
-        where C: Fn(&Key, &Row)
+    pub fn find_range<Action>(&self, a: Key, b: Key, include_a: bool, include_b: bool, exec: &Action) -> Result<(), Status>
+        where Action: Fn(&mut Key, &mut Row) -> Result<bool, Status> + Copy
     {
         if let Some(ref root) = self.root {
-            self.find_range_in_node(root, a, b, include_a, include_b, collect)?;
+            self.find_range_in_node(root, a, b, include_a, include_b, exec)?;
         }
         Ok(())
     }
 
-    fn find_range_in_node<C>(&self, node: &BTreeNode, a: Key, b: Key, include_a: bool, include_b: bool, collect: &C) -> Result<(), Status>
-        where C: Fn(&Key, &Row)
+    fn find_range_in_node<Action>(&self, node: &BTreeNode, a: Key, b: Key, include_a: bool, include_b: bool, exec: &Action) -> Result<(), Status>
+       where Action: Fn(&mut Key, &mut Row) -> Result<bool, Status> + Copy
     {
         let key_count = node.get_keys_count()?;
         for i in 0..key_count {
@@ -507,19 +579,23 @@ impl Btree {
             }
             if !node.is_leaf() {
                 let child = node.get_child(i)?;
-                self.find_range_in_node(&child, a.clone(), b.clone(), include_a, include_b, collect)?;
+                self.find_range_in_node(&child, a.clone(), b.clone(), include_a, include_b, exec)?;
             }
             let in_lower_bound = if include_a { self.compare(&key_and_row.0, &a)? != std::cmp::Ordering::Less } else { self.compare(&key_and_row.0, &a)? == std::cmp::Ordering::Greater };
             let in_upper_bound = if include_b { self.compare(&key_and_row.0, &b)? != std::cmp::Ordering::Greater } else { self.compare(&key_and_row.0, &b)? == std::cmp::Ordering::Less };
             if in_lower_bound && in_upper_bound {
-                collect(&key_and_row.0, &key_and_row.1)
+                let mut key_and_row = node.get_key(i)?;
+                let modified = exec(&mut key_and_row.0, &mut key_and_row.1)?;
+                if modified {
+                    node.set_key(i, key_and_row.0, key_and_row.1)?
+                }
             } else if self.compare(&key_and_row.0, &b)? == std::cmp::Ordering::Greater {
                 break;
             }
         }
         if !node.is_leaf() {
             let child = node.get_child(key_count)?;
-            self.find_range_in_node(&child, a, b, include_a, include_b, collect)?;
+            self.find_range_in_node(&child, a, b, include_a, include_b, exec)?;
         }
         Ok(())
     }
@@ -554,6 +630,9 @@ impl Display for Btree {
                     write!(f, "{{")?;
                     for (key, row) in keys.iter().zip(rows.iter()) {
                         write!(f, "[")?;
+                        if Serializer::is_tomb(key, &schema).unwrap() {
+                            write!(f, "X")?;
+                        }
                         write!(f, "{}", Serializer::format_key(key, &schema).unwrap())?;
                         write!(f, " :: ")?;
                         write!(f, "{}", Serializer::format_row(row, &schema).unwrap())?;

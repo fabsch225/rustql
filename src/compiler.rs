@@ -74,6 +74,7 @@ pub enum CompiledQuery {
     Delete(CompiledDeleteQuery)
 }
 
+
 impl Compiler {
     /// make ParsedQuery -> CompiledQuery
     pub fn compile_and_plan(schema: &Schema, query: ParsedQuery) -> Result<CompiledQuery, QueryResult> {
@@ -198,12 +199,12 @@ impl Compiler {
         let parsed_value = match field_schema.field_type {
             Type::Integer => {
                 value.parse::<i32>().map_err(|_| QueryResult::user_input_wrong(format!("invalid integer: {}", value)))?;
-                Serializer::parse_int(value).to_vec()
+                Serializer::parse_int(value).map_err(|s|QueryResult::err(s))?.to_vec()
             },
             //TODO other error handling in Serializer
             Type::String => Serializer::parse_string(value).to_vec(),
-            Type::Date => Serializer::parse_date(value).to_vec(),
-            Type::Boolean => vec![Serializer::parse_bool(value)],
+            Type::Date => Vec::from(Serializer::parse_date(value).map_err(|s| QueryResult::err(s))?),
+            Type::Boolean => vec![Serializer::parse_bool(value).map_err(|s| QueryResult::err(s))?],
             _ => return Err(QueryResult::user_input_wrong(format!("invalid type: {:?}", field_schema.field_type))),
         };
         Ok(parsed_value)

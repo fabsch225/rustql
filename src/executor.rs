@@ -1,6 +1,6 @@
 use std::cell::RefCell;
 use crate::btree::Btree;
-use crate::compiler::{CompiledQuery, CompiledSelectQuery, Compiler, SqlConditionOpCode, SqlStatementComparisonOperator};
+use crate::compiler::{CompiledDeleteQuery, CompiledQuery, CompiledSelectQuery, Compiler, SqlConditionOpCode, SqlStatementComparisonOperator};
 use crate::pager::{Field, Key, PagerAccessor, PagerCore, Row, Schema, Type};
 use crate::status::Status;
 use crate::status::Status::ExceptionQueryMisformed;
@@ -13,8 +13,8 @@ use crate::serializer::Serializer;
 
 #[derive(Debug)]
 pub struct QueryResult {
-    success: bool,
-    result: DataFrame,
+    pub success: bool,
+    pub result: DataFrame,
     status: Status
 }
 
@@ -151,53 +151,12 @@ impl Executor {
             }
             CompiledQuery::DropTable(q) => { todo!() }
             CompiledQuery::Select(q) => {
-                let mut btree = Btree::new(self.btree_node_width, self.pager_accessor.clone()).map_err(|s|QueryResult::err(s))?;
+                let btree = Btree::new(self.btree_node_width, self.pager_accessor.clone()).map_err(|s|QueryResult::err(s))?;
                 let schema = self.pager_accessor.read_schema();
                 let result = RefCell::new(DataFrame::new());
                 Self::set_header(&mut result.borrow_mut(), &q);
-                match q.operation {
-                    SqlConditionOpCode::SelectFTS => { btree.scan(&|key, row|Executor::exec_select(&key, &row, &mut result.borrow_mut(), &q, &schema)).map_err(|s|QueryResult::err(s))? }
-                    SqlConditionOpCode::SelectFromIndex => { todo!() }
-                    SqlConditionOpCode::SelectAtIndex => { todo!() }
-                    SqlConditionOpCode::SelectFromKey => {
-                        let range_start;
-                        let range_end;
-                        let include_start;
-                        let include_end;
-                        let _ = match q.conditions[0].0 {
-                            SqlStatementComparisonOperator::None => { return Err(QueryResult::user_input_wrong("compiler error".to_string())); }
-                            Lesser => {
-                                range_start = Serializer::negative_infinity(&schema.fields[0].field_type);
-                                range_end = q.conditions[0].1.clone();
-                                include_start = true;
-                                include_end = false;
-                            }
-                            Greater => {
-                                range_start = q.conditions[0].1.clone();
-                                range_end = Serializer::infinity(&schema.fields[0].field_type);
-                                include_start = false;
-                                include_end = true;
-                            }
-                            Equal => { return Err(QueryResult::user_input_wrong("compiler error".to_string())); }
-                            LesserOrEqual => {
-                                range_start = Serializer::negative_infinity(&schema.fields[0].field_type);
-                                range_end = q.conditions[0].1.clone();
-                                include_start = true;
-                                include_end = true;
-                            }
-                            GreaterOrEqual => {
-                                range_start = q.conditions[0].1.clone();
-                                range_end = Serializer::infinity(&schema.fields[0].field_type);
-                                include_start = true;
-                                include_end = true;
-                            }
-                        };
-                        btree.find_range(range_start, range_end, include_start, include_end, &|key, row|Executor::exec_select(&key, &row, &mut result.borrow_mut(), &q, &schema)).map_err(|s|QueryResult::err(s))?;
-                    }
-                    SqlConditionOpCode::SelectAtKey => {
-                        btree.find(q.conditions[0].1.clone(), &|key, row|Executor::exec_select(&key, &row, &mut result.borrow_mut(), &q, &schema)).map_err(|s|QueryResult::err(s))?;
-                    }
-                }
+                let action = |key: &mut Key, row: &mut Row|Executor::exec_select(key, row, &mut result.borrow_mut(), &q, &schema);
+                Self::exec_action_with_condition(&btree, &schema, &q.operation, &q.conditions, &action).map_err(|s|QueryResult::err(s))?;
                 Ok(QueryResult::return_data(result.into_inner()))
             }
             CompiledQuery::Insert(q) => {
@@ -206,18 +165,85 @@ impl Executor {
                 Ok(QueryResult::went_fine())
             }
             CompiledQuery::Delete(q) => {
-                todo!()
+                let mut btree = Btree::new(self.btree_node_width, self.pager_accessor.clone()).map_err(|s|QueryResult::err(s))?;
+                let schema = self.pager_accessor.read_schema();
+                let action = |key: &mut Key, row: &mut Row|Executor::exec_delete(key, row, &q, &schema);
+                Self::exec_action_with_condition(&btree, &schema, &q.operation, &q.conditions, &action).map_err(|s|QueryResult::err(s))?;
+                btree.tomb_cleanup();
+                Ok(QueryResult::went_fine())
             }
         }
     }
 
-    pub fn set_header(result: &mut DataFrame, query: &CompiledSelectQuery) {
+    fn set_header(result: &mut DataFrame, query: &CompiledSelectQuery) {
         result.header = query.result.clone();
     }
 
-    pub fn exec_select(key: &Key, row: &Row, result: &mut DataFrame, query: &CompiledSelectQuery, schema: &Schema) {
-        if !Executor::exec_condition_on_row(row, query, schema) {
-            return
+    fn exec_action_with_condition<Action>(btree: &Btree, schema: &Schema, op_code: &SqlConditionOpCode, conditions:  &Vec<(SqlStatementComparisonOperator, Vec<u8>)>, action: &Action) -> Result<(), Status>
+        where Action: Fn(&mut Key, &mut Row) -> Result<bool, Status>  + Copy
+    {
+        match op_code {
+            SqlConditionOpCode::SelectFTS => { btree.scan(action) }
+            SqlConditionOpCode::SelectFromIndex => { todo!() }
+            SqlConditionOpCode::SelectAtIndex => { todo!() }
+            SqlConditionOpCode::SelectFromKey => {
+                let range_start;
+                let range_end;
+                let include_start;
+                let include_end;
+                let _ = match conditions[0].0 {
+                    SqlStatementComparisonOperator::None => { return Err(Status::InternalExceptionCompilerError); }
+                    Lesser => {
+                        range_start = Serializer::negative_infinity(&schema.fields[0].field_type);
+                        range_end = conditions[0].1.clone();
+                        include_start = true;
+                        include_end = false;
+                    }
+                    Greater => {
+                        range_start = conditions[0].1.clone();
+                        range_end = Serializer::infinity(&schema.fields[0].field_type);
+                        include_start = false;
+                        include_end = true;
+                    }
+                    Equal => { return Err(Status::InternalExceptionCompilerError); }
+                    LesserOrEqual => {
+                        range_start = Serializer::negative_infinity(&schema.fields[0].field_type);
+                        range_end = conditions[0].1.clone();
+                        include_start = true;
+                        include_end = true;
+                    }
+                    GreaterOrEqual => {
+                        range_start = conditions[0].1.clone();
+                        range_end = Serializer::infinity(&schema.fields[0].field_type);
+                        include_start = true;
+                        include_end = true;
+                    }
+                };
+                btree.find_range(range_start, range_end, include_start, include_end, action)
+            }
+            SqlConditionOpCode::SelectAtKey => {
+                btree.find(conditions[0].1.clone(), &action)
+            }
+        }
+    }
+
+    fn exec_delete(key: &mut Key, row: &mut Row, query: &CompiledDeleteQuery, schema: &Schema) -> Result<bool, Status> {
+        if Serializer::is_tomb(key, &schema)? {
+            return Ok(false);
+        }
+        if !Executor::exec_condition_on_row(row,  &query.conditions, schema) {
+            return Ok(false);
+        }
+        Serializer::set_is_tomb(key, true, &schema)?;
+        Ok(true)
+    }
+
+    fn exec_select(key: &mut Key, row: &mut Row, result: &mut DataFrame, query: &CompiledSelectQuery, schema: &Schema) -> Result<bool, Status> {
+        if Serializer::is_tomb(key, &schema)? {
+            return Ok(false);
+        }
+        if !Executor::exec_condition_on_row(row, &query.conditions, schema) {
+            return Ok(false);
         }
 
         let mut data_row = Vec::new();
@@ -239,15 +265,16 @@ impl Executor {
         }
 
         result.data.push(data_row);
+        Ok(false)
     }
 
-    pub fn exec_condition_on_row(row: &Row, query: &CompiledSelectQuery, schema: &Schema) -> bool {
+    fn exec_condition_on_row(row: &Row, conditions: &Vec<(SqlStatementComparisonOperator, Vec<u8>)>, schema: &Schema) -> bool {
         let mut position = 0;
         let mut skip = true;
         for i in 0..schema.fields.len() {
             if skip { skip = false; continue } //in schema.fields, the key is listed
             let schema_field = &schema.fields[i];
-            let field_condition = query.conditions[i].0.clone();
+            let field_condition = conditions[i].0.clone();
             let field_type = &schema_field.field_type;
             let field_len = Serializer::get_size_of_type(field_type).unwrap();
             if field_condition == SqlStatementComparisonOperator::None {
@@ -256,7 +283,7 @@ impl Executor {
             }
             let row_field = row[position..(position + field_len)].to_vec();
             position += field_len;
-            let cmp_result = Serializer::compare_with_type(&row_field, &query.conditions[i].1, field_type.clone()).unwrap();
+            let cmp_result = Serializer::compare_with_type(&row_field, &conditions[i].1, &field_type).unwrap();
             if !match cmp_result {
                 std::cmp::Ordering::Equal => {
                     field_condition == LesserOrEqual || field_condition == GreaterOrEqual || field_condition == Equal
