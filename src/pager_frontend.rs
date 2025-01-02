@@ -26,7 +26,7 @@ impl PagerFrontend {
     pub fn is_leaf(position: Position, interface: PagerAccessor) -> Result<bool, Status> {
         let page = interface
             .access_pager_write(|p| p.access_page_read(position))?;
-        Serializer::is_leaf(&page.data, &interface.schema)
+        Serializer::is_leaf(&page.data)
     }
 
     pub fn get_keys_count(node: &BTreeNode) -> Result<usize, Status> {

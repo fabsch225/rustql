@@ -5,6 +5,11 @@ use crate::pager::{Field, Flag, Key, PageContainer, PageData, PagerAccessor, Pos
 use crate::status::Status;
 use crate::status::Status::{InternalExceptionIndexOutOfRange, InternalExceptionInvalidColCount, InternalExceptionInvalidRowLength, InternalExceptionInvalidSchema, InternalExceptionKeyNotFound, InternalExceptionTypeMismatch, InternalSuccess, Success};
 
+/// # Responsibilities
+/// - Execute basic operations on the pages
+/// - Convert RustQl Datatypes to Strings / Rust-Datatypes
+/// - Manage the is_leaf flag
+
 pub struct Serializer {}
 
 impl Serializer {
@@ -117,9 +122,17 @@ impl Serializer {
         result
     }
 
-    pub fn is_leaf(data: &PageData, schema: &Schema) -> Result<bool, Status> {
-        //Ok(Self::byte_to_bool_at_position(data[1], 1))
-        Ok(Self::read_child(0, data, schema).unwrap() == 0)
+    pub fn is_deleted(data: &PageData) -> Result<bool, Status> {
+        Ok(Self::byte_to_bool_at_position(data[1], 2))
+    }
+
+    pub fn is_leaf(data: &PageData) -> Result<bool, Status> {
+        Ok(Self::byte_to_bool_at_position(data[1], 1))
+    }
+
+    pub fn set_is_leaf(data: &mut PageData, new_value: bool) -> Result<(), Status> {
+        Self::write_byte_at_position(&mut data[1], 2, new_value);
+        Ok(())
     }
 
     //the expansion methods also expand the rows and children of course.
@@ -141,6 +154,7 @@ impl Serializer {
             vec![0; new_children_offset],
         );
         page[0] = (original_size + expand_size) as u8;
+
         Ok(keys_offset)
     }
 
@@ -215,6 +229,9 @@ impl Serializer {
         let end_pos = start_pos + POSITION_SIZE;
         let child_bytes = Serializer::position_to_bytes(child);
         page[start_pos..end_pos].copy_from_slice(&child_bytes);
+        if child != 0 {
+            Self::set_is_leaf(page, false);
+        }
         InternalSuccess
     }
 
@@ -255,12 +272,12 @@ impl Serializer {
 
     ///will adjust number of keys, delete children if necessary
     /// - the original data will be intact, but empty rows will be padded.
-    /// - TODO: implement a second version with data overrides
     pub fn write_keys_vec(keys: &Vec<Key>, page: &mut PageData, schema: &Schema) -> Status {
         let num_keys = page[0] as usize;
         if num_keys != keys.len() {
             return Self::write_keys_vec_resize(keys, page, schema);
         }
+        Self::set_is_leaf(page, false);
         let key_length = schema.key_length;
         let list_start_pos = 2;
         for i in 0..num_keys {
@@ -321,6 +338,9 @@ impl Serializer {
         // Update the number of keys
         page[0] = new_num_keys as u8;
 
+        // Update is_leaf
+
+
         InternalSuccess
     }
 
@@ -333,11 +353,16 @@ impl Serializer {
         let num_keys = page[0] as usize;
         let key_length = schema.key_length;
         let list_start_pos = 2 + (num_keys * key_length);
+        let mut check_for_leaf = true;
         for (i, child) in children.iter().enumerate() {
             if i >= num_keys + 1 {panic!("cannot extend children without extending keys first")}
             let start_pos = list_start_pos + i * POSITION_SIZE;
             let end_pos = start_pos + POSITION_SIZE;
             page.splice(start_pos..end_pos, Serializer::position_to_bytes(*child).to_vec());
+            if *child != 0 && check_for_leaf {
+                check_for_leaf = false;
+                Self::set_is_leaf(page, false);
+            }
         }
         InternalSuccess
     }
@@ -466,6 +491,8 @@ impl Serializer {
         page.data[offset..offset + schema.row_length].to_vec()
     }
 
+    //TODO i dont know if this is up-to-date
+    #[deprecated]
     pub fn verify_schema(schema: &Schema) -> Result<(), Status> {
         let computed_data_length: usize = schema.fields.iter()
             .map(|field| Self::get_size_of_type(&field.field_type).unwrap_or(0))
@@ -763,6 +790,14 @@ impl Serializer {
 
     pub fn byte_to_bool_at_position(byte: u8, pos: u8) -> bool {
         (byte & (1 << pos)) != 0
+    }
+
+    pub fn write_byte_at_position(byte: &mut u8, pos: u8, value: bool) {
+        if value {
+            *byte |= 1 << pos;
+        } else {
+            *byte &= !(1 << pos);
+        }
     }
 
     pub fn bytes_to_bits(bytes: &[u8]) -> Vec<bool> {

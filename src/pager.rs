@@ -51,7 +51,7 @@ pub const ROW_NAME_SIZE: usize = 16;
 // Flag Definition
 // - Bit 0: Indicates if the page is cached.
 // - Bit 1: Indicates if the Btree Node is a Leaf
-// - Remaining Bits: Specific pattern (111111)
+// - Bit 2: Indicates if a page (= node) is deleted
 
 #[derive(PartialEq, Clone)]
 pub enum Type {
