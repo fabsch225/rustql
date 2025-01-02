@@ -29,11 +29,18 @@ pub struct ParsedCreateTableQuery {
 }
 
 #[derive(Debug)]
+pub struct ParsedDeleteQuery {
+    pub table_name: String,
+    pub conditions: Vec<(String, String, String)>,
+}
+
+#[derive(Debug)]
 pub enum ParsedQuery {
     CreateTable(ParsedCreateTableQuery),
     DropTable(ParsedDropQuery),
     Select(ParsedSelectQuery),
     Insert(ParsedInsertQuery),
+    Delete(ParsedDeleteQuery)
 }
 
 pub struct Lexer {
@@ -124,6 +131,7 @@ impl Parser {
             "DROP" => self.parse_drop_table(),
             "SELECT" => self.parse_select(),
             "INSERT" => self.parse_insert(),
+            "DELETE" => self.parse_delete(),
             _ => Err(format!("Unknown statement type: {}", statement_type)),
         }
     }
@@ -206,29 +214,7 @@ impl Parser {
             .ok_or_else(|| "Expected table name".to_string())?;
 
         let mut conditions = Vec::new();
-        if let Some(token) = self.lexer.next_token() {
-            if token.to_uppercase() == "WHERE" {
-                loop {
-                    let field_name = self
-                        .lexer
-                        .next_token()
-                        .ok_or_else(|| "Expected field name in condition".to_string())?;
-                    let operator = self.lexer.next_token().ok_or_else(|| "Expected comparison operator".to_string())?;
-
-                    let value = self.lexer.next_token().ok_or_else(|| "Expected value in condition".to_string())?;
-
-                    conditions.push((field_name, operator, value));
-
-                    match self.lexer.next_token().as_deref() {
-                        Some("AND") => continue,
-                        None => break,
-                        _ => return Err("Expected 'AND' or end of conditions".to_string()),
-                    }
-                }
-            } else {
-                return Err("Expected 'WHERE' or end of query".to_string());
-            }
-        }
+        self.parse_where_conditions(&mut conditions)?;
 
         Ok(ParsedQuery::Select(ParsedSelectQuery {
             table_name,
@@ -300,6 +286,47 @@ impl Parser {
             fields,
             values,
         }))
+    }
+
+    pub fn parse_delete(&mut self) -> Result<ParsedQuery, String> {
+        self.expect_token("FROM")?;
+        let table_name = self
+            .lexer
+            .next_token()
+            .ok_or_else(|| "Expected table name".to_string())?;
+
+        let mut conditions = Vec::new();
+        self.parse_where_conditions(&mut conditions)?;
+
+        Ok(ParsedQuery::Delete(ParsedDeleteQuery {
+            table_name,
+            conditions,
+        }))
+    }
+
+    fn parse_where_conditions(&mut self, conditions: &mut Vec<(String, String, String)>) -> Result<(), String> {
+        if let Some(token) = self.lexer.next_token() {
+            if token.to_uppercase() == "WHERE" {
+                loop {
+                    let field_name = self
+                        .lexer
+                        .next_token()
+                        .ok_or_else(|| "Expected field name in condition".to_string())?;
+                    let operator = self.lexer.next_token().ok_or_else(|| "Expected comparison operator".to_string())?;
+                    let value = self.lexer.next_token().ok_or_else(|| "Expected value in condition".to_string())?;
+                    conditions.push((field_name, operator, value));
+
+                    match self.lexer.next_token().as_deref() {
+                        Some("AND") => continue,
+                        None => break,
+                        _ => return Err("Expected 'AND' or end of conditions".to_string()),
+                    }
+                }
+            } else {
+                return Err("Expected 'WHERE' or end of query".to_string());
+            }
+        }
+        Ok(())
     }
 
     fn expect_token(&mut self, expected: &str) -> Result<(), String> {

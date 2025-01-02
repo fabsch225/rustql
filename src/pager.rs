@@ -135,6 +135,7 @@ pub struct PagerCore {
     pub cache: HashMap<Position, PageContainer>,
     pub schema: Schema,
     pub hash: String,
+    pub btree_width: usize,
     file: File
 }
 
@@ -142,7 +143,6 @@ pub struct PagerCore {
 pub struct PagerAccessor {
     pager: Arc<RwLock<PagerCore>>,
     hash: String,
-    pub schema: Arc<Schema>,
 }
 
 impl Debug for PagerAccessor {
@@ -159,7 +159,6 @@ impl PagerAccessor {
         Self {
             pager: Arc::new(RwLock::new(pager)),
             hash: h,
-            schema: Arc::new(s),
         }
     }
 
@@ -169,8 +168,9 @@ impl PagerAccessor {
         self.pager.write().expect("failed to w-lock pager").invalidate_cache();
     }
 
-    pub fn set_root(&self, node: &BTreeNode) {
+    pub fn set_root(&self, node: &BTreeNode) -> Result<(), Status> {
         self.pager.write().expect("failed to w-lock pager").schema.root = node.page_position;
+        Ok(())
     }
 
     pub fn has_root(&self) -> bool {
@@ -265,7 +265,7 @@ impl PagerCore {
         Ok(())
     }
 
-    pub fn init_from_file(file_path: &str) -> Result<PagerAccessor, Status> {
+    pub fn init_from_file(file_path: &str, btree_width: usize) -> Result<PagerAccessor, Status> {
         let mut file = OpenOptions::new().write(true).read(true).open(file_path).map_err(|e| {
             eprintln!("Failed to open file: {:?}", e);
             Status::InternalExceptionFileNotFound
@@ -283,15 +283,13 @@ impl PagerCore {
             .map_err(|_| Status::InternalExceptionReadFailed)?;
         let schema = Serializer::bytes_to_schema(&*schema_data);
         if !schema.is_ok() {
-            return Err(Status::InternalExceptionInvalidSchema);
+            return Err(InternalExceptionInvalidSchema);
         }
         let schema = schema?;
 
-        println!("Found Schema");
-        println!("{:?}", schema);
-
         Ok(PagerAccessor::new(PagerCore {
             cache: HashMap::new(),
+            btree_width,
             schema,
             file,
             hash: generate_random_hash(16)
@@ -299,12 +297,13 @@ impl PagerCore {
     }
 
     #[deprecated]
-    pub fn init_from_schema(file_path: &str, schema: Schema) -> Result<PagerAccessor, Status> {
+    pub fn init_from_schema(file_path: &str, schema: Schema, btree_width: usize) -> Result<PagerAccessor, Status> {
         if !Serializer::verify_schema(&schema).is_ok() {
             return Err(InternalExceptionInvalidSchema);
         }
         Ok(PagerAccessor::new(PagerCore {
             cache: HashMap::new(),
+            btree_width,
             schema,
             //TODO this is a workaround for development
             file: File::open(file_path).unwrap(),
@@ -315,6 +314,10 @@ impl PagerCore {
     pub fn invalidate_cache(&mut self) -> Status {
         self.cache.clear();
         InternalSuccess
+    }
+
+    pub fn get_page_length(&self) -> i32 {
+        ((2 * self.btree_width - 1) * self.schema.whole_row_length + self.btree_width * POSITION_SIZE + 2) as i32
     }
 
     pub fn access_page_read(&mut self, position: Position) -> Result<PageContainer, Status> {
@@ -371,7 +374,7 @@ impl PagerCore {
         pager_facade: PagerAccessor
     ) -> Result<BTreeNode, Status> {
         let position = self.schema.next_position;
-        self.schema.next_position += self.schema.whole_row_length as i32;
+        self.schema.next_position += self.get_page_length();
         self.create_page_at_position(position, keys, children, data, schema, pager_facade)
     }
 
@@ -446,7 +449,10 @@ impl PagerCore {
         let mut main_buffer = vec![0u8; key_count * (self.schema.whole_row_length + POSITION_SIZE) + POSITION_SIZE];
         self.file
             .read_exact(&mut main_buffer)
-            .map_err(|_| Status::InternalExceptionReadFailed)?;
+            .map_err(|e| {
+                eprintln!("Cannot read File to this len: {}", e);
+                Status::InternalExceptionReadFailed
+            })?;
         let size_on_disk = meta_data_buffer.len() + main_buffer.len();
         let mut data = meta_data_buffer;
         data.append(&mut main_buffer);
@@ -461,6 +467,10 @@ impl PagerCore {
         self.file
             .seek(SeekFrom::Start(page.position as u64))
             .map_err(|_| Status::InternalExceptionWriteFailed)?;
+        if page.data.len() > self.get_page_length() as usize {
+            println!("{:?}", page.data);
+        }
+        assert!(page.data.len() <= self.get_page_length() as usize);
         self.file
             .write_all(&page.data)
             .map_err(|_| Status::InternalExceptionWriteFailed)?;

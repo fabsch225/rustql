@@ -1,6 +1,6 @@
 use std::str::FromStr;
 use crate::executor::QueryResult;
-use crate::pager::{Field, Key, Position, Row, Schema, Type};
+use crate::pager::{Field, Key, Position, Row, Schema, Type, ROW_NAME_SIZE, TYPE_SIZE};
 use crate::parser::ParsedQuery;
 use crate::serializer::Serializer;
 use crate::status::Status;
@@ -15,7 +15,7 @@ pub struct Compiler {}
 
 #[repr(u8)]
 #[derive(Debug, PartialEq)]
-pub enum SelectStatementOpCode {
+pub enum SqlConditionOpCode {
     SelectFTS = 60u8,       //full table scan will be performed "Type 1"
     SelectFromIndex = 61u8, //we have not implemented indices :)
     SelectAtIndex = 62u8,   //we have not implemented indices :)
@@ -43,8 +43,15 @@ pub struct CompiledInsertQuery {
 #[derive(Debug)]
 pub struct CompiledSelectQuery {
     pub table_id: u8,
-    pub operation: SelectStatementOpCode,
+    pub operation: SqlConditionOpCode,
     pub result: Vec<Field>,
+    pub conditions: Vec<(SqlStatementComparisonOperator, Vec<u8>)>
+}
+
+#[derive(Debug)]
+pub struct CompiledDeleteQuery {
+    pub table_id: u8,
+    pub operation: SqlConditionOpCode,
     pub conditions: Vec<(SqlStatementComparisonOperator, Vec<u8>)>
 }
 
@@ -64,6 +71,7 @@ pub enum CompiledQuery {
     DropTable(CompiledDropTableQuery),
     Select(CompiledSelectQuery),
     Insert(CompiledInsertQuery),
+    Delete(CompiledDeleteQuery)
 }
 
 impl Compiler {
@@ -75,14 +83,16 @@ impl Compiler {
                     return Err(QueryResult::user_input_wrong(format!("the fields and values must be the same amount")));
                 }
                 //we dont have nullable values...
+                //TODO add nullable Values!
+                //TODO allow custom ordering of fields: INSERT INTO ... (Name, Id) VALUES (a, 1) <=> (Id, Name) VALUES  (1, a)
                 if insert_query.fields.len() != schema.fields.len() {
-                    return Err(QueryResult::user_input_wrong(format!("all fields must be set, there is are nullable values")));
+                    return Err(QueryResult::user_input_wrong("all fields must be set, there is are nullable values".to_string()));
                 }
 
                 let mut data = Vec::new();
                 for (field, value) in insert_query.fields.iter().zip(insert_query.values.iter()) {
                     let field_schema = schema.fields.iter().find(|f| &f.name == field)
-                        .ok_or(QueryResult::user_input_wrong(format!("invalid field")))?;
+                        .ok_or(QueryResult::user_input_wrong(format!("invalid field: {}", field)))?;
 
                     let pre_compiled_value = Self::compile_value(value, field_schema)?;
                     data.push(pre_compiled_value);
@@ -97,49 +107,24 @@ impl Compiler {
                 }))
             },
             ParsedQuery::Select(select_query) => {
-                let mut result_fields = Vec::new();
-                let mut op = SelectStatementOpCode::SelectFTS;
-                let mut conditions = Vec::new();
+                let mut result = Vec::new();
 
                 if select_query.result[0] == "*" {
-                    result_fields.append(&mut schema.fields.clone());
+                    result.append(&mut schema.fields.clone());
                 } else {
                     for field in select_query.result.iter() {
                         let field_schema = schema.fields.iter().find(|f| &f.name == field)
-                            .ok_or(QueryResult::user_input_wrong(format!("at least one invalid field")))?;
-                        result_fields.push(field_schema.clone());
+                            .ok_or(QueryResult::user_input_wrong(format!("at least one invalid field: {}", field)))?;
+                        result.push(field_schema.clone());
                     }
                 }
 
-                let mut at_id = true;
-                for field in schema.fields.iter() {
-                    let cond = select_query.conditions.iter().find(|f| &f.0 == &field.name);
-                    if !cond.is_some() {
-                        conditions.push((SqlStatementComparisonOperator::None, vec![]));
-                        at_id = false;
-                        continue;
-                    }
-                    let cond = cond.unwrap();
-                    let comparison_operator = Compiler::compile_comparison_operator(&cond.1)?;
-
-                    if at_id {
-                        at_id = false;
-                        if comparison_operator == SqlStatementComparisonOperator::Equal {
-                            op = SelectStatementOpCode::SelectAtKey;
-                        } else {
-                            op = SelectStatementOpCode::SelectFromKey;
-                        }
-                    }
-
-                    let pre_compiled_value = Self::compile_value(&cond.2, field)?;
-
-                    conditions.push((comparison_operator, pre_compiled_value));
-                }
-
+                let mut conditions = Vec::new();
+                let operation = Self::compile_conditions(select_query.conditions, &mut conditions, schema)?;
                 Ok(CompiledQuery::Select(CompiledSelectQuery {
                     table_id: 0,
-                    operation: op,
-                    result: result_fields,
+                    operation,
+                    result,
                     conditions,
                 }))
             },
@@ -152,7 +137,7 @@ impl Compiler {
                 let col_count = fields.len();
                 let schema = Schema {
                     root: 0,
-                    next_position: (14 + fields.len() * (128 + 4)) as Position,
+                    next_position: (14 + fields.len() * (ROW_NAME_SIZE + TYPE_SIZE)) as Position,
                     col_count,
                     whole_row_length: fields.iter().map(|f| Serializer::get_size_of_type(&f.field_type).unwrap()).sum(),
                     key_length: Serializer::get_size_of_type(&fields[0].field_type).unwrap(),
@@ -161,13 +146,52 @@ impl Compiler {
                     fields,
                     offset: 0,
                 };
-                println!("{:?}", schema);
                 Ok(CompiledQuery::CreateTable(CompiledCreateTableQuery { schema }))
             },
             ParsedQuery::DropTable(_) => {
                 Ok(CompiledQuery::DropTable(CompiledDropTableQuery { table_id: 0 }))
             }
+            ParsedQuery::Delete(delete_query) => {
+                let mut conditions = Vec::new();
+                let operation = Self::compile_conditions(delete_query.conditions, &mut conditions, schema)?;
+
+                Ok(CompiledQuery::Delete(CompiledDeleteQuery {
+                    table_id: 0,
+                    operation,
+                    conditions
+                }))
+            }
         }
+    }
+
+    fn compile_conditions(source: Vec<(String, String, String)>, dest: &mut Vec<(SqlStatementComparisonOperator, Vec<u8>)>, schema: &Schema) -> Result<SqlConditionOpCode, QueryResult> {
+        let mut op = SqlConditionOpCode::SelectFTS;
+        let mut at_id = true;
+
+        for field in schema.fields.iter() {
+            let cond = source.iter().find(|f| &f.0 == &field.name);
+            if !cond.is_some() {
+                dest.push((SqlStatementComparisonOperator::None, vec![]));
+                at_id = false;
+                continue;
+            }
+            let cond = cond.unwrap();
+            let comparison_operator = Compiler::compile_comparison_operator(&cond.1)?;
+
+            if at_id {
+                at_id = false;
+                if comparison_operator == SqlStatementComparisonOperator::Equal {
+                    op = SqlConditionOpCode::SelectAtKey;
+                } else {
+                    op = SqlConditionOpCode::SelectFromKey;
+                }
+            }
+
+            let pre_compiled_value = Self::compile_value(&cond.2, field)?;
+
+            dest.push((comparison_operator, pre_compiled_value));
+        }
+        Ok(op)
     }
 
     fn compile_value(value: &String, field_schema: &Field) -> Result<Vec<u8>, QueryResult> {

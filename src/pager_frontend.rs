@@ -165,17 +165,14 @@ impl PagerFrontend {
         let mut page = parent
             .pager_interface
             .access_pager_write(|p| p.access_page_read(parent_position))?;
-
         let result = Serializer::write_key(index, &key, &mut page.data, &parent.pager_interface.read_schema());
         if result != InternalSuccess {
             return Err(result);
         }
-
         let result = Serializer::write_data_by_index(&mut page.data, index, data, &parent.pager_interface.read_schema());
         if result.is_err() {
             return Err(result.unwrap_err());
         }
-
         let result = parent.pager_interface.access_page_write(parent, |d, s| { d.data = page.data; InternalSuccess });
         if result != InternalSuccess {
             Err(result)

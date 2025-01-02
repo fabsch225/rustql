@@ -1,6 +1,5 @@
 //also look at pager.rs for comments
 
-use crate::btree::BTreeNode;
 use crate::pager::{Field, Flag, Key, PageContainer, PageData, PagerAccessor, Position, Row, Schema, Type, BOOLEAN_SIZE, DATE_SIZE, INTEGER_SIZE, NULL_SIZE, POSITION_SIZE, ROW_NAME_SIZE, STRING_SIZE, TYPE_SIZE};
 use crate::status::Status;
 use crate::status::Status::{InternalExceptionIndexOutOfRange, InternalExceptionInvalidColCount, InternalExceptionInvalidRowLength, InternalExceptionInvalidSchema, InternalExceptionKeyNotFound, InternalExceptionTypeMismatch, InternalSuccess, Success};
@@ -36,7 +35,6 @@ impl Serializer {
         let root_position = Self::bytes_to_position(&[bytes[2], bytes[3], bytes[4], bytes[5]]);
         let next_position = Self::bytes_to_position(&[bytes[6], bytes[7], bytes[8], bytes[9]]);
         let offset_position = Self::bytes_to_position(&[bytes[10], bytes[11], bytes[12], bytes[13]]);
-        println!("{:?}", bytes);
         let col_count = bytes[0] as usize * 256usize + bytes[1] as usize;
         let mut current_field = 0;
         while current_field < col_count {
@@ -345,11 +343,7 @@ impl Serializer {
             page.drain(new_data_end..orig_data_end);
         }
 
-        // Update the number of keys
         page[0] = new_num_keys as u8;
-
-        // Update is_leaf
-
 
         InternalSuccess
     }
@@ -443,7 +437,7 @@ impl Serializer {
             return Err(InternalExceptionInvalidRowLength);
         }
 
-        if start >= page.len() || end > page.len() {
+        if end > page.len() {
             return Err(InternalExceptionIndexOutOfRange);
         }
 
@@ -484,12 +478,11 @@ impl Serializer {
         let children_start = keys_start + num_keys * key_length;
         let data_start = children_start + (num_keys + 1) * POSITION_SIZE;
         let data_length = schema.row_length;
-
         for (index, row) in rows.iter().enumerate() {
             if row.len() != data_length { return InternalExceptionInvalidRowLength }
             let start = data_start + index * data_length;
             let end = start + data_length;
-            if start >= page.len() || end > page.len() { return InternalExceptionIndexOutOfRange }
+            if end > page.len() { return InternalExceptionIndexOutOfRange }
             page[start..end].copy_from_slice(row);
         }
         InternalSuccess
@@ -654,7 +647,9 @@ impl Serializer {
             result += &*Serializer::format_field(&row[index..(index + len)].to_vec(), &field_type)?;
             result += "; "
         }
-        result.truncate(result.len() - 2);
+        if result.len() > 2 {
+            result.truncate(result.len() - 2);
+        }
         Ok(result)
     }
 
@@ -716,7 +711,7 @@ impl Serializer {
     }
 
     pub fn parse_bool(s: &str) -> u8 {
-        if s == "true" {
+        if s.to_ascii_lowercase() == "true" {
             1
         } else {
             0

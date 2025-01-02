@@ -1,12 +1,12 @@
 use std::cell::RefCell;
 use crate::btree::Btree;
-use crate::compiler::{CompiledQuery, CompiledSelectQuery, Compiler, SelectStatementOpCode, SqlStatementComparisonOperator};
+use crate::compiler::{CompiledQuery, CompiledSelectQuery, Compiler, SqlConditionOpCode, SqlStatementComparisonOperator};
 use crate::pager::{Field, Key, PagerAccessor, PagerCore, Row, Schema, Type};
 use crate::status::Status;
 use crate::status::Status::ExceptionQueryMisformed;
 use std::collections::HashMap;
 use std::fmt;
-use std::fmt::{Display, Formatter};
+use std::fmt::{format, Display, Formatter};
 use crate::compiler::SqlStatementComparisonOperator::{Equal, Greater, GreaterOrEqual, LesserOrEqual, Lesser};
 use crate::parser::Parser;
 use crate::serializer::Serializer;
@@ -30,6 +30,14 @@ impl QueryResult {
             success: false,
             result: DataFrame::msg(msg.as_str()),
             status: ExceptionQueryMisformed
+        }
+    }
+
+    pub fn err(s: Status) -> Self {
+        QueryResult {
+            success: false,
+            result: DataFrame::msg(format!("{:?}", s).as_str()),
+            status: s,
         }
     }
 
@@ -108,12 +116,17 @@ pub struct Executor {
 
 impl Executor {
     pub fn init(file_path: &str, t: usize) -> Self {
-        let pager_accessor = PagerCore::init_from_file(file_path).expect("Unable to open database");
+        let pager_accessor = PagerCore::init_from_file(file_path, t).expect("Unable to open database");
         Executor {
             pager_accessor: pager_accessor.clone(),
             query_cache: HashMap::new(),
             btree_node_width: t,
         }
+    }
+
+    pub fn debug(&self) {
+        println!("Schema: {:?}", self.pager_accessor.read_schema());
+        println!("B-Tree: {}", Btree::new(self.btree_node_width, self.pager_accessor.clone()).unwrap())
     }
 
     pub fn exit(&self) {
@@ -138,15 +151,15 @@ impl Executor {
             }
             CompiledQuery::DropTable(q) => { todo!() }
             CompiledQuery::Select(q) => {
-                let mut btree = Btree::new(self.btree_node_width, self.pager_accessor.clone());
+                let mut btree = Btree::new(self.btree_node_width, self.pager_accessor.clone()).map_err(|s|QueryResult::err(s))?;
                 let schema = self.pager_accessor.read_schema();
                 let result = RefCell::new(DataFrame::new());
                 Self::set_header(&mut result.borrow_mut(), &q);
                 match q.operation {
-                    SelectStatementOpCode::SelectFTS => { btree.scan(&|key, row|Executor::exec_select(&key, &row, &mut result.borrow_mut(), &q, &schema)) }
-                    SelectStatementOpCode::SelectFromIndex => { todo!() }
-                    SelectStatementOpCode::SelectAtIndex => { todo!() }
-                    SelectStatementOpCode::SelectFromKey => {
+                    SqlConditionOpCode::SelectFTS => { btree.scan(&|key, row|Executor::exec_select(&key, &row, &mut result.borrow_mut(), &q, &schema)).map_err(|s|QueryResult::err(s))? }
+                    SqlConditionOpCode::SelectFromIndex => { todo!() }
+                    SqlConditionOpCode::SelectAtIndex => { todo!() }
+                    SqlConditionOpCode::SelectFromKey => {
                         let range_start;
                         let range_end;
                         let include_start;
@@ -179,18 +192,21 @@ impl Executor {
                                 include_end = true;
                             }
                         };
-                        btree.find_range(range_start, range_end, include_start, include_end, &|key, row|Executor::exec_select(&key, &row, &mut result.borrow_mut(), &q, &schema));
+                        btree.find_range(range_start, range_end, include_start, include_end, &|key, row|Executor::exec_select(&key, &row, &mut result.borrow_mut(), &q, &schema)).map_err(|s|QueryResult::err(s))?;
                     }
-                    SelectStatementOpCode::SelectAtKey => {
-                        btree.find(q.conditions[0].1.clone(), &|key, row|Executor::exec_select(&key, &row, &mut result.borrow_mut(), &q, &schema));
+                    SqlConditionOpCode::SelectAtKey => {
+                        btree.find(q.conditions[0].1.clone(), &|key, row|Executor::exec_select(&key, &row, &mut result.borrow_mut(), &q, &schema)).map_err(|s|QueryResult::err(s))?;
                     }
                 }
                 Ok(QueryResult::return_data(result.into_inner()))
             }
             CompiledQuery::Insert(q) => {
-                let mut btree = Btree::new(self.btree_node_width, self.pager_accessor.clone());
-                btree.insert(q.data.0, q.data.1);
+                let mut btree = Btree::new(self.btree_node_width, self.pager_accessor.clone()).map_err(|s|QueryResult::err(s))?;
+                btree.insert(q.data.0, q.data.1).map_err(|s|QueryResult::err(s))?;
                 Ok(QueryResult::went_fine())
+            }
+            CompiledQuery::Delete(q) => {
+                todo!()
             }
         }
     }

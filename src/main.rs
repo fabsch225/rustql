@@ -7,7 +7,6 @@ use rustql::executor::Executor;
 /// A Table consists of an ID Field, and multiple Row Fields -> FieldID
 ///
 /// # NEXT STEPS
-/// - organize is_leaf flag usage, streamline usage / caching
 /// - implement DELETE -> how to optimize disk space? -> flag: deleted, then shift everything to the left? -> rather expensive!
 /// - implement dirty flags in the cache? why? if we optimize disk usage at the same time, why bother?
 ///     - we already have the PagerAccessor::write_page - hook -> use that, standardizing this is clean
@@ -38,7 +37,7 @@ const TOMB_THRESHOLD: usize = 10; //10 percent
 
 fn main() {
     let executor = Executor::init("./default.db.bin", BTREE_NODE_SIZE);
-
+    println!("running RustSQL shell...");
     loop {
         io::stdout().flush().unwrap();
 
@@ -50,8 +49,11 @@ fn main() {
             executor.exit();
             break;
         }
-
-        let result = executor.exec(command.to_string());
-        println!("{}", result);
+        if command.eq_ignore_ascii_case("debug") {
+            executor.debug();
+        } else {
+            let result = executor.exec(command.to_string());
+            println!("{}", result);
+        }
     }
 }
