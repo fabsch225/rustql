@@ -8,7 +8,7 @@ use crate::status::Status;
 use crate::status::Status::{InternalExceptionInvalidColCount, InternalExceptionInvalidSchema, InternalExceptionPagerMismatch, InternalSuccess};
 use std::collections::HashMap;
 use std::fmt;
-use std::fmt::Debug;
+use std::fmt::{Debug, Display, Formatter};
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::sync::{Arc, RwLock};
@@ -100,6 +100,7 @@ pub struct PageContainer {
 //first byte specify the data type
 //rest must be the length of the size of the type
 pub type Key = Vec<u8>;
+
 pub type Flag = u8;
 
 //TODO if this throws errors if i change it, i must abstract every implementation :) not **every** implementation

@@ -67,6 +67,7 @@ impl PagerFrontend {
 
         let mut children_positions = Serializer::read_children_as_vec(&page.data, &parent.pager_accessor.read_schema())?;
         if index >= children_positions.len() {
+            panic!("why");
             return Err(Status::InternalExceptionIndexOutOfRange);
         }
         children_positions[index] = child.page_position;

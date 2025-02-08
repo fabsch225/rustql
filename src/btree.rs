@@ -47,6 +47,7 @@ impl BTreeNode {
        PagerFrontend::get_keys(self)
     }
 
+    #[deprecated]
     fn remove_key(&self, index: usize) -> Result<(Key, Row), Status> {
         let mut keys_and_rows = self.get_keys()?.clone();
         let removed_key = keys_and_rows.0.remove(index);
@@ -135,18 +136,19 @@ impl BTreeNode {
         PagerFrontend::set_children(self, current_children)
     }
 
+    //mind the naming, it is wrong (index_from / index_to)
     fn extend_over_children(&self, index_from: usize, index_to: usize) -> Result<(), Status> {
         let mut children = PagerFrontend::get_children(self)?;
-        let new_children = children[index_to].get_children()?.clone();
-        children[index_from].extend_children(new_children)?;
-        PagerFrontend::set_children(self, children)
+        let new_children = children[index_from].get_children()?.clone();
+        children[index_to].extend_children(new_children)
+        //PagerFrontend::set_children(self, children)
     }
 
     fn extend_over_keys(&self, index_from: usize, index_to: usize) -> Result<(), Status> {
         let mut children = PagerFrontend::get_children(self)?;
-        let new_keys_and_rows = children[index_to].get_keys()?.clone();
-        children[index_from].extend_keys(new_keys_and_rows.0, new_keys_and_rows.1)?;
-        PagerFrontend::set_children(self, children)
+        let new_keys_and_rows = children[index_from].get_keys()?.clone();
+        children[index_to].extend_keys(new_keys_and_rows.0, new_keys_and_rows.1)
+        //PagerFrontend::set_children(self, children)
     }
 
     fn insert_key(&self, index: usize, key: Key, row: Row) -> Result<(), Status> {
@@ -268,8 +270,11 @@ impl Btree {
             }
             x.set_key((i + 1) as usize, key, row)?;
         } else {
-            let key_and_row = x.get_key(i as usize)?;
-            while i >= 0 && self.compare(&key, &key_and_row.0)? == std::cmp::Ordering::Less {
+            println!("{}", i);
+            println!("{:?}", x.get_keys()?);
+            println!("{:?}", x.is_leaf());
+
+            while i >= 0 && self.compare(&key, &x.get_key(i as usize)?.0)? == std::cmp::Ordering::Less {
                 i -= 1;
             }
             let mut i = (i + 1) as usize;
@@ -286,6 +291,7 @@ impl Btree {
     }
 
     fn split_child(&self, x: &BTreeNode, i: usize, t: usize, is_root: bool) -> Result<(), Status> {
+        println!("Splitting {} of {:?}", i, x.get_keys()?);
         let mut y = x.get_child(i)?.clone();
         let keys_and_rows = y.get_keys_from(t)?;
         let mut z = PagerFrontend::create_node(self.pager_accessor.read_schema(), y.pager_accessor.clone(), keys_and_rows.0, vec![], keys_and_rows.1)?;
@@ -309,49 +315,90 @@ impl Btree {
     }
 
     //force borrow checker here...
+    //Result<Option<BTreeNode>> [[new Root]]
     pub fn delete(&mut self, k: Key) -> Result<(), Status> {
+        let mut new_root = None;
         if let Some(ref root) = self.root {
-            self.delete_from(root, k, self.t)
+            new_root = self.delete_from(root, k, self.t)?;
         } else {
-            Err(Status::InternalExceptionNoRoot)
+            return Err(Status::InternalExceptionNoRoot)
         }
-    }
-
-    fn delete_from(&self, x: &BTreeNode, k: Key, t: usize) -> Result<(), Status> {
-        let mut i = 0;
-        let key_and_row = x.get_key(i)?;
-        while i < x.get_keys_count()? && self.compare(&k, &key_and_row.0)? == std::cmp::Ordering::Greater {
-            i += 1;
-        }
-
-        if x.is_leaf() {
-            if i < x.get_keys_count()? && k == x.get_key(i)?.0 {
-                x.remove_key(i)?;
-            }
-        } else {
-            if i < x.get_keys_count()? && k == x.get_key(i)?.0 {
-                self.delete_internal_node(x, k, i, t)?;
-            } else {
-                if x.get_child(i)?.get_keys_count()? < t {
-                    self.fill(x, i, t)?;
-                }
-                self.delete_from(&x.get_child(i)?, k, t)?;
-            }
+        if new_root.is_some() {
+            self.root = new_root;
+            println!("Got new Root with keys: {:?}", self.root.clone().unwrap().get_keys()?);
         }
         Ok(())
     }
 
-    fn delete_internal_node(&self, x: &BTreeNode, k: Key, i: usize, t: usize) -> Result<(), Status> {
+    fn delete_from(&self, x: &BTreeNode, k: Key, t: usize) -> Result<Option<BTreeNode>, Status> {
+        let mut i = 0;
+        let mut new_root = None;
+        while i < x.get_keys_count()? && self.compare(&k, &x.get_key(i)?.0)? == std::cmp::Ordering::Greater {//k.first() > x.get_key(i)?.0.first() {
+            i += 1;
+        }
+
+        if x.is_leaf() {
+            //println!("here {:?}, VS {:?}, {}, {}", k, x.get_key(i)?.0, i, x.get_keys_count()?);
+            println!("Delete Case 1");
+            if i < x.get_keys_count()? && k == x.get_key(i)?.0 {
+                println!("now removing {:?}", k);
+                let ch = x.get_children()?;
+                x.remove_key(i)?;
+                x.set_children(ch);
+            }
+            if format!("{:?}", k) == "[0, 0, 0, 1, 0]" {
+                println!("break");
+            }
+            println!("removed {:?} now we have {:?}", k, x.get_keys()?);
+        } else {
+            let mut j = i;
+            //if j != 0 { j -= 1};
+            //println!("moving on {:?}, {}, {}", k, i, x.get_keys_count()?);
+            //println!("from {:?}", x.get_key(j)?.0);
+            if i < x.get_keys_count()? && k == x.get_key(i)?.0 {
+                println!("Delete Case 2");
+                println!("now removing {:?}", k);
+                self.delete_internal_node(x, k, i, t)?;
+            } else {
+                println!("Delete Case 3");
+                println!("Current Keys {:?}", x.get_keys());
+                println!("Childs Keys {:?}", x.get_child(i)?.get_keys());
+                println!("Fill? {}, {}",i, x.get_child(i)?.get_keys_count()?);
+                if x.get_child(i)?.get_keys_count()? < t {
+                    new_root = self.fill(x, i, t)?;
+                }
+                if i == x.get_children_count()? {
+                   i -= 1;
+                }
+                println!("Delete After Fill {}, {:?}, {:?}, {:?}",i, k, x.get_keys()?, x.get_child(i)?.get_keys());
+                self.delete_from(&x.get_child(i)?, k, t).map(|r| -> (){
+                    if r.is_some() {
+                        new_root = r;
+                    }
+                })?;
+            }
+        }
+        Ok(new_root)
+    }
+
+    fn delete_internal_node(&self, x: &BTreeNode, k: Key, i: usize, t: usize) -> Result<Option<BTreeNode>, Status> {
         if x.get_child(i)?.get_keys_count()? >= t {
+            println!("Case 2a");
             let pred_key_and_row = self.get_predecessor(&x.get_child(i)?)?;
+            println!("Predecessor: {:?}", pred_key_and_row.0);
             x.set_key(i, pred_key_and_row.0.clone(), pred_key_and_row.1)?;
-            self.delete_from(&mut x.get_child(i)?, pred_key_and_row.0, t)
+            let nr = self.delete_from(&mut x.get_child(i)?, pred_key_and_row.0, t)?;
+            println!("what else? {:?}", self.get_predecessor(&x.get_child(i)?)?);
+            Ok(nr)
         } else if x.get_child(i + 1)?.get_keys_count()? >= t {
-            let succ_key_and_row = self.get_successor(&x.get_child(i + 1)?)?;
+            println!("Case 2b");
+            let succ_key_and_row = self.get_successor(&x.get_child(i + 1)?)?; //Intentional!!!
+            println!("Successor Key is {:?}", succ_key_and_row.0);
             x.set_key(i, succ_key_and_row.0.clone(), succ_key_and_row.1)?;
             self.delete_from(&mut x.get_child(i + 1)?, succ_key_and_row.0, t)
         } else {
-            self.merge(x, i, t)?;
+            println!("Case 2c");
+            let nr = self.merge(x, i, t)?;
             self.delete_from(&mut x.get_child(i)?, k, t)
         }
     }
@@ -374,60 +421,134 @@ impl Btree {
         cur.get_key(0)
     }
 
-    fn merge(&self, x: &BTreeNode, i: usize, t: usize) -> Result<(), Status> {
+    fn merge(&self, x: &BTreeNode, i: usize, t: usize) -> Result<Option<BTreeNode>, Status> {
         let child = x.get_child(i)?;
         let key_and_row = x.get_key(i)?;
+        println!("pushing key: {:?}", key_and_row);
         child.push_key(key_and_row.0, key_and_row.1)?;
-        child.extend_over_keys(i, i + 1)?;
-
+        assert!(x.get_children_count()? > i + 1);
+        x.extend_over_keys(i + 1, i)?;
         if !child.is_leaf() {
-            x.extend_over_children(i, i + 1)?;
+            x.extend_over_children(i + 1, i)?;
+        }
+        //assert unique children for child?
+        let mut children = x.get_children()?;
+        x.remove_key(i)?;
+        children.remove(i + 1);
+        assert!(children.len() > 0);
+        x.set_children(children);
+
+        if x.get_keys_count()? == 0 {
+            println!("setting new Root with keys: {:?}", child.get_keys()?);
+            return Ok(Some(child));
         }
 
-        x.remove_key(i)?;
-        x.remove_child(i + 1)?;
-        x.set_child(i, child)
+        println!("Merged Node Children: {:?}", x.get_children()?);
+        println!("Merged Child Children: {:?}", child.get_children()?);
+
+        assert!(x.get_children()?.len() > 0);
+        assert!(x.get_keys()?.0.len() > 0);
+        //the above handles that automatically BUT NOT CORRECTLY
+        //x.remove_child(i + 1)?;
+        //println!("Merge: {:?}", child.get_keys()?);
+        //println!("Merge: {:?}", x.get_child(i+1)?.get_keys()?);
+        Ok(None)
+        //x.set_child(i, child)
     }
 
-    fn fill(&self, x: &BTreeNode, i: usize, t: usize) -> Result<(), Status> {
+    fn fill(&self, x: &BTreeNode, i: usize, t: usize) -> Result<Option<BTreeNode>, Status> {
+        println!("Filling {}", i);
+        println!("Before Fill Children: {:?}", x.get_child(i)?.get_children()?);
+        let mut new_root = None;
         if i != 0 && x.get_child(i - 1)?.get_keys_count()? >= t {
-            self.borrow_from_prev(x, i)
+            println!("F Case A");
+            self.borrow_from_prev(x, i)?;
+            //Ok(None)
         } else if i != x.get_children_count()? - 1 && x.get_child(i + 1)?.get_keys_count()? >= t {
-            self.borrow_from_next(x, i)
+            println!("F Case B");
+            self.borrow_from_next(x, i)?;
+            //Ok(None)
         } else {
             if i != x.get_children_count()? - 1 {
-                self.merge(x, i, t)
+                println!("F Case C");
+                new_root = self.merge(x, i, t)?;
             } else {
-                self.merge(x, i - 1, t)
+                println!("F Case D");
+                assert!(i > 0);
+                new_root = self.merge(x, i - 1, t)?;
             }
         }
+        //println!("After Fill Children: {:?}", x.get_child(i)?.get_children()?);
+        //TODO Progapate new Root
+        Ok(new_root)
     }
 
     fn borrow_from_prev(&self, x: &BTreeNode, i: usize) -> Result<(), Status> {
-        x.children_move_key_left(i, i - 1)?;
+        //x.children_move_key_left(i, i - 1)?;
 
-        let parent_key_and_row = x.get_key(i - 1)?;
-        x.child_insert_key(i, 0, parent_key_and_row.0, parent_key_and_row.1)?;
+        //let parent_key_and_row = x.get_key(i - 1)?;
+        //x.child_insert_key(i, 0, parent_key_and_row.0, parent_key_and_row.1)?;
 
-        if !x.get_child(i - 1)?.is_leaf() {
-            x.children_move_child_left(i, i - 1)?;
+        //if !x.get_child(i - 1)?.is_leaf() {
+        //    x.children_move_child_left(i, i - 1)?;
+        //}
+        //Ok(())
+        //let sibling_key_and_row = x.child_pop_key(i - 1)?.expect("should exist");
+        //x.set_key(i - 1, sibling_key_and_row.0, sibling_key_and_row.1)
+
+        let mut child = x.get_child(i)?;
+        let mut sibling = x.get_child(i - 1)?;
+        let k = x.get_key(i - 1)?;
+        child.insert_key(0, k.0, k.1)?;
+        let mut sibling_children = sibling.get_children()?;
+        assert!(sibling.get_keys_count()? > 0);
+        let sk = sibling.remove_key(0)?;
+        x.set_key(i - 1, sk.0, sk.1);
+        if !child.is_leaf() {
+            let sc = sibling_children.remove(0);
+            sibling.set_children(sibling_children)?;
+            child.insert_child(0, sc);
         }
 
-        let sibling_key_and_row = x.child_pop_key(i - 1)?.expect("should exist");
-        x.set_key(i - 1, sibling_key_and_row.0, sibling_key_and_row.1)
+        println!("P-Borrow: Child Children: {:?}", child.get_children()?);
+        println!("P-Borrow: Sibling Children: {:?}", sibling.get_children()?);
+        println!("P-Borrow: Node Children: {:?}", x.get_children()?);
+
+        Ok(())
     }
 
     fn borrow_from_next(&self, x: &BTreeNode, i: usize) -> Result<(), Status> {
-        x.children_move_key_right(i, i + 1)?;
+        /*x.children_move_key_right(i, i + 1)?;
         let parent_key_and_row = x.get_key(i)?;
         x.child_push_key(i, parent_key_and_row.0, parent_key_and_row.1)?;
 
         let sibling_key_and_row = x.child_pop_first_key(i+1)?.expect("should exist");
         x.set_key(i, sibling_key_and_row.0, sibling_key_and_row.1)?;
+        */
+        let mut child = x.get_child(i)?;
+        let mut sibling = x.get_child(i + 1)?;
+        println!("N-Borrow: Sibling Children BEFORE: {:?}", sibling.get_children()?); //HERE, a sibling-child is lost (but another is dusplicated)
 
-        if !x.get_child(i + 1)?.is_leaf() {
-            x.children_move_child_right(i, i + 1)?;
+        let k = x.get_key(i)?;
+        child.push_key(k.0, k.1)?;
+        let mut sibling_children = sibling.get_children()?;
+        let sk = sibling.remove_key(0)?;
+        //println!("N-Borrow: Sibling Children Pull Key: {:?}", sibling.get_children()?); //HERE, a sibling-child is lost (but another is dusplicated)
+
+        x.set_key(i, sk.0, sk.1);
+
+        if !child.is_leaf() {
+            let sc = sibling_children.remove(0);
+            sibling.set_children(sibling_children);
+            println!("N-Borrow: Sibling Children Pull Child: {:?}", sibling.get_children()?); //HERE, a sibling-child is lost (but another is dusplicated)
+
+            child.push_child(sc);
+            //x.children_move_child_right(i, i + 1)?;
         }
+
+        println!("N-Borrow: Child Children: {:?}", child.get_children()?);
+        println!("N-Borrow: Sibling Children: {:?}", sibling.get_children()?);
+        println!("N-Borrow: Node Children: {:?}", x.get_children()?);
 
         Ok(())
     }
@@ -496,10 +617,9 @@ impl Btree {
        where Action: Fn(&mut Key, &mut Row) -> Result<bool, Status> + Copy
     {
         if let Some(ref root) = self.root {
-            self.in_order_traversal(root, exec)
-        } else {
-            Err(Status::InternalExceptionNoRoot)
+            return self.in_order_traversal(root, exec)
         }
+        Ok(())
     }
 
     fn in_order_traversal<Action>(&self, node: &BTreeNode, exec: &Action) -> Result<(), Status>
@@ -611,22 +731,22 @@ impl Display for Btree {
             writeln!(f, "Btree Level-Order Traversal:")?;
             while !queue.is_empty() {
                 let level_size = queue.len();
-                let mut level_keys = Vec::new();
+                let mut level = Vec::new();
 
                 for _ in 0..level_size {
                     if let Some(node) = queue.pop_front() {
                         let keys = node.get_keys().unwrap();
-                        level_keys.push(keys);
+                        let children = node.get_children().unwrap();
+                        level.push((keys.0, keys.1, children.clone()));
 
                         if !node.is_leaf() {
-                            let children = node.get_children().unwrap();
                             for child in children {
                                 queue.push_back(child);
                             }
                         }
                     }
                 }
-                for (keys, rows) in level_keys {
+                for (keys, rows, children) in level {
                     write!(f, "{{")?;
                     for (key, row) in keys.iter().zip(rows.iter()) {
                         write!(f, "[")?;
@@ -638,6 +758,12 @@ impl Display for Btree {
                         write!(f, "{}", Serializer::format_row(row, &schema).unwrap())?;
                         write!(f, "]")?;
                     }
+                    write!(f, "[")?;
+                    for (child) in children {
+                        write!(f, "{}", child.page_position)?;
+                        write!(f, " , ")?;
+                    }
+                    write!(f, "]")?;
                     write!(f, "}}")?;
                 }
                 writeln!(f, "")?;

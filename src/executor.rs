@@ -167,9 +167,23 @@ impl Executor {
             CompiledQuery::Delete(q) => {
                 let mut btree = Btree::new(self.btree_node_width, self.pager_accessor.clone()).map_err(|s|QueryResult::err(s))?;
                 let schema = self.pager_accessor.read_schema();
-                let action = |key: &mut Key, row: &mut Row|Executor::exec_delete(key, row, &q, &schema);
+                println!("{}", btree);
+                //current status: infinite Loop
+               /* let action = |key: &mut Key, row: &mut Row|Executor::exec_delete(key, row, &q, &schema);
                 Self::exec_action_with_condition(&btree, &schema, &q.operation, &q.conditions, &action).map_err(|s|QueryResult::err(s))?;
-                btree.tomb_cleanup();
+
+                //this should be periodical, but for debugging
+                btree.tomb_cleanup();*/
+
+                //this is for debugging:
+                let result = RefCell::new(vec![]);
+                let action = |key: &mut Key, row: &mut Row|Executor::exec_key_collect(key, row, &mut result.borrow_mut(), &q, &schema);
+                Self::exec_action_with_condition(&btree, &schema, &q.operation, &q.conditions, &action).map_err(|s|QueryResult::err(s))?;
+                for key in result.into_inner() {
+                    println!("deleting {}", Serializer::format_key(&key, &schema).unwrap());
+                    btree.delete(key).map_err(|s|QueryResult::err(s))?;
+                    println!("{}", btree);
+                }
                 Ok(QueryResult::went_fine())
             }
         }
@@ -225,6 +239,17 @@ impl Executor {
                 btree.find(conditions[0].1.clone(), &action)
             }
         }
+    }
+
+    fn exec_key_collect(key: &mut Key, row: &mut Row, all_keys: &mut Vec<Key>,query: &CompiledDeleteQuery, schema: &Schema) -> Result<bool, Status> {
+        if Serializer::is_tomb(key, &schema)? {
+            return Ok(false);
+        }
+        if !Executor::exec_condition_on_row(row, &query.conditions, schema) {
+            return Ok(false);
+        }
+        all_keys.push(key.clone());
+        Ok(false)
     }
 
     fn exec_delete(key: &mut Key, row: &mut Row, query: &CompiledDeleteQuery, schema: &Schema) -> Result<bool, Status> {

@@ -82,7 +82,7 @@ mod tests {
     #[test]
     fn test_delete() {
         let pager_interface = PagerCore::init_from_schema("./default.db.bin", get_schema()).unwrap();
-        let mut btree = Btree::new(2, pager_interface.clone());
+        let mut btree = Btree::new(2, pager_interface.clone()).unwrap();
 
         for i in 0..4 {
             let key: Key = vec![i, 0, 0, 0];
@@ -104,7 +104,7 @@ mod tests {
     #[test]
     fn test_find_range() {
         let pager_interface = PagerCore::init_from_schema("./default.db.bin", get_schema()).unwrap();
-        let mut btree = Btree::new(2, pager_interface.clone());
+        let mut btree = Btree::new(2, pager_interface.clone()).expect("");
 
         for i in 0..10 {
             let key: Key = vec![i, 0, 0, 0];

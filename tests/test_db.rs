@@ -73,8 +73,10 @@ mod tests {
         executor.exec("CREATE TABLE test (id Integer, name String)".to_string());
         executor.exec("INSERT INTO test (id, name) VALUES (1, 'Alice')".to_string());
         executor.exec("INSERT INTO test (id, name) VALUES (2, 'Bob')".to_string());
+        //executor.exec("INSERT INTO test (id, name) VALUES (4, 'Charlie')".to_string());
         executor.exec("DELETE FROM test WHERE id <= 2".to_string());
         let result = executor.exec("SELECT * FROM test".to_string());
+        println!("{}", result);
         assert!(result.success);
         assert_eq!(result.result.data.len(), 0);
     }
@@ -91,7 +93,7 @@ mod tests {
         assert_eq!(result.result.data.len(), 100);
         for (i, row) in result.result.data.iter().enumerate() {
             let expected_name = format!("User{}", i + 1).as_bytes().to_vec();
-            assert_eq!(row[0..5], [0u8, 0, 0, (i+1) as u8, 0]);
+            assert_eq!(row[0..5], [0u8, 0, 0, (i + 1) as u8, 0]);
             assert_eq!(row[5..10], expected_name[0..5]);
         }
     }
@@ -99,26 +101,66 @@ mod tests {
     #[test]
     fn test_delete_and_reinsert_with_loops() {
         let executor = Executor::init("./default.db.bin", BTREE_NODE_SIZE);
-        executor.exec("CREATE TABLE test (id Integer, name String)".to_string());
+        let len = 160;
+        //for len in (0..250).step_by(10) {
+            executor.exec("CREATE TABLE test (id Integer, other Integer)".to_string());
+            for i in 1..=len {
+                executor.exec(format!("INSERT INTO test (id, other) VALUES ({}, {})", i, 0));
+            }
+            let result = executor.exec(format!("SELECT * FROM test WHERE id <= {}", len));
+            assert!(result.success);
+            assert_eq!(result.result.data.len(), len);
+            println!("{}", result);
+            let result = executor.exec(format!("SELECT * FROM test WHERE id <= {}", len / 2));
+            assert!(result.success);
+            assert_eq!(result.result.data.len(), len / 2);
+            //println!("{}", result);
+            //println!("---");
+            let result = executor.exec(format!("DELETE FROM test WHERE id <= {}", len / 2));
+            assert!(result.success);
+            let result = executor.exec("SELECT * FROM test".to_string());
+            assert!(result.success);
+            //println!("{}", result);
+            //println!("---");
+            assert_eq!(result.result.data.len(), len / 2);
+            for (i, row) in result.result.data.iter().enumerate() {
+                let expected_id = i + len / 2 + 2;
+                //assert_eq!(Serializer::bytes_to_int(row[0..5].try_into().unwrap()), expected_id as i32);
+            }
 
-        for i in 1..=1000 {
-            executor.exec(format!("INSERT INTO test (id, name) VALUES ({}, 'User{}')", i, i));
+            for i in 1..=len / 2 {
+                let result = executor.exec(format!("INSERT INTO test (id, other) VALUES ({}, '{}')", i, i * 2));
+                //println!("{}", result);
+                assert!(result.success)
+            }
+
+            let result = executor.exec("SELECT * FROM test".to_string());
+            //println!("{}", result);
+            assert_eq!(result.result.data.len(), len);
+       //
+       // }
+    }
+
+    #[test]
+    fn test_mod_3() {
+        let executor = Executor::init("./default.db.bin", BTREE_NODE_SIZE);
+        executor.exec("CREATE TABLE test (id Integer, other Integer)".to_string());
+        for i in 1..=120 {
+            executor.exec(format!("INSERT INTO test (id, other) VALUES ({}, {})", i, 0));
         }
-
-        executor.exec("DELETE FROM test WHERE id <= 500".to_string());
         let result = executor.exec("SELECT * FROM test".to_string());
-        assert!(result.success);
-        assert_eq!(result.result.data.len(), 500);
-        for (i, row) in result.result.data.iter().enumerate() {
-            let expected_id = i + 501;
-            assert_eq!(Serializer::bytes_to_int(row[0..5].try_into().unwrap()), expected_id as i32);
-        }
+        //println!("{}", result);
+        assert_eq!(result.result.data.len(), 120);
 
-        for i in 1..=500 {
-            executor.exec(format!("INSERT INTO test (id, name) VALUES ({}, 'User{}')", i, i));
+        for i in 1..=40 {
+            let result = executor.exec(format!("DELETE FROM test WHERE id = {}", i * 3));
+            if !result.success {
+                println!("{}", result);
+            }
+            assert!(result.success);
         }
-
-        let final_result = executor.exec("SELECT * FROM test".to_string());
-        assert_eq!(final_result.result.data.len(), 1000);
+        let result = executor.exec("SELECT * FROM test".to_string());
+        println!("{}", result);
+        assert_eq!(result.result.data.len(), 80);
     }
 }

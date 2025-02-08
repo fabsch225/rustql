@@ -199,6 +199,7 @@ impl Serializer {
     pub fn read_key(index: usize, page: &PageData, schema: &Schema) -> Result<Key, Status> {
         let size: usize = page[0] as usize;
         if index > size {
+            panic!("why");
             return Err(InternalExceptionIndexOutOfRange);
         }
         let key_length = schema.key_length;
@@ -219,6 +220,7 @@ impl Serializer {
         let start_pos = 2 + (num_children - 1) * key_length + index * POSITION_SIZE;
         let end_pos = start_pos + POSITION_SIZE;
         if end_pos > page.len() {
+            panic!("why");
             return Err(InternalExceptionIndexOutOfRange);
         }
         //TODO think about approaches to some more Serializer methods like this
@@ -230,6 +232,7 @@ impl Serializer {
     pub fn write_key(index: usize, key: &Key, page: &mut PageData, schema: &Schema) -> Result<(), Status> {
         let num_keys = page[0] as usize;
         if index >= num_keys {
+            panic!("why");
             return Err(InternalExceptionIndexOutOfRange);
         }
         let key_length = schema.key_length;
@@ -249,6 +252,7 @@ impl Serializer {
         let num_keys = page[0] as usize;
         let num_children = num_keys + 1;
         if index >= num_children {
+            panic!("why");
             return Err(InternalExceptionIndexOutOfRange);
         }
         let key_length = schema.key_length;
@@ -325,6 +329,7 @@ impl Serializer {
     pub fn write_keys_vec_resize(keys: &Vec<Key>, page: &mut PageData, schema: &Schema) -> Result<(), Status> {
         let orig_num_keys = page[0] as usize;
         let new_num_keys = keys.len();
+        //assert!(new_num_keys != 0); this is allowed, if we change the root afterwards
         let key_length = schema.key_length;
         let data_length = schema.row_length;
         let increase = new_num_keys > orig_num_keys;
@@ -378,7 +383,7 @@ impl Serializer {
         let list_start_pos = 2 + (num_keys * key_length);
         let mut check_for_leaf = true;
         for (i, child) in children.iter().enumerate() {
-            if i >= num_keys + 1 { panic!("cannot extend children without extending keys first") }
+            if i > num_keys + 1 { panic!("cannot extend children without extending keys first: we have at least {} children, but {} keys", i, num_keys) }
             let start_pos = list_start_pos + i * POSITION_SIZE;
             let end_pos = start_pos + POSITION_SIZE;
             page.splice(start_pos..end_pos, Serializer::position_to_bytes(*child).to_vec());
@@ -455,6 +460,7 @@ impl Serializer {
         }
 
         if end > page.len() {
+            panic!("why");
             return Err(InternalExceptionIndexOutOfRange);
         }
 
