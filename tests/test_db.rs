@@ -68,6 +68,18 @@ mod tests {
     }
 
     #[test]
+    fn test_insert() {
+        let executor = Executor::init("./default.db.bin", BTREE_NODE_SIZE);
+        executor.exec("CREATE TABLE test (id Integer, other Integer)".to_string());
+        for i in 0..=10 {
+            let res = executor.exec(format!("INSERT INTO table (id, other) VALUES ({}, 0)", 10 - i));
+            assert!(res.success);
+        }
+        executor.debug();
+        assert!(executor.check_integrity().is_ok());
+    }
+
+    #[test]
     fn test_delete_all_rows() {
         let executor = Executor::init("./default.db.bin", BTREE_NODE_SIZE);
         executor.exec("CREATE TABLE test (id Integer, name String)".to_string());
@@ -136,9 +148,34 @@ mod tests {
             let result = executor.exec("SELECT * FROM test".to_string());
             //println!("{}", result);
             assert_eq!(result.result.data.len(), len);
+            if !executor.check_integrity().is_ok() {
+                executor.debug();
+            }
             assert!(executor.check_integrity().is_ok())
        //
        }
+    }
+
+    #[test]
+    fn test_specific_reinsert() {
+        let executor = Executor::init("./default.db.bin", BTREE_NODE_SIZE);
+        executor.exec("CREATE TABLE test (id Integer, other Integer)".to_string());
+        for i in 1..=10 {
+            let res = executor.exec(format!("INSERT INTO test (id, other) VALUES ({}, {})", i, 0));
+            assert!(res.success);
+        }
+        executor.debug();
+        for i in 1..=5 {
+            executor.exec(format!("DELETE FROM test WHERE id = {}", i));
+        }
+        println!("after deletion");
+        executor.debug();
+        for i in 1..=5 {
+            executor.exec(format!("INSERT INTO test (id, other) VALUES ({}, {})", i, 0));
+            //executor.debug();
+        }
+        executor.debug();
+        assert!(executor.check_integrity().is_ok());
     }
 
     #[test]

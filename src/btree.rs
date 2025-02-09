@@ -261,14 +261,13 @@ impl Btree {
         let mut i = x.get_keys_count()? as isize - 1;
         if x.is_leaf() {
             x.push_key(Serializer::empty_key(&self.pager_accessor.read_schema()), Serializer::empty_row(&self.pager_accessor.read_schema()))?; // Add a dummy value
-            let key_and_row = x.get_key(i as usize)?;
-            while i >= 0 && self.compare(&key, &key_and_row.0)? == std::cmp::Ordering::Less {
-                let key_and_row = x.get_key(i as usize)?; //TODO slight optimization
+            while i >= 0 && self.compare(&key, &x.get_key(i as usize)?.0)? == std::cmp::Ordering::Less {
+                let key_and_row = x.get_key(i as usize)?;
                 x.set_key((i + 1) as usize, key_and_row.0, key_and_row.1)?;
-
                 i -= 1;
             }
-            x.set_key((i + 1) as usize, key, row)?;
+
+            x.set_key((i + 1) as usize, key.clone(), row)?;
         } else {
             while i >= 0 && self.compare(&key, &x.get_key(i as usize)?.0)? == std::cmp::Ordering::Less {
                 i -= 1;
@@ -290,7 +289,6 @@ impl Btree {
         let mut y = x.get_child(i)?.clone();
         let keys_and_rows = y.get_keys_from(t)?;
         let mut z = PagerFrontend::create_node(self.pager_accessor.read_schema(), y.pager_accessor.clone(), keys_and_rows.0, vec![], keys_and_rows.1)?;
-
         let key_and_row = y.get_key(t - 1)?;
         //TODO suboptimal
         if is_root {
@@ -301,11 +299,11 @@ impl Btree {
 
         if !y.is_leaf() {
             z.set_children(y.get_children_from(t)?)?;
-        }
 
+        }
+        x.insert_child(i + 1, z)?;
         y.truncate_keys(t - 1)?;
 
-        x.insert_child(i + 1, z)?;
         Ok(())
     }
 
