@@ -167,7 +167,7 @@ impl Executor {
             CompiledQuery::Delete(q) => {
                 let mut btree = Btree::new(self.btree_node_width, self.pager_accessor.clone()).map_err(|s|QueryResult::err(s))?;
                 let schema = self.pager_accessor.read_schema();
-                println!("{}", btree);
+                //println!("{}", btree);
                 //current status: infinite Loop
                /* let action = |key: &mut Key, row: &mut Row|Executor::exec_delete(key, row, &q, &schema);
                 Self::exec_action_with_condition(&btree, &schema, &q.operation, &q.conditions, &action).map_err(|s|QueryResult::err(s))?;
@@ -180,9 +180,9 @@ impl Executor {
                 let action = |key: &mut Key, row: &mut Row|Executor::exec_key_collect(key, row, &mut result.borrow_mut(), &q, &schema);
                 Self::exec_action_with_condition(&btree, &schema, &q.operation, &q.conditions, &action).map_err(|s|QueryResult::err(s))?;
                 for key in result.into_inner() {
-                    println!("deleting {}", Serializer::format_key(&key, &schema).unwrap());
+                    //println!("deleting {}", Serializer::format_key(&key, &schema).unwrap());
                     btree.delete(key).map_err(|s|QueryResult::err(s))?;
-                    println!("{}", btree);
+                    //println!("{}", btree);
                 }
                 Ok(QueryResult::went_fine())
             }
@@ -318,5 +318,23 @@ impl Executor {
             } { return false }
         }
         true
+    }
+    pub fn check_integrity(&self) -> Result<(), Status> {
+        let mut btree = Btree::new(self.btree_node_width, self.pager_accessor.clone()).map_err(|s|QueryResult::err(s))?;
+        let schema = self.pager_accessor.read_schema();
+        let mut last_key: Option<Key> = None;
+        let schema = self.pager_accessor.read_schema();
+
+        btree.scan(&|key, _row| {
+            if let Some(ref last_key) = last_key {
+                if Serializer::compare_with_type(last_key, key, &schema.key_type)? != std::cmp::Ordering::Less {
+                    return Err(Status::InternalExceptionIntegrityCheckFailed);
+                }
+            }
+            last_key = Some(key.clone());
+            Ok(false)
+        })?;
+
+        Ok(())
     }
 }

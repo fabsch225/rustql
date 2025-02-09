@@ -101,8 +101,7 @@ mod tests {
     #[test]
     fn test_delete_and_reinsert_with_loops() {
         let executor = Executor::init("./default.db.bin", BTREE_NODE_SIZE);
-        let len = 160;
-        //for len in (0..250).step_by(10) {
+        for len in (0..350).step_by(10) {
             executor.exec("CREATE TABLE test (id Integer, other Integer)".to_string());
             for i in 1..=len {
                 executor.exec(format!("INSERT INTO test (id, other) VALUES ({}, {})", i, 0));
@@ -110,7 +109,7 @@ mod tests {
             let result = executor.exec(format!("SELECT * FROM test WHERE id <= {}", len));
             assert!(result.success);
             assert_eq!(result.result.data.len(), len);
-            println!("{}", result);
+            //println!("{}", result);
             let result = executor.exec(format!("SELECT * FROM test WHERE id <= {}", len / 2));
             assert!(result.success);
             assert_eq!(result.result.data.len(), len / 2);
@@ -137,30 +136,48 @@ mod tests {
             let result = executor.exec("SELECT * FROM test".to_string());
             //println!("{}", result);
             assert_eq!(result.result.data.len(), len);
+            assert!(executor.check_integrity().is_ok())
        //
-       // }
+       }
     }
 
     #[test]
-    fn test_mod_3() {
+    fn test_modulo() {
         let executor = Executor::init("./default.db.bin", BTREE_NODE_SIZE);
         executor.exec("CREATE TABLE test (id Integer, other Integer)".to_string());
-        for i in 1..=120 {
-            executor.exec(format!("INSERT INTO test (id, other) VALUES ({}, {})", i, 0));
-        }
-        let result = executor.exec("SELECT * FROM test".to_string());
-        //println!("{}", result);
-        assert_eq!(result.result.data.len(), 120);
 
-        for i in 1..=40 {
-            let result = executor.exec(format!("DELETE FROM test WHERE id = {}", i * 3));
-            if !result.success {
-                println!("{}", result);
+        let test_sizes = [50, 100, 150, 300, 800];
+        let modulos = [2, 3, 4, 5, 6];
+
+        for &size in &test_sizes {
+            for &modulo in &modulos {
+                executor.exec("CREATE TABLE test (id Integer, other Integer)".to_string());
+
+                for i in 1..=size {
+                    executor.exec(format!("INSERT INTO test (id, other) VALUES ({}, {})", i, 0));
+                }
+                let result = executor.exec("SELECT * FROM test".to_string());
+                assert_eq!(result.result.data.len(), size);
+
+                let mut count_deleted = 0;
+                for i in 1..=size {
+                    if i % modulo == 0 {
+                        //println!("Deleting {}", i);
+                        let result = executor.exec(format!("DELETE FROM test WHERE id = {}", i));
+                        if result.success {
+                            count_deleted += 1;
+                        } else {
+                            println!("Failed to delete {}: {}", i, result);
+                        }
+                        //executor.debug();
+                        assert!(result.success);
+                    }
+                }
+                let result = executor.exec("SELECT * FROM test".to_string());
+                println!("After deleting multiples of {}: {} entries left", modulo, result.result.data.len());
+                assert_eq!(result.result.data.len(), size - count_deleted);
+                assert!(executor.check_integrity().is_ok())
             }
-            assert!(result.success);
         }
-        let result = executor.exec("SELECT * FROM test".to_string());
-        println!("{}", result);
-        assert_eq!(result.result.data.len(), 80);
     }
 }

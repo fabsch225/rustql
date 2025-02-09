@@ -36,4 +36,5 @@ pub enum Status {
     CannotParseIllegalDate,
     InternalExceptionPagerWriteLock,
     InternalExceptionCompilerError,
+    InternalExceptionIntegrityCheckFailed,
 }
