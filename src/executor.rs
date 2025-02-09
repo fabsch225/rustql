@@ -320,21 +320,28 @@ impl Executor {
         true
     }
     pub fn check_integrity(&self) -> Result<(), Status> {
-        let mut btree = Btree::new(self.btree_node_width, self.pager_accessor.clone()).map_err(|s|QueryResult::err(s))?;
+        let mut btree = Btree::new(self.btree_node_width, self.pager_accessor.clone())?;
         let schema = self.pager_accessor.read_schema();
-        let mut last_key: Option<Key> = None;
+        let mut last_key: RefCell<Option<Key>> = RefCell::new(None);
+        let mut valid = RefCell::new(true);
         let schema = self.pager_accessor.read_schema();
-
-        btree.scan(&|key, _row| {
-            if let Some(ref last_key) = last_key {
+        let action = |key: &mut Key, row: &mut Row| {
+            let mut last_key_mut = last_key.borrow_mut();
+            if let Some(ref last_key) = *last_key_mut {
                 if Serializer::compare_with_type(last_key, key, &schema.key_type)? != std::cmp::Ordering::Less {
-                    return Err(Status::InternalExceptionIntegrityCheckFailed);
+                    *valid.borrow_mut() = false;
                 }
             }
-            last_key = Some(key.clone());
-            Ok(false)
-        })?;
+            *last_key_mut = Some(key.clone());
+            Ok(true)
+        };
 
-        Ok(())
+        btree.scan(&action)?;
+
+        if *valid.borrow() {
+            Ok(())
+        } else {
+            Err(Status::InternalExceptionIntegrityCheckFailed)
+        }
     }
 }
