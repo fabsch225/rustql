@@ -169,21 +169,21 @@ impl Executor {
                 let schema = self.pager_accessor.read_schema();
                 //println!("{}", btree);
                 //current status: infinite Loop
-               /* let action = |key: &mut Key, row: &mut Row|Executor::exec_delete(key, row, &q, &schema);
+                let action = |key: &mut Key, row: &mut Row|Executor::exec_delete(key, row, &q, &schema);
                 Self::exec_action_with_condition(&btree, &schema, &q.operation, &q.conditions, &action).map_err(|s|QueryResult::err(s))?;
 
                 //this should be periodical, but for debugging
-                btree.tomb_cleanup();*/
+                btree.tomb_cleanup();
 
                 //this is for debugging:
-                let result = RefCell::new(vec![]);
+                /*let result = RefCell::new(vec![]);
                 let action = |key: &mut Key, row: &mut Row|Executor::exec_key_collect(key, row, &mut result.borrow_mut(), &q, &schema);
                 Self::exec_action_with_condition(&btree, &schema, &q.operation, &q.conditions, &action).map_err(|s|QueryResult::err(s))?;
                 for key in result.into_inner() {
                     //println!("deleting {}", Serializer::format_key(&key, &schema).unwrap());
                     btree.delete(key).map_err(|s|QueryResult::err(s))?;
                     //println!("{}", btree);
-                }
+                }*/
                 Ok(QueryResult::went_fine())
             }
         }

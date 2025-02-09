@@ -59,7 +59,7 @@ pub const INTEGER_SIZE_WITHOUT_FLAG: usize = INTEGER_SIZE - 1;
 
 // Key-Flag Definition
 // - Bit 0: Indicates if the Key is marked for deletion
-
+// (keys cannot be null)
 
 #[derive(PartialEq, Clone)]
 pub enum Type {
@@ -67,6 +67,7 @@ pub enum Type {
     Integer,
     String,
     //Double, future feature
+    //Varchar, future feature
     Date,
     Boolean,
     //Blob    future feature

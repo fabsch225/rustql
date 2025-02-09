@@ -306,7 +306,6 @@ impl Btree {
         while i < x.get_keys_count()?
             && self.compare(&k, &x.get_key(i)?.0)? == std::cmp::Ordering::Greater
         {
-            //k.first() > x.get_key(i)?.0.first() {
             i += 1;
         }
 
@@ -317,7 +316,6 @@ impl Btree {
                 x.set_children(ch);
             }
         } else {
-            let mut j = i;
             if i < x.get_keys_count()? && k == x.get_key(i)?.0 {
                 self.delete_internal_node(x, k, i, t)?;
             } else {
@@ -360,7 +358,8 @@ impl Btree {
         }
     }
 
-    //TODO optimize this!!!!
+    //TODO optimize this
+    //maybe implement this on a lower level
     fn get_predecessor(&self, x: &BTreeNode) -> Result<(Key, Row), Status> {
         let mut cur = x.clone();
         while !cur.is_leaf() {
@@ -369,7 +368,7 @@ impl Btree {
         cur.get_key(cur.get_keys_count()? - 1)
     }
 
-    //TODO optimize this!!!!
+    //TODO optimize this
     fn get_successor(&self, x: &BTreeNode) -> Result<(Key, Row), Status> {
         let mut cur = x.clone();
         while !cur.is_leaf() {
@@ -382,7 +381,6 @@ impl Btree {
         let child = x.get_child(i)?;
         let key_and_row = x.get_key(i)?;
         child.push_key(key_and_row.0, key_and_row.1)?;
-        //assert!(x.get_children_count()? > i + 1);
         x.extend_over_keys(i + 1, i)?;
         if !child.is_leaf() {
             x.extend_over_children(i + 1, i)?;
@@ -390,15 +388,11 @@ impl Btree {
         let mut children = x.get_children()?;
         x.remove_key(i)?;
         children.remove(i + 1);
-        //assert!(children.len() > 0);
-        x.set_children(children);
+        x.set_children(children)?;
 
         if x.get_keys_count()? == 0 {
             return Ok(Some(child));
         }
-
-        //assert!(x.get_children()?.len() > 0);
-        //assert!(x.get_keys()?.0.len() > 0);
         Ok(None)
     }
 
@@ -412,7 +406,6 @@ impl Btree {
             if i != x.get_children_count()? - 1 {
                 new_root = self.merge(x, i, t)?;
             } else {
-                //assert!(i > 0);
                 new_root = self.merge(x, i - 1, t)?;
             }
         }
@@ -426,16 +419,22 @@ impl Btree {
         child.insert_key(0, k.0, k.1)?;
         let mut sibling_children = sibling.get_children()?;
         let mut sibling_keys = sibling.get_keys()?;
-        let last_sibling_key = sibling_keys.0.pop().unwrap();
-        let last_sibling_row = sibling_keys.1.pop().unwrap();
-        sibling.set_keys(sibling_keys.0, sibling_keys.1);
-        //assert!(sibling.get_keys_count()? > 0);
-        //let sk = sibling.remove_key(0)?;
-        x.set_key(i - 1, last_sibling_key, last_sibling_row);
+        let opt_last_sibling_key = sibling_keys.0.pop();
+        let opt_last_sibling_row = sibling_keys.1.pop();
+        let mut last_sibling_key;
+        let mut last_sibling_row;
+        if opt_last_sibling_row.is_some() && opt_last_sibling_key.is_some() {
+            last_sibling_key = opt_last_sibling_key.unwrap();
+            last_sibling_row = opt_last_sibling_row.unwrap();
+        } else {
+            return Err(Status::InternalExceptionIndexOutOfRange);
+        }
+        sibling.set_keys(sibling_keys.0, sibling_keys.1)?;
+        x.set_key(i - 1, last_sibling_key, last_sibling_row)?;
         if !child.is_leaf() {
             let sc = sibling_children.pop().unwrap();
             sibling.set_children(sibling_children)?;
-            child.insert_child(0, sc);
+            child.insert_child(0, sc)?;
         }
         Ok(())
     }
@@ -448,11 +447,11 @@ impl Btree {
         let mut sibling_children = sibling.get_children()?;
         let sk = sibling.remove_key(0)?;
 
-        x.set_key(i, sk.0, sk.1);
+        x.set_key(i, sk.0, sk.1)?;
         if !child.is_leaf() {
             let sc = sibling_children.remove(0);
-            sibling.set_children(sibling_children);
-            child.push_child(sc);
+            sibling.set_children(sibling_children)?;
+            child.push_child(sc)?;
         }
 
         Ok(())
@@ -483,7 +482,9 @@ impl Btree {
 
             if Serializer::is_tomb(&key_and_row.0, &node.pager_accessor.read_schema())? {
                 if node.is_leaf() {
+                    let ch = node.get_children()?;
                     node.remove_key(i)?;
+                    node.set_children(ch)?
                 } else {
                     self.cleanup_internal_node(node, i, t)?;
                 }
