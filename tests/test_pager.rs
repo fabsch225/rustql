@@ -1,10 +1,10 @@
 #[cfg(test)]
 mod tests {
     use rustql::serializer::Serializer;
-    use rustql::pager::{Field, Key, PagerCore, Schema, Type};
+    use rustql::pager::{Field, Key, PagerCore, TableSchema, Type};
 
-    fn get_schema() -> Schema {
-        Schema {
+    fn get_schema() -> TableSchema {
+        TableSchema {
             root: 0,
             col_count: 2,
             whole_row_length: 260,

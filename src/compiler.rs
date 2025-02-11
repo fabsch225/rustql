@@ -1,6 +1,6 @@
 use std::str::FromStr;
 use crate::executor::QueryResult;
-use crate::pager::{Field, Key, Position, Row, Schema, Type, ROW_NAME_SIZE, TYPE_SIZE};
+use crate::pager::{Field, Key, Position, Row, Schema, TableSchema, Type, ROW_NAME_SIZE, TYPE_SIZE};
 use crate::parser::ParsedQuery;
 use crate::serializer::Serializer;
 use crate::status::Status;
@@ -17,10 +17,10 @@ pub struct Compiler {}
 #[derive(Debug, PartialEq)]
 pub enum SqlConditionOpCode {
     SelectFTS = 60u8,       //full table scan will be performed "Type 1"
-    SelectFromIndex = 61u8, //we have not implemented indices :)
-    SelectAtIndex = 62u8,   //we have not implemented indices :)
-    SelectFromKey = 63u8,   // "Type 3"
-    SelectAtKey = 64u8,     // "Type 2"
+    SelectIndexRange = 61u8, //we have not implemented indices :)
+    SelectIndexUnique = 62u8,   //we have not implemented indices :)
+    SelectKeyRange = 63u8,   // "Type 3"
+    SelectKeyUnique = 64u8,     // "Type 2" //as
 }
 
 #[repr(u8)]
@@ -57,7 +57,7 @@ pub struct CompiledDeleteQuery {
 
 #[derive(Debug)]
 pub struct CompiledCreateTableQuery {
-    pub schema: Schema
+    pub schema: TableSchema
 }
 
 #[derive(Debug)]
@@ -86,13 +86,13 @@ impl Compiler {
                 //we dont have nullable values...
                 //TODO add nullable Values!
                 //TODO allow custom ordering of fields: INSERT INTO ... (Name, Id) VALUES (a, 1) <=> (Id, Name) VALUES  (1, a)
-                if insert_query.fields.len() != schema.fields.len() {
+                if insert_query.fields.len() != schema.tables[0].fields.len() {
                     return Err(QueryResult::user_input_wrong("all fields must be set, there is are nullable values".to_string()));
                 }
 
                 let mut data = Vec::new();
                 for (field, value) in insert_query.fields.iter().zip(insert_query.values.iter()) {
-                    let field_schema = schema.fields.iter().find(|f| &f.name == field)
+                    let field_schema = schema.tables[0].fields.iter().find(|f| &f.name == field)
                         .ok_or(QueryResult::user_input_wrong(format!("invalid field: {}", field)))?;
 
                     let pre_compiled_value = Self::compile_value(value, field_schema)?;
@@ -111,17 +111,17 @@ impl Compiler {
                 let mut result = Vec::new();
 
                 if select_query.result[0] == "*" {
-                    result.append(&mut schema.fields.clone());
+                    result.append(&mut schema.tables[0].fields.clone());
                 } else {
                     for field in select_query.result.iter() {
-                        let field_schema = schema.fields.iter().find(|f| &f.name == field)
+                        let field_schema = schema.tables[0].fields.iter().find(|f| &f.name == field)
                             .ok_or(QueryResult::user_input_wrong(format!("at least one invalid field: {}", field)))?;
                         result.push(field_schema.clone());
                     }
                 }
 
                 let mut conditions = Vec::new();
-                let operation = Self::compile_conditions(select_query.conditions, &mut conditions, schema)?;
+                let operation = Self::compile_conditions(select_query.conditions, &mut conditions, &schema.tables[0])?;
                 Ok(CompiledQuery::Select(CompiledSelectQuery {
                     table_id: 0,
                     operation,
@@ -136,7 +136,7 @@ impl Compiler {
                     fields.push(Field { name: name.clone(), field_type });
                 }
                 let col_count = fields.len();
-                let schema = Schema {
+                let schema = TableSchema {
                     root: 0,
                     next_position: (14 + fields.len() * (ROW_NAME_SIZE + TYPE_SIZE)) as Position,
                     col_count,
@@ -146,6 +146,8 @@ impl Compiler {
                     row_length: fields.iter().map(|f| Serializer::get_size_of_type(&f.field_type).unwrap()).sum::<usize>() - Serializer::get_size_of_type(&fields[0].field_type).unwrap(),
                     fields,
                     offset: 0,
+                    entry_count: 0,
+                    table_type: 0
                 };
                 Ok(CompiledQuery::CreateTable(CompiledCreateTableQuery { schema }))
             },
@@ -154,7 +156,7 @@ impl Compiler {
             }
             ParsedQuery::Delete(delete_query) => {
                 let mut conditions = Vec::new();
-                let operation = Self::compile_conditions(delete_query.conditions, &mut conditions, schema)?;
+                let operation = Self::compile_conditions(delete_query.conditions, &mut conditions, &schema.tables[0])?;
 
                 Ok(CompiledQuery::Delete(CompiledDeleteQuery {
                     table_id: 0,
@@ -165,7 +167,7 @@ impl Compiler {
         }
     }
 
-    fn compile_conditions(source: Vec<(String, String, String)>, dest: &mut Vec<(SqlStatementComparisonOperator, Vec<u8>)>, schema: &Schema) -> Result<SqlConditionOpCode, QueryResult> {
+    fn compile_conditions(source: Vec<(String, String, String)>, dest: &mut Vec<(SqlStatementComparisonOperator, Vec<u8>)>, schema: &TableSchema) -> Result<SqlConditionOpCode, QueryResult> {
         let mut op = SqlConditionOpCode::SelectFTS;
         let mut at_id = true;
 
@@ -181,11 +183,13 @@ impl Compiler {
 
             if at_id {
                 at_id = false;
-                if comparison_operator == SqlStatementComparisonOperator::Equal {
-                    op = SqlConditionOpCode::SelectAtKey;
+                //TODO here check a unique constraint:
+                /*if comparison_operator == SqlStatementComparisonOperator::Equal {
+                    op = SqlConditionOpCode::SelectKeyUnique;
                 } else {
-                    op = SqlConditionOpCode::SelectFromKey;
-                }
+                    op = SqlConditionOpCode::SelectKeyRange;
+                }*/
+                op = SqlConditionOpCode::SelectKeyRange;
             }
 
             let pre_compiled_value = Self::compile_value(&cond.2, field)?;

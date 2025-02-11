@@ -1,5 +1,5 @@
 use crate::btree::BTreeNode;
-use crate::pager::{Key, PagerAccessor, Position, Row, Schema};
+use crate::pager::{Key, PagerAccessor, Position, Row, TableSchema};
 use crate::serializer::Serializer;
 use crate::status::Status;
 use crate::status::Status::InternalSuccess;
@@ -7,7 +7,7 @@ use crate::status::Status::InternalSuccess;
 pub struct PagerFrontend {}
 
 impl PagerFrontend {
-    pub fn create_node(schema: Schema, pager_interface: PagerAccessor, keys: Vec<Key>, children: Vec<Position>, data: Vec<Row>) -> Result<BTreeNode, Status> {
+    pub fn create_node(schema: TableSchema, pager_interface: PagerAccessor, keys: Vec<Key>, children: Vec<Position>, data: Vec<Row>) -> Result<BTreeNode, Status> {
         let node = pager_interface.access_pager_write(|p| p.create_page(
             keys,
             children,
@@ -19,7 +19,7 @@ impl PagerFrontend {
         Ok(node)
     }
 
-    pub fn create_singular_node(schema: Schema, pager_interface: PagerAccessor, key: Key, data: Row) -> Result<BTreeNode, Status> {
+    pub fn create_singular_node(schema: TableSchema, pager_interface: PagerAccessor, key: Key, data: Row) -> Result<BTreeNode, Status> {
         Self::create_node(schema, pager_interface, vec![key], vec![], vec![data])
     }
 
@@ -51,7 +51,7 @@ impl PagerFrontend {
         let page = parent
             .pager_accessor
             .access_pager_write(|p| p.access_page_read(parent_position))?;
-        let position = Serializer::read_child(index, &page.data, &parent.pager_accessor.read_schema())?;
+        let position = Serializer::read_child(index, &page.data, &parent.pager_accessor.read_table_schema())?;
 
         Ok(BTreeNode {
             page_position: position,
@@ -65,14 +65,14 @@ impl PagerFrontend {
             .pager_accessor
             .access_pager_write(|p| p.access_page_read(parent_position))?;
 
-        let mut children_positions = Serializer::read_children_as_vec(&page.data, &parent.pager_accessor.read_schema())?;
+        let mut children_positions = Serializer::read_children_as_vec(&page.data, &parent.pager_accessor.read_table_schema())?;
         if index >= children_positions.len() {
             panic!("why");
             return Err(Status::InternalExceptionIndexOutOfRange);
         }
         children_positions[index] = child.page_position;
 
-        Serializer::write_children_vec(&children_positions, &mut page.data, &parent.pager_accessor.read_schema())?;
+        Serializer::write_children_vec(&children_positions, &mut page.data, &parent.pager_accessor.read_table_schema())?;
 
         parent.pager_accessor.access_page_write(parent, |d, s| { d.data = page.data; Ok(()) })
     }
@@ -82,7 +82,7 @@ impl PagerFrontend {
         let page = parent
             .pager_accessor
             .access_pager_write(|p| p.access_page_read(parent_position))?;
-        let positions = Serializer::read_children_as_vec(&page.data, &parent.pager_accessor.read_schema())?;
+        let positions = Serializer::read_children_as_vec(&page.data, &parent.pager_accessor.read_table_schema())?;
 
         let mut result = vec![];
 
@@ -102,7 +102,7 @@ impl PagerFrontend {
             .pager_accessor
             .access_pager_write(|p| p.access_page_read(parent_position))?;
 
-        Serializer::write_children_vec(&children.iter().map(|c|c.page_position).collect(), &mut page.data, &parent.pager_accessor.read_schema())?;
+        Serializer::write_children_vec(&children.iter().map(|c|c.page_position).collect(), &mut page.data, &parent.pager_accessor.read_table_schema())?;
 
         parent.pager_accessor.access_page_write(parent, |mut d, s|{d.data = page.data; Ok(())})
     }
@@ -111,8 +111,8 @@ impl PagerFrontend {
         let page = parent
             .pager_accessor
             .access_pager_write(|p| p.access_page_read(parent_position))?;
-        let keys = Serializer::read_keys_as_vec(&page.data, &parent.pager_accessor.read_schema())?;
-        let data = Serializer::read_data_by_vec(&page.data, &parent.pager_accessor.read_schema())?;
+        let keys = Serializer::read_keys_as_vec(&page.data, &parent.pager_accessor.read_table_schema())?;
+        let data = Serializer::read_data_by_vec(&page.data, &parent.pager_accessor.read_table_schema())?;
         Ok((keys, data))
     }
 
@@ -122,7 +122,7 @@ impl PagerFrontend {
             .pager_accessor
             .access_pager_write(|p| p.access_page_read(parent_position))?;
 
-        Serializer::write_keys_vec_resize_with_rows(&keys, &data, &mut page.data, &parent.pager_accessor.read_schema())?;
+        Serializer::write_keys_vec_resize_with_rows(&keys, &data, &mut page.data, &parent.pager_accessor.read_table_schema())?;
 
         parent.pager_accessor.access_page_write(parent, |d, s| { d.data = page.data; Ok(()) })
     }
@@ -132,8 +132,8 @@ impl PagerFrontend {
         let page = parent
             .pager_accessor
             .access_pager_write(|p| p.access_page_read(parent_position))?;
-        let key = Serializer::read_key(index, &page.data, &parent.pager_accessor.read_schema())?;
-        let data = Serializer::read_data_by_index(&page.data, index, &parent.pager_accessor.read_schema())?;
+        let key = Serializer::read_key(index, &page.data, &parent.pager_accessor.read_table_schema())?;
+        let data = Serializer::read_data_by_index(&page.data, index, &parent.pager_accessor.read_table_schema())?;
         Ok((key, data))
     }
 
@@ -142,9 +142,9 @@ impl PagerFrontend {
         let mut page = parent
             .pager_accessor
             .access_pager_write(|p| p.access_page_read(parent_position))?;
-       Serializer::write_key(index, &key, &mut page.data, &parent.pager_accessor.read_schema())?;
+       Serializer::write_key(index, &key, &mut page.data, &parent.pager_accessor.read_table_schema())?;
 
-        Serializer::write_data_by_index(&mut page.data, index, data, &parent.pager_accessor.read_schema())?;
+        Serializer::write_data_by_index(&mut page.data, index, data, &parent.pager_accessor.read_table_schema())?;
 
         parent.pager_accessor.access_page_write(parent, |d, s| { d.data = page.data; Ok(()) })
     }
@@ -154,9 +154,9 @@ impl PagerFrontend {
         let page = parent
             .pager_accessor
             .access_pager_write(|p| p.access_page_read(parent_position))?;
-        let keys = Serializer::read_keys_as_vec(&page.data, &parent.pager_accessor.read_schema())?;
+        let keys = Serializer::read_keys_as_vec(&page.data, &parent.pager_accessor.read_table_schema())?;
 
-        let positions = Serializer::read_children_as_vec(&page.data, &parent.pager_accessor.read_schema())?;
+        let positions = Serializer::read_children_as_vec(&page.data, &parent.pager_accessor.read_table_schema())?;
 
         let mut children = vec![];
 
@@ -176,8 +176,8 @@ impl PagerFrontend {
             .pager_accessor
             .access_pager_write(|p| p.access_page_read(page_position))?;
 
-        Serializer::write_keys_vec(&keys, &mut page.data, &parent.pager_accessor.read_schema())?;
-        Serializer::write_children_vec(&children.iter().map(|c|c.page_position).collect(), &mut page.data, &parent.pager_accessor.read_schema())?;
+        Serializer::write_keys_vec(&keys, &mut page.data, &parent.pager_accessor.read_table_schema())?;
+        Serializer::write_children_vec(&children.iter().map(|c|c.page_position).collect(), &mut page.data, &parent.pager_accessor.read_table_schema())?;
         parent.pager_accessor.access_page_write(parent, |d, s| { d.data = page.data; Ok(()) })
     }
 
@@ -185,7 +185,7 @@ impl PagerFrontend {
         let page = node
             .pager_accessor
             .access_pager_write(|p| p.access_page_read(node.page_position))?;
-        Serializer::read_data_by_vec(&page.data, &node.pager_accessor.read_schema())
+        Serializer::read_data_by_vec(&page.data, &node.pager_accessor.read_table_schema())
     }
 
     pub fn set_data(node: &BTreeNode, data: Vec<Row>) -> Result<(), Status> {
@@ -193,7 +193,7 @@ impl PagerFrontend {
             .pager_accessor
             .access_pager_write(|p| p.access_page_read(node.page_position))?;
 
-        Serializer::write_data_by_vec(&mut page.data, &data, &node.pager_accessor.read_schema())?;
+        Serializer::write_data_by_vec(&mut page.data, &data, &node.pager_accessor.read_table_schema())?;
         node.pager_accessor.access_page_write(node, |d, s| { d.data = page.data; Ok(()) })
     }
 

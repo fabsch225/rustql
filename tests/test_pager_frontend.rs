@@ -4,12 +4,12 @@ use rustql::serializer::Serializer;
 #[cfg(test)]
 mod tests {
     use rustql::btree::BTreeNode;
-    use rustql::pager::{Field, Key, PageData, PagerAccessor, PagerCore, Position, Row, Schema, Type};
+    use rustql::pager::{Field, Key, PageData, PagerAccessor, PagerCore, Position, Row, TableSchema, Type};
     use rustql::pager_frontend::PagerFrontend;
     use rustql::serializer::Serializer;
 
-    fn get_schema() -> Schema {
-        Schema {
+    fn get_schema() -> TableSchema {
+        TableSchema {
             next_position: 0,
             root: 0,
             offset: 0,

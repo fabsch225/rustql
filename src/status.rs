@@ -37,4 +37,7 @@ pub enum Status {
     InternalExceptionPagerWriteLock,
     InternalExceptionCompilerError,
     InternalExceptionIntegrityCheckFailed,
+    InternalExceptionFileWriteError,
+    InternalExceptionFileAlreadyExists,
+    InternalExceptionFileOpenFailed,
 }

@@ -1,12 +1,14 @@
 use std::cell::RefCell;
 use crate::btree::Btree;
 use crate::compiler::{CompiledDeleteQuery, CompiledQuery, CompiledSelectQuery, Compiler, SqlConditionOpCode, SqlStatementComparisonOperator};
-use crate::pager::{Field, Key, PagerAccessor, PagerCore, Row, Schema, Type};
+use crate::pager::{Field, Key, PagerAccessor, PagerCore, Row, Schema, TableIndex, TableSchema, Type};
 use crate::status::Status;
 use crate::status::Status::ExceptionQueryMisformed;
 use std::collections::HashMap;
 use std::fmt;
 use std::fmt::{format, Display, Formatter};
+use std::fs::OpenOptions;
+use std::io::{ErrorKind, Write};
 use crate::compiler::SqlStatementComparisonOperator::{Equal, Greater, GreaterOrEqual, LesserOrEqual, Lesser};
 use crate::parser::Parser;
 use crate::serializer::Serializer;
@@ -116,7 +118,22 @@ pub struct Executor {
 
 impl Executor {
     pub fn init(file_path: &str, t: usize) -> Self {
-        let pager_accessor = PagerCore::init_from_file(file_path, t).expect("Unable to open database");
+        let pager_accessor = match PagerCore::init_from_file(file_path, t) {
+            Ok(pa) => pa,
+            Err(e) => {
+                println!("{:?}", e);
+                match e {
+                    Status::InternalExceptionFileNotFound => {
+                        Self::create_database(file_path).expect("Failed to create database");
+                        PagerCore::init_from_file(file_path, t).expect("Failed to initialise PagerCore after creating database")
+                    }
+                    _ => {
+                        eprintln!("{:?}", e);
+                        panic!("Failed to initialise Executor: {:?}", e);
+                    }
+                }
+            }
+        };
         Executor {
             pager_accessor: pager_accessor.clone(),
             query_cache: HashMap::new(),
@@ -125,7 +142,7 @@ impl Executor {
     }
 
     pub fn debug(&self) {
-        println!("Schema: {:?}", self.pager_accessor.read_schema());
+        println!("Schema: {:?}", self.pager_accessor.read_table_schema());
         println!("B-Tree: {}", Btree::new(self.btree_node_width, self.pager_accessor.clone()).unwrap())
     }
 
@@ -146,13 +163,13 @@ impl Executor {
 
         match compiled_query {
             CompiledQuery::CreateTable(q) => {
-                self.pager_accessor.set_schema(q.schema);
+                self.pager_accessor.set_table_schema(q.schema);
                 Ok(QueryResult::went_fine())
             }
             CompiledQuery::DropTable(q) => { todo!() }
             CompiledQuery::Select(q) => {
                 let btree = Btree::new(self.btree_node_width, self.pager_accessor.clone()).map_err(|s|QueryResult::err(s))?;
-                let schema = self.pager_accessor.read_schema();
+                let schema = self.pager_accessor.read_table_schema();
                 let result = RefCell::new(DataFrame::new());
                 Self::set_header(&mut result.borrow_mut(), &q);
                 let action = |key: &mut Key, row: &mut Row|Executor::exec_select(key, row, &mut result.borrow_mut(), &q, &schema);
@@ -166,14 +183,20 @@ impl Executor {
             }
             CompiledQuery::Delete(q) => {
                 let mut btree = Btree::new(self.btree_node_width, self.pager_accessor.clone()).map_err(|s|QueryResult::err(s))?;
-                let schema = self.pager_accessor.read_schema();
+                let schema = self.pager_accessor.read_table_schema();
                 //println!("{}", btree);
                 //current status: infinite Loop
                 let action = |key: &mut Key, row: &mut Row|Executor::exec_delete(key, row, &q, &schema);
                 Self::exec_action_with_condition(&btree, &schema, &q.operation, &q.conditions, &action).map_err(|s|QueryResult::err(s))?;
 
-                //this should be periodical, but for debugging
-                btree.tomb_cleanup();
+                //this should be periodical, but for now
+                //btree.tomb_cleanup();
+
+                //TODO
+                //there is a problem: if a value is marked as a tombstone, another identical value is not deleted
+                //the problem arises from
+                //what if i fix this, by implementing replacements?
+
 
                 //this is for debugging:
                 /*let result = RefCell::new(vec![]);
@@ -193,14 +216,14 @@ impl Executor {
         result.header = query.result.clone();
     }
 
-    fn exec_action_with_condition<Action>(btree: &Btree, schema: &Schema, op_code: &SqlConditionOpCode, conditions:  &Vec<(SqlStatementComparisonOperator, Vec<u8>)>, action: &Action) -> Result<(), Status>
+    fn exec_action_with_condition<Action>(btree: &Btree, schema: &TableSchema, op_code: &SqlConditionOpCode, conditions:  &Vec<(SqlStatementComparisonOperator, Vec<u8>)>, action: &Action) -> Result<(), Status>
         where Action: Fn(&mut Key, &mut Row) -> Result<bool, Status>  + Copy
     {
         match op_code {
             SqlConditionOpCode::SelectFTS => { btree.scan(action) }
-            SqlConditionOpCode::SelectFromIndex => { todo!() }
-            SqlConditionOpCode::SelectAtIndex => { todo!() }
-            SqlConditionOpCode::SelectFromKey => {
+            SqlConditionOpCode::SelectIndexRange => { todo!() }
+            SqlConditionOpCode::SelectIndexUnique => { todo!() }
+            SqlConditionOpCode::SelectKeyRange => {
                 let range_start;
                 let range_end;
                 let include_start;
@@ -219,7 +242,12 @@ impl Executor {
                         include_start = false;
                         include_end = true;
                     }
-                    Equal => { return Err(Status::InternalExceptionCompilerError); }
+                    Equal => {
+                        range_start = conditions[0].1.clone();
+                        range_end = conditions[0].1.clone();
+                        include_start = true;
+                        include_end = true;
+                    }
                     LesserOrEqual => {
                         range_start = Serializer::negative_infinity(&schema.fields[0].field_type);
                         range_end = conditions[0].1.clone();
@@ -235,13 +263,13 @@ impl Executor {
                 };
                 btree.find_range(range_start, range_end, include_start, include_end, action)
             }
-            SqlConditionOpCode::SelectAtKey => {
+            SqlConditionOpCode::SelectKeyUnique => {
                 btree.find(conditions[0].1.clone(), &action)
             }
         }
     }
 
-    fn exec_key_collect(key: &mut Key, row: &mut Row, all_keys: &mut Vec<Key>,query: &CompiledDeleteQuery, schema: &Schema) -> Result<bool, Status> {
+    fn exec_key_collect(key: &mut Key, row: &mut Row, all_keys: &mut Vec<Key>, query: &CompiledDeleteQuery, schema: &TableSchema) -> Result<bool, Status> {
         if Serializer::is_tomb(key, &schema)? {
             return Ok(false);
         }
@@ -252,7 +280,7 @@ impl Executor {
         Ok(false)
     }
 
-    fn exec_delete(key: &mut Key, row: &mut Row, query: &CompiledDeleteQuery, schema: &Schema) -> Result<bool, Status> {
+    fn exec_delete(key: &mut Key, row: &mut Row, query: &CompiledDeleteQuery, schema: &TableSchema) -> Result<bool, Status> {
         if Serializer::is_tomb(key, &schema)? {
             return Ok(false);
         }
@@ -263,7 +291,7 @@ impl Executor {
         Ok(true)
     }
 
-    fn exec_select(key: &mut Key, row: &mut Row, result: &mut DataFrame, query: &CompiledSelectQuery, schema: &Schema) -> Result<bool, Status> {
+    fn exec_select(key: &mut Key, row: &mut Row, result: &mut DataFrame, query: &CompiledSelectQuery, schema: &TableSchema) -> Result<bool, Status> {
         if Serializer::is_tomb(key, &schema)? {
             return Ok(false);
         }
@@ -293,7 +321,7 @@ impl Executor {
         Ok(false)
     }
 
-    fn exec_condition_on_row(row: &Row, conditions: &Vec<(SqlStatementComparisonOperator, Vec<u8>)>, schema: &Schema) -> bool {
+    fn exec_condition_on_row(row: &Row, conditions: &Vec<(SqlStatementComparisonOperator, Vec<u8>)>, schema: &TableSchema) -> bool {
         let mut position = 0;
         let mut skip = true;
         for i in 0..schema.fields.len() {
@@ -321,11 +349,14 @@ impl Executor {
     }
     pub fn check_integrity(&self) -> Result<(), Status> {
         let mut btree = Btree::new(self.btree_node_width, self.pager_accessor.clone())?;
-        let schema = self.pager_accessor.read_schema();
+        let schema = self.pager_accessor.read_table_schema();
         let mut last_key: RefCell<Option<Key>> = RefCell::new(None);
         let mut valid = RefCell::new(true);
-        let schema = self.pager_accessor.read_schema();
+        let schema = self.pager_accessor.read_table_schema();
         let action = |key: &mut Key, row: &mut Row| {
+            if Serializer::is_tomb(key, &schema)? {
+                return Ok(false)
+            }
             let mut last_key_mut = last_key.borrow_mut();
             if let Some(ref last_key) = *last_key_mut {
                 if Serializer::compare_with_type(last_key, key, &schema.key_type)? != std::cmp::Ordering::Less {
@@ -333,15 +364,37 @@ impl Executor {
                 }
             }
             *last_key_mut = Some(key.clone());
-            Ok(true)
+            Ok(false)
         };
 
+        //this wouldnt consider tombstones
         btree.scan(&action)?;
 
         if *valid.borrow() {
             Ok(())
         } else {
             Err(Status::InternalExceptionIntegrityCheckFailed)
+        }
+    }
+
+    pub fn create_database(file_name: &str) -> Result<(), Status> {
+        let empty_schema = Schema {
+            table_index: TableIndex { index: vec![] },
+            tables: vec![],
+        };
+        let bytes = Serializer::schema_to_bytes(&empty_schema);
+        let file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(file_name);
+
+        match file {
+            Ok(mut f) => {
+                f.write_all(&bytes).map_err(|_| Status::InternalExceptionFileWriteError)?;
+                Ok(())
+            }
+            Err(ref e) if e.kind() == ErrorKind::AlreadyExists => Err(Status::InternalExceptionFileAlreadyExists),
+            Err(_) => Err(Status::InternalExceptionFileWriteError),
         }
     }
 }

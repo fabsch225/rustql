@@ -179,7 +179,7 @@ impl Btree {
         if pager_accessor.has_root() {
             root = Some(PagerFrontend::get_node(
                 pager_accessor.clone(),
-                pager_accessor.read_schema().root,
+                pager_accessor.read_table_schema().root,
             )?);
         }
         Ok(Btree {
@@ -190,17 +190,17 @@ impl Btree {
     }
 
     fn compare(&self, a: &Key, b: &Key) -> Result<std::cmp::Ordering, Status> {
-        Serializer::compare_with_type(a, b, &self.pager_accessor.read_schema().key_type)
+        Serializer::compare_with_type(a, b, &self.pager_accessor.read_table_schema().key_type)
     }
 
     pub fn insert(&mut self, k: Key, v: Row) -> Result<(), Status> {
         if let Some(ref root) = self.root {
             if root.get_keys_count()? == (2 * self.t) - 1 {
                 let mut new_root = PagerFrontend::create_singular_node(
-                    self.pager_accessor.read_schema(),
+                    self.pager_accessor.read_table_schema(),
                     self.pager_accessor.clone(),
-                    Serializer::empty_key(&self.pager_accessor.read_schema()),
-                    Serializer::empty_row(&self.pager_accessor.read_schema()),
+                    Serializer::empty_key(&self.pager_accessor.read_table_schema()),
+                    Serializer::empty_row(&self.pager_accessor.read_table_schema()),
                 )
                 .unwrap();
                 new_root.push_child(root.clone())?;
@@ -214,7 +214,7 @@ impl Btree {
             }
         } else {
             let new_root = PagerFrontend::create_singular_node(
-                self.pager_accessor.read_schema(),
+                self.pager_accessor.read_table_schema(),
                 self.pager_accessor.clone(),
                 k.clone(),
                 v,
@@ -229,8 +229,8 @@ impl Btree {
         let mut i = x.get_keys_count()? as isize - 1;
         if x.is_leaf() {
             x.push_key(
-                Serializer::empty_key(&self.pager_accessor.read_schema()),
-                Serializer::empty_row(&self.pager_accessor.read_schema()),
+                Serializer::empty_key(&self.pager_accessor.read_table_schema()),
+                Serializer::empty_row(&self.pager_accessor.read_table_schema()),
             )?; // Add a dummy value
             while i >= 0
                 && self.compare(&key, &x.get_key(i as usize)?.0)? == std::cmp::Ordering::Less
@@ -264,7 +264,7 @@ impl Btree {
         let mut y = x.get_child(i)?.clone();
         let keys_and_rows = y.get_keys_from(t)?;
         let mut z = PagerFrontend::create_node(
-            self.pager_accessor.read_schema(),
+            self.pager_accessor.read_table_schema(),
             y.pager_accessor.clone(),
             keys_and_rows.0,
             vec![],
@@ -480,7 +480,7 @@ impl Btree {
         while i < node.get_keys_count()? {
             let key_and_row = node.get_key(i)?;
 
-            if Serializer::is_tomb(&key_and_row.0, &node.pager_accessor.read_schema())? {
+            if Serializer::is_tomb(&key_and_row.0, &node.pager_accessor.read_table_schema())? {
                 if node.is_leaf() {
                     let ch = node.get_children()?;
                     node.remove_key(i)?;
@@ -661,7 +661,7 @@ impl Display for Btree {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         if let Some(ref root) = self.root {
             let mut queue = std::collections::VecDeque::new();
-            let schema = self.pager_accessor.read_schema();
+            let schema = self.pager_accessor.read_table_schema();
             queue.push_back(root.clone());
 
             writeln!(f, "Btree Level-Order Traversal:")?;

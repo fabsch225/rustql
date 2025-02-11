@@ -297,10 +297,14 @@ mod tests {
 
         for &size in &test_sizes {
             for &modulo in &modulos {
+                println!("mod {}", modulo);
                 executor.exec("DELETE FROM test".to_string());
+                let result = executor.exec("SELECT * FROM test".to_string());
+                assert_eq!(result.result.data.len(), 0);
+                //executor.exec("CREATE TABLE test (id Integer, other Integer)".to_string());
 
                 for i in 1..=size {
-                    executor.exec(format!("INSERT INTO test (id, other) VALUES ({}, {})", i, 0));
+                    executor.exec(format!("INSERT INTO test (id, other) VALUES ({}, {})", i, modulo));
                 }
                 let result = executor.exec("SELECT * FROM test".to_string());
                 assert_eq!(result.result.data.len(), size);
@@ -309,18 +313,18 @@ mod tests {
                 for i in 1..=size {
                     if i % modulo == 0 {
                         let result = executor.exec(format!("DELETE FROM test WHERE id = {}", i));
-                        if result.success {
-                            count_deleted += 1;
-                        }
+                        //println!("{}", result);
                         assert!(result.success);
+                        count_deleted += 1;
                     }
                 }
                 let result = executor.exec("SELECT * FROM test".to_string());
+                //println!("{}", result);
                 assert_eq!(result.result.data.len(), size - count_deleted);
                 assert!(executor.check_integrity().is_ok());
                 for i in 1..=size {
                     if i % modulo == 0 {
-                        let result = executor.exec(format!("INSERT INTO test (id, other) VALUES ({}, {})", i, i * 2));
+                        let result = executor.exec(format!("INSERT INTO test (id, other) VALUES ({}, {})", i, i * 10));
                         assert!(result.success);
                     }
                 }
@@ -330,5 +334,6 @@ mod tests {
                 assert!(executor.check_integrity().is_ok());
             }
         }
+        executor.debug();
     }
 }

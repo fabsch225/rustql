@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use std::fmt;
 use std::fmt::{Debug, Display, Formatter};
 use std::fs::{File, OpenOptions};
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::io::{ErrorKind, Read, Seek, SeekFrom, Write};
 use std::sync::{Arc, RwLock};
 
 //in byte
@@ -23,16 +23,21 @@ pub const TYPE_SIZE: usize = 1;
 pub const POSITION_SIZE: usize = 4; //during development. should be like 16
 pub const ROW_NAME_SIZE: usize = 16;
 pub const INTEGER_SIZE_WITHOUT_FLAG: usize = INTEGER_SIZE - 1;
-// Database Structure Overview
+pub const TABLE_NAME_SIZE : usize = 32;
 
-// Table Storage
-// The database consists of a single table stored in a file with the following structure:
+// Database (File) Structure Overview
 
-// Schema Information
+// Meta Information
+// 32 Bits: Meta Information Length (divisible by the following: TABLE_NAME_SIZE -> equal to the amount of tables * TABLE_NAME_SIZE)
+// [TABLE_NAME_SIZE]: names (identifiers) of the tables
+
+// [Table-Schema Information] tables
 // 16 Bits: Specifies the length of a row.
+// 8 Bits: Type of Table (Entity, Index, View, Internal Table, Virtual Table *Joined*)
 // 32 Bits: Root Position
 // 32 Bits: Next Position
 // 32 Bits: Offset Position
+// 32 Bits: Approximate Count of Entries (new)
 // Fields: Each field is defined as follows:
 // [TYPE_SIZE - Type of Field][128 Bits - Name of Field (Ascii)] -> 8 Chars
 // The first field is the ID.
@@ -45,7 +50,7 @@ pub const INTEGER_SIZE_WITHOUT_FLAG: usize = INTEGER_SIZE - 1;
 // - 8 Bits: Number of Keys (n)
 // - 8 Bits: Flag
 // - n Keys: Each key is the length of the ID type read earlier.
-// - n+1 Child/Page Pointers: Each pointer is 128 bits long.
+// - n+1 Child/Page Pointers: Each pointer is [POSITION] bytes long.
 // - Next There is the Data, According to the Schema Definition
 
 // - so the size of a pages Header (until the actual data) is like this: n * (Number Of Keys) + (n + 1) * POSITION_SIZE
@@ -98,6 +103,8 @@ pub struct PageContainer {
     size_on_disk: usize,
 }
 
+pub type TableName = Vec<u8>;
+
 //first byte specify the data type
 //rest must be the length of the size of the type
 pub type Key = Vec<u8>;
@@ -109,18 +116,32 @@ pub type Position = i32;
 pub type Row = Vec<u8>;
 
 impl Serializer {
-    pub fn empty_key(schema: &Schema) -> Key {
+    pub fn empty_key(schema: &TableSchema) -> Key {
         vec![0; schema.key_length]
     }
-    pub fn empty_row(schema: &Schema) -> Row {
+    pub fn empty_row(schema: &TableSchema) -> Row {
         vec![0; schema.row_length]
     }
 }
 
-//TODO Schema does not comply with s.o.c.
+//TODO Schema does not comply with s.o.c. (?)
+
+//the file looks like this:
+//length of table index []
 
 #[derive(Clone, Debug)]
 pub struct Schema {
+    pub(crate) table_index: TableIndex,
+    pub(crate) tables: Vec<TableSchema>
+}
+
+#[derive(Clone, Debug)]
+pub struct TableIndex {
+    pub(crate) index: Vec<TableName>
+}
+
+#[derive(Clone, Debug)]
+pub struct TableSchema {
     pub next_position: Position,
     pub root: Position, //if 0 -> no tree
     pub offset: Position,
@@ -130,6 +151,10 @@ pub struct Schema {
     pub key_type: Type,
     pub row_length: usize,
     pub fields: Vec<Field>,
+    pub table_type: u8,
+    pub entry_count: i32
+    //Todo Fields
+    // count (of entries)
 }
 
 #[derive(Debug, Clone)]
@@ -171,27 +196,36 @@ impl PagerAccessor {
     }
 
     //TODO these methods dont belong here
-    pub fn set_schema(&self, new_schema: Schema) {
-        self.pager.write().expect("failed to w-lock pager").schema = new_schema;
+    pub fn set_table_schema(&self, new_schema: TableSchema) {
+        if self.pager.read().expect("failed to read pager").schema.tables.len() == 0 {
+            self.pager.write().expect("failed to w-lock pager").schema.tables.push(new_schema);
+        } else {
+            self.pager.write().expect("failed to w-lock pager").schema.tables[0] = new_schema;
+        }
         self.pager.write().expect("failed to w-lock pager").invalidate_cache();
     }
 
     pub fn set_root_to_none(&self) -> Result<(), Status> {
-        self.pager.write().expect("failed to w-lock pager").schema.root = 0;
+        self.pager.write().expect("failed to w-lock pager").schema.tables[0].root = 0;
         Ok(())
     }
 
     pub fn set_root(&self, node: &BTreeNode) -> Result<(), Status> {
-        self.pager.write().expect("failed to w-lock pager").schema.root = node.page_position;
+        self.pager.write().expect("failed to w-lock pager").schema.tables[0].root = node.page_position;
         Ok(())
     }
 
     pub fn has_root(&self) -> bool {
-        self.read_schema().root != 0
+        self.read_table_schema().root != 0
     }
 
     pub fn read_schema(&self) -> Schema {
         self.pager.read().unwrap().schema.clone()
+    }
+
+    #[deprecated]
+    pub fn read_table_schema(&self) -> TableSchema {
+        self.pager.read().unwrap().schema.tables[0].clone()
     }
 
     //this does create lots of overhead / could be removed
@@ -225,7 +259,7 @@ impl PagerAccessor {
     // (now we have to account for the possibility of loading a page from disk, which requires mutating the filestream)
     pub fn access_page_read<F, T>(&self, node: &BTreeNode, func: F) -> Result<T, Status>
     where
-        F: FnOnce(&PageData, &Schema) -> Result<T, Status>,
+        F: FnOnce(&PageData, &TableSchema) -> Result<T, Status>,
     {
         let mut pager = self
             .pager
@@ -237,7 +271,7 @@ impl PagerAccessor {
         let page = pager.access_page_read(node.page_position);
 
         if page.is_ok() {
-            func(&page?.data, &pager.schema.clone())
+            func(&page?.data, &pager.schema.tables[0].clone())
         } else {
             Err(page.unwrap_err())
         }
@@ -245,7 +279,7 @@ impl PagerAccessor {
 
     pub fn access_page_write<F>(&self, node: &BTreeNode, func: F) -> Result<(), Status>
     where
-        F: FnOnce(&mut PageContainer, &Schema) -> Result<(), Status>,
+        F: FnOnce(&mut PageContainer, &TableSchema) -> Result<(), Status>,
     {
         //TODO Optimize reading / writing to the pager by checking cache beforehand!?
         let mut pager = self
@@ -254,7 +288,7 @@ impl PagerAccessor {
                 eprintln!("{:?}", e);
                 Status::InternalExceptionPagerWriteLock
         })?;
-        let schema = pager.schema.clone();
+        let schema = pager.schema.tables[0].clone();
         let page: Result<&mut PageContainer, Status> = pager.access_page_write(node.page_position);
         if page.is_ok() {
             func(page?, &schema)
@@ -286,26 +320,18 @@ impl PagerCore {
     }
 
     pub fn init_from_file(file_path: &str, btree_width: usize) -> Result<PagerAccessor, Status> {
-        let mut file = OpenOptions::new().write(true).read(true).open(file_path).map_err(|e| {
-            eprintln!("Failed to open file: {:?}", e);
-            Status::InternalExceptionFileNotFound
-        })?;
-        let mut schema_length_bytes = [0u8; 2];
-        file.read_exact(&mut schema_length_bytes)
-            .map_err(|e| {
-                eprintln!("Failed to read schema: {:?}", e);
-                Status::InternalExceptionReadFailed
-            })?;
-        file.seek(SeekFrom::Start(0)).expect("TODO: panic message");
-        let col_count = u16::from_be_bytes(schema_length_bytes) as usize;
-        let mut schema_data = vec![0u8; col_count * (1 + 16) + 14];
-        file.read_exact(&mut schema_data)
-            .map_err(|_| Status::InternalExceptionReadFailed)?;
-        let schema = Serializer::bytes_to_schema(&*schema_data);
-        if !schema.is_ok() {
-            return Err(InternalExceptionInvalidSchema);
-        }
-        let schema = schema?;
+        let mut file = match OpenOptions::new().write(true).read(true).open(file_path) {
+            Ok(f) => f,
+            Err(e) => {
+                if e.kind() == ErrorKind::NotFound {
+                    return Err(Status::InternalExceptionFileNotFound);
+                } else {
+                    eprintln!("Error is {}", e.to_string());
+                    return Err(Status::InternalExceptionFileOpenFailed);
+                }
+            }
+        };
+        let schema = Serializer::read_schema(&mut file)?;
 
         Ok(PagerAccessor::new(PagerCore {
             cache: HashMap::new(),
@@ -316,29 +342,13 @@ impl PagerCore {
         }))
     }
 
-    //used for unit tests which typically do not interact with the file
-    #[deprecated]
-    pub fn init_from_schema(file_path: &str, schema: Schema, btree_width: usize) -> Result<PagerAccessor, Status> {
-        if !Serializer::verify_schema(&schema).is_ok() {
-            return Err(InternalExceptionInvalidSchema);
-        }
-        Ok(PagerAccessor::new(PagerCore {
-            cache: HashMap::new(),
-            btree_width,
-            schema,
-            //TODO this is a workaround for development
-            file: File::open(file_path).unwrap(),
-            hash: generate_random_hash(16),
-        }))
-    }
-
     pub fn invalidate_cache(&mut self) -> Status {
         self.cache.clear();
         InternalSuccess
     }
 
     pub fn get_page_length(&self) -> i32 {
-        ((2 * self.btree_width - 1) + (2 * self.btree_width - 1) * self.schema.whole_row_length + self.btree_width * POSITION_SIZE + 2) as i32
+        ((2 * self.btree_width - 1) + (2 * self.btree_width - 1) * self.schema.tables[0].whole_row_length + self.btree_width * POSITION_SIZE + 2) as i32
     }
 
     pub fn access_page_read(&mut self, position: Position) -> Result<PageContainer, Status> {
@@ -397,11 +407,11 @@ impl PagerCore {
         keys: Vec<Key>,
         children: Vec<Position>,
         data: Vec<Row>,
-        schema: &Schema,
+        schema: &TableSchema,
         pager_facade: PagerAccessor
     ) -> Result<BTreeNode, Status> {
-        let position = self.schema.next_position;
-        self.schema.next_position += self.get_page_length();
+        let position = self.schema.tables[0].next_position;
+        self.schema.tables[0].next_position += self.get_page_length();
         self.create_page_at_position(position, keys, children, data, schema, pager_facade)
     }
 
@@ -411,7 +421,7 @@ impl PagerCore {
         keys: Vec<Key>,
         children: Vec<Position>,
         data: Vec<Row>,
-        schema: &Schema,
+        schema: &TableSchema,
         pager_facade: PagerAccessor //this will surely contain a reference to itself
     ) -> Result<BTreeNode, Status> {
         //TODO think about removing the padding (<= and <) and a cleaner implementation
@@ -473,7 +483,7 @@ impl PagerCore {
             .read_exact(&mut meta_data_buffer)
             .map_err(|_| Status::InternalExceptionReadFailed)?;
         let key_count = meta_data_buffer[0] as usize;
-        let mut main_buffer = vec![0u8; key_count * (self.schema.whole_row_length + POSITION_SIZE) + POSITION_SIZE];
+        let mut main_buffer = vec![0u8; key_count * (self.schema.tables[0].whole_row_length + POSITION_SIZE) + POSITION_SIZE];
         self.file
             .read_exact(&mut main_buffer)
             .map_err(|e| {

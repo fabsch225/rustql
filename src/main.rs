@@ -7,17 +7,20 @@ use rustql::executor::Executor;
 /// A Table consists of an ID Field, and multiple Row Fields -> FieldID
 ///
 /// # NEXT STEPS
-/// - implement DELETE -> how to optimize disk space? -> flag: deleted, then shift everything to the left? -> rather expensive!
-/// - implement dirty flags in the cache? why? if we optimize disk usage at the same time, why bother?
-///     - we already have the PagerAccessor::write_page - hook -> use that, standardizing this is clean
-/// - implement indices
+/// - how to optimize disk space? -> flag: deleted, then shift everything to the left? -> rather expensive!
 /// - implement multiple tables
+///     - next: change bytes_to_schema, and schema_to_bytes, init_from_file
+///     - Gameplan: implement the Schema struct, and change PagerCore.read_schema to return always index 0.
+///     - change how the btree is instantiated
+///     - make the final changes to the executor
+/// - implement nullable values (groundwork is layed)
+/// - implement indices
 /// - optimize disk usage further
 ///
 /// ## Bugs
-/// - SELECT * FROM table WHERE age >= 80 -> returns empty, > 80 works
-/// - SELECT * FROM table WHERE id = 0 -> returns empty, = 2  works
-///     - WHERE id < 1 does not work
+/// - SELECT * FROM table WHERE age >= 80 -> returns empty, > 80 works (pretty sure thats fixed)
+/// - SELECT * FROM table WHERE id = 0 -> returns empty, = 2  works  (pretty sure thats fixed)
+///     - WHERE id < 1 does not work (pretty sure thats fixed)
 ///
 /// # Virtual Memory Strategy for working with multiple things
 /// Each table has a property 'offset' of type Position
@@ -37,6 +40,10 @@ const TOMB_THRESHOLD: usize = 10; //10 percent
 
 fn main() {
     let executor = Executor::init("./default.db.bin", BTREE_NODE_SIZE);
+    executor.exec("CREATE TABLE table (id Integer, name String)".to_string());
+    for i in 0..300 {
+        executor.exec(format!("INSERT INTO table (id, name) VALUES ({}, 'Kunde Nummer {}')", i, i * 3));
+    }
     println!("running RustSQL shell...");
     loop {
         io::stdout().flush().unwrap();

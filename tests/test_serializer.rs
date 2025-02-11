@@ -4,8 +4,8 @@ mod tests {
     use rustql::serializer::Serializer;
     use rustql::status::Status;
 
-    fn get_schema() -> Schema {
-        Schema {
+    fn get_schema() -> TableSchema {
+        TableSchema {
             next_position: 0,
             root: 0,
             offset: 0,
@@ -46,7 +46,7 @@ mod tests {
 
     #[test]
     fn test_schema_to_bytes() {
-        let schema = Schema {
+        let schema = TableSchema {
             next_position: 1,
             root: 1,
             offset: 1,
@@ -75,13 +75,13 @@ mod tests {
             97, 99, 116, 105, 118, 101, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // "active"
         ];
 
-        let result_bytes = Serializer::schema_to_bytes(&schema);
+        let result_bytes = Serializer::table_schema_to_bytes(&schema);
         assert_eq!(result_bytes, expected_bytes);
     }
 
     #[test]
     fn test_schema_to_bytes_empty_schema() {
-        let schema = Schema {
+        let schema = TableSchema {
             next_position: 3,
             root: 1,
             offset: 4,
@@ -100,13 +100,13 @@ mod tests {
             0, 0, 0, 4, // Offset
         ];
 
-        let result_bytes = Serializer::schema_to_bytes(&schema);
+        let result_bytes = Serializer::table_schema_to_bytes(&schema);
         assert_eq!(result_bytes, expected_bytes);
     }
 
     #[test]
     fn test_schema_to_bytes_single_field() {
-        let schema = Schema {
+        let schema = TableSchema {
             next_position: 0,
             root: 0,
             offset: 0,
@@ -129,7 +129,7 @@ mod tests {
             105, 100, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // "id"
         ];
 
-        let result_bytes = Serializer::schema_to_bytes(&schema);
+        let result_bytes = Serializer::table_schema_to_bytes(&schema);
         assert_eq!(result_bytes, expected_bytes);
     }
 
