@@ -302,6 +302,7 @@ impl Executor {
         let mut data_row = Vec::new();
 
         for field in &query.result {
+            //TODO optimize that
             let field_index = schema.fields.iter().position(|f| f.name == field.name).unwrap();
             let field_type = &schema.fields[field_index].field_type;
 
