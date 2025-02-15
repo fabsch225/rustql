@@ -1,12 +1,16 @@
 //will end up probably using unsafe rust -> c arrays?
 //for now, just use vecs
 
-use std::cmp::PartialEq;
 use crate::btree::BTreeNode;
 use crate::crypto::generate_random_hash;
+use crate::executor::TableSchema;
 use crate::serializer::Serializer;
 use crate::status::Status;
-use crate::status::Status::{InternalExceptionInvalidColCount, InternalExceptionInvalidSchema, InternalExceptionPagerMismatch, InternalSuccess};
+use crate::status::Status::{
+    InternalExceptionInvalidColCount, InternalExceptionInvalidSchema,
+    InternalExceptionPagerMismatch, InternalSuccess,
+};
+use std::cmp::PartialEq;
 use std::collections::HashMap;
 use std::fmt;
 use std::fmt::{Debug, Display, Formatter};
@@ -14,10 +18,10 @@ use std::fs::{File, OpenOptions};
 use std::hash::{Hash, Hasher};
 use std::io::{ErrorKind, Read, Seek, SeekFrom, Write};
 use std::sync::{Arc, RwLock};
-use crate::executor::TableSchema;
 //in byte
 
 pub const PAGE_SIZE: u16 = 1024;
+pub const PAGE_SIZE_WITH_META: u16 = PAGE_SIZE + 3; //2 for free space on page, 1 for flag
 
 pub const STRING_SIZE: usize = 256; //len: 255
 pub const INTEGER_SIZE: usize = 5;
@@ -25,16 +29,17 @@ pub const DATE_SIZE: usize = 5;
 pub const BOOLEAN_SIZE: usize = 1; //bit 8 is NULL-Flag
 pub const NULL_SIZE: usize = 1;
 pub const TYPE_SIZE: usize = 1;
-pub const POSITION_SIZE: usize = 4; //during development. should be like 16
+pub const POSITION_SIZE: usize = 4;
 pub const ROW_NAME_SIZE: usize = 16;
 pub const INTEGER_SIZE_WITHOUT_FLAG: usize = INTEGER_SIZE - 1;
-pub const TABLE_NAME_SIZE : usize = 32;
-
+pub const TABLE_NAME_SIZE: usize = 32;
 
 // File Structure V2
 
 // 2 byte: next page index
 // [Pages {PAGE_SIZE}]
+
+pub const PAGES_START_AT: usize = 2;
 
 //---
 
@@ -109,13 +114,14 @@ impl Debug for Type {
 }
 
 //represents a whole page except the position i.e. keys, child-position and data
-pub type PageData = Vec<u8>;
+pub type PageData = Vec<u8>; //[u8; PAGE_SIZE as usize];
 
 #[derive(Clone, Debug)]
 pub struct PageContainer {
-    pub(crate) data: PageData, //not like this, look at my comments in BTreeNode
-    pub(crate) position: Position,
-    size_on_disk: usize, //TODO replace with free_space (?)
+    pub data: PageData, //not like this, look at my comments in BTreeNode
+    pub position: Position,
+    pub free_space: u16,
+    pub flag: Flag,
 }
 
 pub type TableName = Vec<u8>;
@@ -129,23 +135,34 @@ pub type Flag = u8;
 //TODO if this throws errors if i change it, i must abstract every implementation :) not **every** implementation
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Position {
-    pub page_index: u16,
-    pub location_on_page: u16
+    pub page: u16,
+    pub cell: u16,
 }
 
 impl Position {
-    pub fn make_empty() -> Self {
+    pub fn new(page_index: u16, location_on_page: u16) -> Self {
         Position {
-            page_index: 0,
-            location_on_page: 0
+            page: page_index,
+            cell: location_on_page,
         }
+    }
+    pub fn make_empty() -> Self {
+        Position { page: 0, cell: 0 }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.page == 0 && self.cell == 0
+    }
+
+    fn get_file_position(&self) -> u64 {
+        (self.page * PAGE_SIZE_WITH_META + self.cell) as u64
     }
 }
 
 //cache whole pages, so only lookup the page_index
 impl Hash for Position {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        state.write_u16(self.page_index);
+        state.write_u16(self.page);
     }
 }
 
@@ -162,15 +179,17 @@ impl Serializer {
 
 #[derive(Debug)]
 pub struct PagerCore {
-    cache: HashMap<Position, PageContainer>,
     pub hash: String,
-    file: File
+    cache: HashMap<Position, PageContainer>,
+    file: File,
+    next_page_index: u16,
 }
 
 #[derive(Clone)]
 pub struct PagerAccessor {
     pager: Arc<RwLock<PagerCore>>,
-    hash: String,
+    hash: String, //eventually remove this
+                  //one could add a Arc<Priority Queue> here, for the lambdas
 }
 
 impl Debug for PagerAccessor {
@@ -189,38 +208,9 @@ impl PagerAccessor {
         }
     }
 
-    //TODO these methods dont belong here
-    pub fn set_table_schema(&self, new_schema: TableSchema) {
-        if self.pager.read().expect("failed to read pager").schema.tables.len() == 0 {
-            self.pager.write().expect("failed to w-lock pager").schema.tables.push(new_schema);
-        } else {
-            self.pager.write().expect("failed to w-lock pager").schema.tables[0] = new_schema;
-        }
-        self.pager.write().expect("failed to w-lock pager").invalidate_cache();
-    }
-
-    pub(crate) fn set_root_to_none(&self) -> Result<(), Status>{
+    pub(crate) fn get_next_page_index(&self) -> u16 {
         todo!()
     }
-
-    pub fn set_root(&self, node: &BTreeNode) -> Result<(), Status> {
-        self.pager.write().expect("failed to w-lock pager").schema.tables[0].root = node.page_position.clone();
-        Ok(())
-    }
-
-    pub fn has_root(&self) -> bool {
-        true//self.read_table_schema().root != 0
-    }
-
-    pub fn read_schema(&self) -> Schema {
-        self.pager.read().unwrap().schema.clone()
-    }
-
-    #[deprecated]
-    pub fn read_table_schema(&self) -> TableSchema {
-        self.pager.read().unwrap().schema.tables[0].clone()
-    }
-
     //this does create lots of overhead / could be removed
     pub fn verify(&self, pager: &PagerCore) -> bool {
         pager.hash == self.hash
@@ -252,19 +242,16 @@ impl PagerAccessor {
     // (now we have to account for the possibility of loading a page from disk, which requires mutating the filestream)
     pub fn access_page_read<F, T>(&self, node: &BTreeNode, func: F) -> Result<T, Status>
     where
-        F: FnOnce(&PageData, &TableSchema) -> Result<T, Status>,
+        F: FnOnce(&PageData) -> Result<T, Status>,
     {
-        let mut pager = self
-            .pager
-            .write()
-            .map_err(|e|{
-                println!("{:?}", e);
-                Status::InternalExceptionPagerWriteLock
-            })?;
-        let page = pager.access_page_read(&node.page_position);
+        let mut pager = self.pager.write().map_err(|e| {
+            println!("{:?}", e);
+            Status::InternalExceptionPagerWriteLock
+        })?;
+        let page = pager.access_page_read(&node.position);
 
         if page.is_ok() {
-            func(&page?.data, &pager.schema.tables[0].clone())
+            func(&page?.data)
         } else {
             Err(page.unwrap_err())
         }
@@ -272,19 +259,16 @@ impl PagerAccessor {
 
     pub fn access_page_write<F>(&self, node: &BTreeNode, func: F) -> Result<(), Status>
     where
-        F: FnOnce(&mut PageContainer, &TableSchema) -> Result<(), Status>,
+        F: FnOnce(&mut PageContainer) -> Result<(), Status>,
     {
         //TODO Optimize reading / writing to the pager by checking cache beforehand!?
-        let mut pager = self
-            .pager
-            .write().map_err(|e|{
-                eprintln!("{:?}", e);
-                Status::InternalExceptionPagerWriteLock
+        let mut pager = self.pager.write().map_err(|e| {
+            eprintln!("{:?}", e);
+            Status::InternalExceptionPagerWriteLock
         })?;
-        let schema = pager.schema.tables[0].clone();
-        let page: Result<&mut PageContainer, Status> = pager.access_page_write(&node.page_position);
+        let page: Result<&mut PageContainer, Status> = pager.access_page_write(&node.position);
         if page.is_ok() {
-            func(page?, &schema)
+            func(page?)
         } else {
             Err(page.unwrap_err())
         }
@@ -293,15 +277,10 @@ impl PagerAccessor {
 
 impl PagerCore {
     pub fn flush(&mut self) -> Result<(), Status> {
-        let schema_bytes = Serializer::schema_to_bytes(&self.schema);
-        self.file.seek(SeekFrom::Start(0)).map_err(|_| Status::InternalExceptionWriteFailed)?;
-        self.file.write_all(&schema_bytes).map_err(|e| {
-            eprintln!("Failed to write schema bytes to disk: {:?}", e);
-            Status::InternalExceptionWriteFailed
-        })?;
-
         let positions: Vec<Position> = self.cache.keys().cloned().collect();
-
+        //TODO!!!!!!!!!!!!!: this will write lots of pages lots of times instead of once
+        //would work
+        //but Filter first TODO
         for position in positions {
             let page = self.cache[&position].clone();
             if Serializer::is_dirty(&page.data)? {
@@ -312,26 +291,35 @@ impl PagerCore {
         Ok(())
     }
 
-    pub fn init_from_file(file_path: &str, btree_width: usize) -> Result<PagerAccessor, Status> {
+    pub fn init_from_file(file_path: &str) -> Result<PagerAccessor, Status> {
         let mut file = match OpenOptions::new().write(true).read(true).open(file_path) {
             Ok(f) => f,
             Err(e) => {
-                if e.kind() == ErrorKind::NotFound {
-                    return Err(Status::InternalExceptionFileNotFound);
+                return if e.kind() == ErrorKind::NotFound {
+                    Err(Status::InternalExceptionFileNotFound)
                 } else {
                     eprintln!("Error is {}", e.to_string());
-                    return Err(Status::InternalExceptionFileOpenFailed);
+                    Err(Status::InternalExceptionFileOpenFailed)
                 }
             }
         };
-        let schema = Serializer::read_schema(&mut file)?;
+
+        let mut next_page_index_bytes = [0u8; 2];
+        let mut next_page_index;
+        match file.read_exact(&mut next_page_index_bytes) {
+            Err(_) => {
+                next_page_index = 0;
+            }
+            Ok(()) => {
+                next_page_index = u16::from_be_bytes(next_page_index_bytes);
+            }
+        }
 
         Ok(PagerAccessor::new(PagerCore {
+            hash: generate_random_hash(16),
             cache: HashMap::new(),
-            btree_width,
-            schema,
             file,
-            hash: generate_random_hash(16)
+            next_page_index,
         }))
     }
 
@@ -339,11 +327,12 @@ impl PagerCore {
         self.cache.clear();
         InternalSuccess
     }
-
-    pub fn get_node_length(&self) -> i32 {
-        ((2 * self.btree_width - 1) + (2 * self.btree_width - 1) * self.schema.tables[0].whole_row_length + self.btree_width * POSITION_SIZE + 2) as i32
-    }
-
+    /*
+        //TODO this will be put somehwere else
+        pub fn get_node_length(&self) -> i32 {
+            ((2 * self.btree_width - 1) + (2 * self.btree_width - 1) * self.schema.tables[0].whole_row_length + self.btree_width * POSITION_SIZE + 2) as i32
+        }
+    */
     pub fn access_page_read(&mut self, position: &Position) -> Result<PageContainer, Status> {
         let miss = !self.cache.contains_key(&position);
 
@@ -386,82 +375,26 @@ impl PagerCore {
         } else {
             Ok(self
                 .cache
-                .get_mut(&position).map(|pc| {
+                .get_mut(&position)
+                .map(|pc| {
                     Serializer::set_is_dirty(&mut pc.data, true)?;
                     return Ok(pc);
                 })
-                .ok_or(Status::InternalExceptionCacheDenied)??
-            )
+                .ok_or(Status::InternalExceptionCacheDenied)??)
         }
     }
 
-    pub fn create_page(
-        &mut self,
-        keys: Vec<Key>,
-        children: Vec<Position>,
-        data: Vec<Row>,
-        schema: &TableSchema,
-        pager_facade: PagerAccessor
-    ) -> Result<BTreeNode, Status> {
-        let position = self.schema.tables[0].next_position.clone();
-        self.schema.tables[0].next_position.location_on_page += self.get_node_length() as u16;
-        self.create_page_at_position(&position, keys, children, data, schema, pager_facade)
+    pub fn create_page(&mut self) -> Result<u16, Status> {
+        todo!();
     }
 
-    fn create_page_at_position(
-        &mut self,
-        position: &Position,
-        keys: Vec<Key>,
-        children: Vec<Position>,
-        data: Vec<Row>,
-        schema: &TableSchema,
-        pager_facade: PagerAccessor //this will surely contain a reference to itself
-    ) -> Result<BTreeNode, Status> {
-        //TODO think about removing the padding (<= and <) and a cleaner implementation
-        if keys.len() + 1 < children.len() || keys.len() < data.len() {
-            return Err(InternalExceptionInvalidColCount);
-        }
-        if !(keys[0].len() == schema.key_length && (data.len() == 0 || data[0].len() == schema.row_length)) {
-            return Err(InternalExceptionInvalidSchema);
-        }
-        if !pager_facade.verify(&self) {
-            return Err(InternalExceptionPagerMismatch);
-        }
-
-        //Development
-        if data.len() > 0 {
-            let data_length = data.first().map_or(0, |row| row.len());
-            assert_eq!(data_length, schema.row_length)
-        }
-
-        let mut data = data;
-        while data.len() < keys.len() {
-            data.push(vec![0; schema.row_length]);
-        }
-        let orig_children_len = children.len();
-        let mut children = children;
-        //<= is correct -- we want one more child
-        while children.len() <= keys.len() {
-            children.push(Position::make_empty())
-        }
-
-        let page_data = Serializer::init_page_data(keys, data);
-
-        let status_insert = self.insert_page_at_position(position, page_data);
-        if (status_insert != InternalSuccess) {
-            return Err(status_insert);
-        }
-        Ok(BTreeNode {
-            page_position: position.clone(),
-            pager_accessor: pager_facade.clone()
-        })
-    }
-
+    #[deprecated] //this is not wrong, I just don't see any use for this !?
     fn insert_page_at_position(&mut self, position: &Position, page_data: PageData) -> Status {
         let page = PageContainer {
             data: page_data,
             position: position.clone(),
-            size_on_disk: 0,
+            free_space: PAGE_SIZE,
+            flag: 0,
         };
         self.cache.insert(position.clone(), page);
         InternalSuccess
@@ -469,43 +402,33 @@ impl PagerCore {
 
     fn read_page_from_disk(&mut self, position: &Position) -> Result<PageContainer, Status> {
         self.file
-            .seek(SeekFrom::Start(Self::get_file_position(position)))
+            .seek(SeekFrom::Start(position.get_file_position()))
             .map_err(|_| Status::InternalExceptionReadFailed)?;
-        let mut meta_data_buffer = vec![0u8; 2];
+        let mut meta_buffer = [0u8; 3];
         self.file
-            .read_exact(&mut meta_data_buffer)
+            .read_exact(&mut meta_buffer)
             .map_err(|_| Status::InternalExceptionReadFailed)?;
-        let key_count = meta_data_buffer[0] as usize;
-        let mut main_buffer = vec![0u8; key_count * (self.schema.tables[0].whole_row_length + POSITION_SIZE) + POSITION_SIZE];
-        self.file
-            .read_exact(&mut main_buffer)
-            .map_err(|e| {
-                eprintln!("Cannot read File to this len: {}", e);
-                Status::InternalExceptionReadFailed
-            })?;
-        let size_on_disk = meta_data_buffer.len() + main_buffer.len();
-        let mut data = meta_data_buffer;
-        data.append(&mut main_buffer);
+        let mut main_buffer = vec![0u8; PAGE_SIZE as usize];
+        self.file.read_exact(&mut main_buffer).map_err(|e| {
+            eprintln!("Cannot read File to this len: {}", e);
+            Status::InternalExceptionReadFailed
+        })?;
         Ok(PageContainer {
-            data,
+            data: main_buffer,
             position: position.clone(),
-            size_on_disk,
+            free_space: u16::from_be_bytes([meta_buffer[0], meta_buffer[1]]),
+            flag: meta_buffer[2],
         })
     }
 
     fn write_page_to_disk(&mut self, page: &PageContainer) -> Result<(), Status> {
         self.file
-            .seek(SeekFrom::Start(Self::get_file_position(&page.position)))
+            .seek(SeekFrom::Start(page.position.get_file_position()))
             .map_err(|_| Status::InternalExceptionWriteFailed)?;
-        assert!(page.data.len() as  u16 <= PAGE_SIZE);
+        assert!(page.data.len() as u16 <= PAGE_SIZE);
         self.file
             .write_all(&page.data)
             .map_err(|_| Status::InternalExceptionWriteFailed)?;
         Ok(())
     }
-
-    fn get_file_position(position: &Position) -> u64 {
-        (position.page_index * PAGE_SIZE + position.location_on_page) as u64
-    }
 }
-

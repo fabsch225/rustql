@@ -1,6 +1,6 @@
 #[cfg(test)]
 mod tests {
-    use rustql::btree::{Btree, BTreeNode};
+    use rustql::btree::{BTreeNode, Btree};
     use rustql::pager::{Field, Key, PagerAccessor, PagerCore, Position, Row, TableSchema, Type};
 
     fn get_schema() -> TableSchema {
@@ -19,12 +19,15 @@ mod tests {
                 Field {
                     name: "Name".to_string(),
                     field_type: Type::String,
-                }
+                },
             ],
         }
     }
 
-    fn create_and_insert_mock_btree_node(num_keys: usize, pager_interface: PagerAccessor) -> BTreeNode {
+    fn create_and_insert_mock_btree_node(
+        num_keys: usize,
+        pager_interface: PagerAccessor,
+    ) -> BTreeNode {
         let schema = get_schema();
         let keys: Vec<Key> = (0..num_keys)
             .map(|i| vec![i as u8; schema.key_length])
@@ -38,20 +41,25 @@ mod tests {
             })
             .collect();
 
-        let node = pager_interface.access_pager_write(|p| p.create_page(
-            keys.clone(),
-            children.clone(),
-            rows.clone(),
-            &schema,
-            pager_interface.clone()
-        )).unwrap();
+        let node = pager_interface
+            .access_pager_write(|p| {
+                p.create_page(
+                    keys.clone(),
+                    children.clone(),
+                    rows.clone(),
+                    &schema,
+                    pager_interface.clone(),
+                )
+            })
+            .unwrap();
 
         node
     }
 
     #[test]
     fn test_scan() {
-        let pager_interface = PagerCore::init_from_schema("./default.db.bin", get_schema()).unwrap();
+        let pager_interface =
+            PagerCore::init_from_schema("./default.db.bin", get_schema()).unwrap();
         let mut btree = Btree::new(2, pager_interface.clone());
         let node = create_and_insert_mock_btree_node(5, pager_interface.clone());
         btree.root = Some(node);
@@ -63,7 +71,8 @@ mod tests {
 
     #[test]
     fn test_insert() {
-        let pager_interface = PagerCore::init_from_schema("./default.db.bin", get_schema()).unwrap();
+        let pager_interface =
+            PagerCore::init_from_schema("./default.db.bin", get_schema()).unwrap();
         let mut btree = Btree::new(2, pager_interface.clone());
 
         let key: Key = vec![1, 0, 0, 0];
@@ -81,7 +90,8 @@ mod tests {
 
     #[test]
     fn test_delete() {
-        let pager_interface = PagerCore::init_from_schema("./default.db.bin", get_schema()).unwrap();
+        let pager_interface =
+            PagerCore::init_from_schema("./default.db.bin", get_schema()).unwrap();
         let mut btree = Btree::new(2, pager_interface.clone()).unwrap();
 
         for i in 0..4 {
@@ -103,7 +113,8 @@ mod tests {
 
     #[test]
     fn test_find_range() {
-        let pager_interface = PagerCore::init_from_schema("./default.db.bin", get_schema()).unwrap();
+        let pager_interface =
+            PagerCore::init_from_schema("./default.db.bin", get_schema()).unwrap();
         let mut btree = Btree::new(2, pager_interface.clone()).expect("");
 
         for i in 0..10 {
@@ -114,27 +125,39 @@ mod tests {
             btree.insert(key.clone(), row.clone());
         }
 
-        let (keys, rows) = btree.find_range(vec![1, 0, 0, 0], vec![3, 0, 0, 0], false, false).unwrap();
+        let (keys, rows) = btree
+            .find_range(vec![1, 0, 0, 0], vec![3, 0, 0, 0], false, false)
+            .unwrap();
         assert_eq!(keys.len(), 1);
         assert_eq!(rows.len(), 1);
 
-        let (keys, rows) = btree.find_range(vec![1, 0, 0, 0], vec![3, 0, 0, 0], true, false).unwrap();
+        let (keys, rows) = btree
+            .find_range(vec![1, 0, 0, 0], vec![3, 0, 0, 0], true, false)
+            .unwrap();
         assert_eq!(keys.len(), 2);
         assert_eq!(rows.len(), 2);
 
-        let (keys, rows) = btree.find_range(vec![1, 0, 0, 0], vec![4, 0, 0, 0], false, true).unwrap();
+        let (keys, rows) = btree
+            .find_range(vec![1, 0, 0, 0], vec![4, 0, 0, 0], false, true)
+            .unwrap();
         assert_eq!(keys.len(), 3);
         assert_eq!(rows.len(), 3);
 
-        let (keys, rows) = btree.find_range(vec![1, 0, 0, 0], vec![20, 0, 0, 0], false, true).unwrap();
+        let (keys, rows) = btree
+            .find_range(vec![1, 0, 0, 0], vec![20, 0, 0, 0], false, true)
+            .unwrap();
         assert_eq!(keys.len(), 8);
         assert_eq!(rows.len(), 8);
 
-        let (keys, rows) = btree.find_range(vec![7, 0, 0, 0], vec![20, 0, 0, 0], true, true).unwrap();
+        let (keys, rows) = btree
+            .find_range(vec![7, 0, 0, 0], vec![20, 0, 0, 0], true, true)
+            .unwrap();
         assert_eq!(keys.len(), 3);
         assert_eq!(rows.len(), 3);
 
-        let (keys, rows) = btree.find_range(vec![1, 0, 0, 0], vec![3, 0, 0, 0], true, true).unwrap();
+        let (keys, rows) = btree
+            .find_range(vec![1, 0, 0, 0], vec![3, 0, 0, 0], true, true)
+            .unwrap();
         assert_eq!(keys.len(), 3);
         assert_eq!(rows.len(), 3);
     }

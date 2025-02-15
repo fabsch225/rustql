@@ -38,8 +38,14 @@ mod tests {
         let result = executor.exec("SELECT * FROM test".to_string());
         assert!(result.success);
         assert_eq!(result.result.data.len(), 2);
-        assert_eq!(result.result.data[0][0..10], vec![0, 0, 0, 1u8, 0, b'A', b'l', b'i', b'c', b'e']);
-        assert_eq!(result.result.data[1][0..8], vec![0, 0, 0, 2u8, 0, b'B', b'o', b'b']);
+        assert_eq!(
+            result.result.data[0][0..10],
+            vec![0, 0, 0, 1u8, 0, b'A', b'l', b'i', b'c', b'e']
+        );
+        assert_eq!(
+            result.result.data[1][0..8],
+            vec![0, 0, 0, 2u8, 0, b'B', b'o', b'b']
+        );
     }
 
     #[test]
@@ -51,7 +57,10 @@ mod tests {
         let result = executor.exec("SELECT * FROM test WHERE id <= 1".to_string());
         assert!(result.success);
         assert_eq!(result.result.data.len(), 1);
-        assert_eq!(result.result.data[0][0..10], vec![0, 0, 0, 1, 0, b'A', b'l', b'i', b'c', b'e']);
+        assert_eq!(
+            result.result.data[0][0..10],
+            vec![0, 0, 0, 1, 0, b'A', b'l', b'i', b'c', b'e']
+        );
     }
 
     #[test]
@@ -72,7 +81,10 @@ mod tests {
         let executor = Executor::init("./default.db.bin", BTREE_NODE_SIZE);
         executor.exec("CREATE TABLE test (id Integer, other Integer)".to_string());
         for i in 0..=10 {
-            let res = executor.exec(format!("INSERT INTO table (id, other) VALUES ({}, 0)", 10 - i));
+            let res = executor.exec(format!(
+                "INSERT INTO table (id, other) VALUES ({}, 0)",
+                10 - i
+            ));
             assert!(res.success);
         }
         executor.debug();
@@ -98,7 +110,10 @@ mod tests {
         let executor = Executor::init("./default.db.bin", BTREE_NODE_SIZE);
         executor.exec("CREATE TABLE test (id Integer, name String)".to_string());
         for i in 1..=100 {
-            executor.exec(format!("INSERT INTO test (id, name) VALUES ({}, 'User{}')", i, i));
+            executor.exec(format!(
+                "INSERT INTO test (id, name) VALUES ({}, 'User{}')",
+                i, i
+            ));
         }
         let result = executor.exec("SELECT * FROM test".to_string());
         assert!(result.success);
@@ -116,7 +131,10 @@ mod tests {
         for len in (0..350).step_by(10) {
             executor.exec("CREATE TABLE test (id Integer, other Integer)".to_string());
             for i in 1..=len {
-                executor.exec(format!("INSERT INTO test (id, other) VALUES ({}, {})", i, 0));
+                executor.exec(format!(
+                    "INSERT INTO test (id, other) VALUES ({}, {})",
+                    i, 0
+                ));
             }
             let result = executor.exec(format!("SELECT * FROM test WHERE id <= {}", len));
             assert!(result.success);
@@ -140,7 +158,11 @@ mod tests {
             }
 
             for i in 1..=len / 2 {
-                let result = executor.exec(format!("INSERT INTO test (id, other) VALUES ({}, '{}')", i, i * 2));
+                let result = executor.exec(format!(
+                    "INSERT INTO test (id, other) VALUES ({}, '{}')",
+                    i,
+                    i * 2
+                ));
                 //println!("{}", result);
                 assert!(result.success)
             }
@@ -152,8 +174,8 @@ mod tests {
                 executor.debug();
             }
             assert!(executor.check_integrity().is_ok())
-       //
-       }
+            //
+        }
     }
 
     #[test]
@@ -161,7 +183,10 @@ mod tests {
         let executor = Executor::init("./default.db.bin", BTREE_NODE_SIZE);
         executor.exec("CREATE TABLE test (id Integer, other Integer)".to_string());
         for i in 1..=10 {
-            let res = executor.exec(format!("INSERT INTO test (id, other) VALUES ({}, {})", i, 0));
+            let res = executor.exec(format!(
+                "INSERT INTO test (id, other) VALUES ({}, {})",
+                i, 0
+            ));
             assert!(res.success);
         }
         executor.debug();
@@ -171,7 +196,10 @@ mod tests {
         println!("after deletion");
         executor.debug();
         for i in 1..=5 {
-            executor.exec(format!("INSERT INTO test (id, other) VALUES ({}, {})", i, 0));
+            executor.exec(format!(
+                "INSERT INTO test (id, other) VALUES ({}, {})",
+                i, 0
+            ));
             //executor.debug();
         }
         executor.debug();
@@ -191,7 +219,10 @@ mod tests {
                 executor.exec("DELETE FROM table".to_string());
 
                 for i in 1..=size {
-                    executor.exec(format!("INSERT INTO test (id, other) VALUES ({}, {})", i, 0));
+                    executor.exec(format!(
+                        "INSERT INTO test (id, other) VALUES ({}, {})",
+                        i, 0
+                    ));
                 }
                 let result = executor.exec("SELECT * FROM test".to_string());
                 assert_eq!(result.result.data.len(), size);
@@ -211,7 +242,11 @@ mod tests {
                     }
                 }
                 let result = executor.exec("SELECT * FROM test".to_string());
-                println!("After deleting multiples of {}: {} entries left", modulo, result.result.data.len());
+                println!(
+                    "After deleting multiples of {}: {} entries left",
+                    modulo,
+                    result.result.data.len()
+                );
                 assert_eq!(result.result.data.len(), size - count_deleted);
                 assert!(executor.check_integrity().is_ok())
             }
@@ -224,7 +259,10 @@ mod tests {
 
         // Insert initial rows
         for i in 1..=10 {
-            executor.exec(format!("INSERT INTO test (id, name) VALUES ({}, 'User{}')", i, i));
+            executor.exec(format!(
+                "INSERT INTO test (id, name) VALUES ({}, 'User{}')",
+                i, i
+            ));
         }
 
         // Delete some rows
@@ -234,7 +272,10 @@ mod tests {
 
         // Insert new rows
         for i in 11..=15 {
-            executor.exec(format!("INSERT INTO test (id, name) VALUES ({}, 'NewUser{}')", i, i));
+            executor.exec(format!(
+                "INSERT INTO test (id, name) VALUES ({}, 'NewUser{}')",
+                i, i
+            ));
         }
 
         // Verify the remaining rows
@@ -250,8 +291,8 @@ mod tests {
             } else {
                 format!("NewUser{}", expected_id)
             }
-                .as_bytes()
-                .to_vec();
+            .as_bytes()
+            .to_vec();
             assert_eq!(row[0..5], [0u8, 0, 0, expected_id as u8, 0]);
             assert_eq!(row[5..10], expected_name[0..5]);
         }
@@ -266,7 +307,10 @@ mod tests {
 
         // Insert initial rows
         for i in 1..=20 {
-            executor.exec(format!("INSERT INTO test (id, name) VALUES ({}, 'User{}')", i, i));
+            executor.exec(format!(
+                "INSERT INTO test (id, name) VALUES ({}, 'User{}')",
+                i, i
+            ));
         }
 
         // Delete rows with specific conditions
@@ -275,7 +319,10 @@ mod tests {
         // Insert new rows with conditions
         for i in 21..=30 {
             if i % 2 != 0 {
-                executor.exec(format!("INSERT INTO test (id, name) VALUES ({}, 'OddUser{}')", i, i));
+                executor.exec(format!(
+                    "INSERT INTO test (id, name) VALUES ({}, 'OddUser{}')",
+                    i, i
+                ));
             }
         }
 
@@ -304,7 +351,10 @@ mod tests {
                 //executor.exec("CREATE TABLE test (id Integer, other Integer)".to_string());
 
                 for i in 1..=size {
-                    executor.exec(format!("INSERT INTO test (id, other) VALUES ({}, {})", i, modulo));
+                    executor.exec(format!(
+                        "INSERT INTO test (id, other) VALUES ({}, {})",
+                        i, modulo
+                    ));
                 }
                 let result = executor.exec("SELECT * FROM test".to_string());
                 assert_eq!(result.result.data.len(), size);
@@ -324,7 +374,11 @@ mod tests {
                 assert!(executor.check_integrity().is_ok());
                 for i in 1..=size {
                     if i % modulo == 0 {
-                        let result = executor.exec(format!("INSERT INTO test (id, other) VALUES ({}, {})", i, i * 10));
+                        let result = executor.exec(format!(
+                            "INSERT INTO test (id, other) VALUES ({}, {})",
+                            i,
+                            i * 10
+                        ));
                         assert!(result.success);
                     }
                 }

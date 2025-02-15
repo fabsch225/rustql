@@ -1,10 +1,19 @@
 //also look at pager.rs for comments
 
+use crate::executor::TableSchema;
+use crate::pager::{
+    Flag, Key, PageData, Position, Row, Type, BOOLEAN_SIZE, DATE_SIZE, INTEGER_SIZE,
+    INTEGER_SIZE_WITHOUT_FLAG, NULL_SIZE, POSITION_SIZE, ROW_NAME_SIZE, STRING_SIZE,
+    TABLE_NAME_SIZE, TYPE_SIZE,
+};
+use crate::status::Status;
+use crate::status::Status::{
+    InternalExceptionIndexOutOfRange, InternalExceptionInvalidColCount,
+    InternalExceptionInvalidRowLength, InternalExceptionInvalidSchema,
+    InternalExceptionKeyNotFound, InternalExceptionTypeMismatch, InternalSuccess, Success,
+};
 use std::fs::File;
 use std::io::Read;
-use crate::pager::{Field, Flag, Key, PageContainer, PageData, PagerAccessor, Position, Row, Schema, TableIndex, TableSchema, Type, BOOLEAN_SIZE, DATE_SIZE, INTEGER_SIZE, INTEGER_SIZE_WITHOUT_FLAG, NULL_SIZE, POSITION_SIZE, ROW_NAME_SIZE, STRING_SIZE, TABLE_NAME_SIZE, TYPE_SIZE};
-use crate::status::Status;
-use crate::status::Status::{InternalExceptionIndexOutOfRange, InternalExceptionInvalidColCount, InternalExceptionInvalidRowLength, InternalExceptionInvalidSchema, InternalExceptionKeyNotFound, InternalExceptionTypeMismatch, InternalSuccess, Success};
 
 /// # Responsibilities
 /// - Execute basic operations on the pages
@@ -14,7 +23,7 @@ use crate::status::Status::{InternalExceptionIndexOutOfRange, InternalExceptionI
 pub struct Serializer {}
 
 impl Serializer {
-    pub(crate) fn get_size_of_type(ty: &Type) -> Result<usize,Status> {
+    pub(crate) fn get_size_of_type(ty: &Type) -> Result<usize, Status> {
         match ty {
             Type::String => Ok(STRING_SIZE),
             Type::Integer => Ok(INTEGER_SIZE),
@@ -26,12 +35,16 @@ impl Serializer {
 
     pub fn init_page_data(keys: Vec<Key>, data: Vec<Row>) -> PageData {
         let len = keys.len();
-        let children: Vec<Position> = vec![0; len + 1];
+        let children: Vec<Position> = vec![Position::make_empty(); len + 1];
         Serializer::init_page_data_with_children(keys, children, data)
     }
 
     //TODO Error handling
-    pub fn init_page_data_with_children(keys: Vec<Key>, children: Vec<Position>, mut data: Vec<Row>) -> PageData {
+    pub fn init_page_data_with_children(
+        keys: Vec<Key>,
+        children: Vec<Position>,
+        mut data: Vec<Row>,
+    ) -> PageData {
         let mut result = PageData::new();
         let len = keys.len();
         result.push(len as u8);
@@ -152,7 +165,12 @@ impl Serializer {
         ))
     }
 
-    pub fn write_key(index: usize, key: &Key, page: &mut PageData, schema: &TableSchema) -> Result<(), Status> {
+    pub fn write_key(
+        index: usize,
+        key: &Key,
+        page: &mut PageData,
+        schema: &TableSchema,
+    ) -> Result<(), Status> {
         let num_keys = page[0] as usize;
         if index >= num_keys {
             panic!("why");
@@ -182,9 +200,9 @@ impl Serializer {
         let list_start_pos = 2 + (num_keys * key_length);
         let start_pos = list_start_pos + index * POSITION_SIZE;
         let end_pos = start_pos + POSITION_SIZE;
-        let child_bytes = Serializer::position_to_bytes(child);
+        let child_bytes = Serializer::position_to_bytes(child.clone());
         page[start_pos..end_pos].copy_from_slice(&child_bytes);
-        if child != 0 {
+        if child.is_empty() {
             Self::set_is_leaf(page, false)?;
         }
         Ok(())
@@ -217,7 +235,7 @@ impl Serializer {
             let child_position = Serializer::bytes_to_position(
                 <&[u8; POSITION_SIZE]>::try_from(&page[start_pos..end_pos]).unwrap(),
             );
-            if child_position == 0 {
+            if child_position.is_empty() {
                 break; //0 means, none. we can break because of btree structure
             }
             result.push(child_position);
@@ -227,7 +245,11 @@ impl Serializer {
 
     ///will adjust number of keys, delete children if necessary
     /// - the original data will be intact, but empty rows will be padded.
-    pub fn write_keys_vec(keys: &Vec<Key>, page: &mut PageData, schema: &TableSchema) -> Result<(), Status> {
+    pub fn write_keys_vec(
+        keys: &Vec<Key>,
+        page: &mut PageData,
+        schema: &TableSchema,
+    ) -> Result<(), Status> {
         let num_keys = page[0] as usize;
         if num_keys != keys.len() {
             return Self::write_keys_vec_resize(keys, page, schema);
@@ -243,13 +265,24 @@ impl Serializer {
         Ok(())
     }
 
-    pub fn write_keys_vec_resize_with_rows(keys: &Vec<Key>, rows: &Vec<Row>, page: &mut PageData, schema: &TableSchema) -> Result<(), Status> {
-        if keys.len() != rows.len() { panic!("keys and rows must have same len") }
+    pub fn write_keys_vec_resize_with_rows(
+        keys: &Vec<Key>,
+        rows: &Vec<Row>,
+        page: &mut PageData,
+        schema: &TableSchema,
+    ) -> Result<(), Status> {
+        if keys.len() != rows.len() {
+            panic!("keys and rows must have same len")
+        }
         Self::write_keys_vec_resize(keys, page, schema)?;
         Self::write_data_by_vec(page, rows, schema)
     }
 
-    pub fn write_keys_vec_resize(keys: &Vec<Key>, page: &mut PageData, schema: &TableSchema) -> Result<(), Status> {
+    pub fn write_keys_vec_resize(
+        keys: &Vec<Key>,
+        page: &mut PageData,
+        schema: &TableSchema,
+    ) -> Result<(), Status> {
         let orig_num_keys = page[0] as usize;
         let new_num_keys = keys.len();
         //assert!(new_num_keys != 0); this is allowed, if we change the root afterwards
@@ -261,7 +294,10 @@ impl Serializer {
         let orig_keys_end = keys_start + orig_num_keys * key_length;
         let new_keys_end = keys_start + new_num_keys * key_length;
         if increase {
-            page.splice(orig_keys_end..orig_keys_end, vec![0; (new_num_keys - orig_num_keys) * key_length]);
+            page.splice(
+                orig_keys_end..orig_keys_end,
+                vec![0; (new_num_keys - orig_num_keys) * key_length],
+            );
         } else {
             page.drain(new_keys_end..orig_keys_end);
         }
@@ -276,7 +312,10 @@ impl Serializer {
         let orig_children_end = children_start + (orig_num_keys + 1) * POSITION_SIZE;
         let new_children_end = children_start + (new_num_keys + 1) * POSITION_SIZE;
         if increase {
-            page.splice(orig_children_end..orig_children_end, vec![0; (new_num_keys - orig_num_keys) * POSITION_SIZE]);
+            page.splice(
+                orig_children_end..orig_children_end,
+                vec![0; (new_num_keys - orig_num_keys) * POSITION_SIZE],
+            );
         } else {
             page.drain(new_children_end..orig_children_end);
         }
@@ -285,7 +324,10 @@ impl Serializer {
         let orig_data_end = data_start + orig_num_keys * data_length;
         let new_data_end = data_start + new_num_keys * data_length;
         if increase {
-            page.splice(orig_data_end..orig_data_end, vec![0; (new_num_keys - orig_num_keys) * data_length]);
+            page.splice(
+                orig_data_end..orig_data_end,
+                vec![0; (new_num_keys - orig_num_keys) * data_length],
+            );
         } else {
             page.drain(new_data_end..orig_data_end);
         }
@@ -306,16 +348,21 @@ impl Serializer {
         let list_start_pos = 2 + (num_keys * key_length);
         let mut check_for_leaf = true;
         for (i, child) in children.iter().enumerate() {
-            if i > num_keys + 1 { panic!("cannot extend children without extending keys first: we have at least {} children, but {} keys", i, num_keys) }
+            if i > num_keys + 1 {
+                panic!("cannot extend children without extending keys first: we have at least {} children, but {} keys", i, num_keys)
+            }
             let start_pos = list_start_pos + i * POSITION_SIZE;
             let end_pos = start_pos + POSITION_SIZE;
-            page.splice(start_pos..end_pos, Serializer::position_to_bytes(*child).to_vec());
-            if *child != 0 && check_for_leaf {
+            page.splice(
+                start_pos..end_pos,
+                Serializer::position_to_bytes(child.clone()).to_vec(),
+            );
+            if child.is_empty() && check_for_leaf {
                 check_for_leaf = false;
                 Self::set_is_leaf(page, false)?;
             }
         }
-       Ok(())
+        Ok(())
     }
 
     pub fn read_data_by_key(
@@ -417,7 +464,9 @@ impl Serializer {
         schema: &TableSchema,
     ) -> Result<(), Status> {
         let num_keys = page[0] as usize;
-        if rows.len() != num_keys { return Err(InternalExceptionInvalidColCount) }
+        if rows.len() != num_keys {
+            return Err(InternalExceptionInvalidColCount);
+        }
 
         let key_length = schema.key_length;
         let keys_start = 2;
@@ -425,10 +474,14 @@ impl Serializer {
         let data_start = children_start + (num_keys + 1) * POSITION_SIZE;
         let data_length = schema.row_length;
         for (index, row) in rows.iter().enumerate() {
-            if row.len() != data_length { return Err(InternalExceptionInvalidRowLength) }
+            if row.len() != data_length {
+                return Err(InternalExceptionInvalidRowLength);
+            }
             let start = data_start + index * data_length;
             let end = start + data_length;
-            if end > page.len() { return Err(InternalExceptionIndexOutOfRange) }
+            if end > page.len() {
+                return Err(InternalExceptionIndexOutOfRange);
+            }
             page[start..end].copy_from_slice(row);
         }
         Ok(())
@@ -437,9 +490,12 @@ impl Serializer {
     //TODO i dont know if this is up-to-date
     #[deprecated]
     pub fn verify_schema(schema: &TableSchema) -> Result<(), Status> {
-        let computed_data_length: usize = schema.fields.iter()
+        let computed_data_length: usize = schema
+            .fields
+            .iter()
             .map(|field| Self::get_size_of_type(&field.field_type).unwrap_or(0))
-            .sum::<usize>() - schema.key_length;
+            .sum::<usize>()
+            - schema.key_length;
 
         if computed_data_length != schema.row_length {
             return Err(InternalExceptionInvalidSchema);
@@ -453,7 +509,9 @@ impl Serializer {
             return Err(InternalExceptionInvalidSchema);
         }
 
-        let computed_row_length: usize = schema.fields.iter()
+        let computed_row_length: usize = schema
+            .fields
+            .iter()
             .map(|field| Self::get_size_of_type(&field.field_type).unwrap_or(0))
             .sum();
 
@@ -471,9 +529,9 @@ impl Serializer {
         match field_type {
             Type::String => vec![u8::MAX; STRING_SIZE],
             Type::Integer => vec![0x7F; INTEGER_SIZE], // Max positive value for signed integer
-            Type::Date => vec![0xFF; DATE_SIZE], // Max value for date
-            Type::Boolean => vec![1], // True as infinity for boolean
-            Type::Null => vec![0], // Null has no concept of infinity
+            Type::Date => vec![0xFF; DATE_SIZE],       // Max value for date
+            Type::Boolean => vec![1],                  // True as infinity for boolean
+            Type::Null => vec![0],                     // Null has no concept of infinity
         }
     }
 
@@ -481,29 +539,49 @@ impl Serializer {
         match field_type {
             Type::String => vec![u8::MIN; STRING_SIZE],
             Type::Integer => vec![0x80; INTEGER_SIZE], // Min negative value for signed integer
-            Type::Date => vec![0x00; DATE_SIZE], // Min value for date
-            Type::Boolean => vec![0], // False as negative infinity for boolean
-            Type::Null => vec![0], // Null has no concept of negative infinity
+            Type::Date => vec![0x00; DATE_SIZE],       // Min value for date
+            Type::Boolean => vec![0],                  // False as negative infinity for boolean
+            Type::Null => vec![0],                     // Null has no concept of negative infinity
         }
     }
 
-    pub fn set_flag_at_position(v: &mut Vec<u8>, position: u8, value: bool, field_type: &Type) -> Result<(), Status> {
+    pub fn set_flag_at_position(
+        v: &mut Vec<u8>,
+        position: u8,
+        value: bool,
+        field_type: &Type,
+    ) -> Result<(), Status> {
         match field_type {
-            Type::Null => { Err(Status::InternalExceptionInvalidFieldType) }
-            Type::Boolean => { Ok(Self::write_byte_at_position(&mut v[0], position, value)) }
-            _ => { Ok(Self::write_byte_at_position(&mut v[Self::get_size_of_type(&field_type)? - 1], position, value)) }
+            Type::Null => Err(Status::InternalExceptionInvalidFieldType),
+            Type::Boolean => Ok(Self::write_byte_at_position(&mut v[0], position, value)),
+            _ => Ok(Self::write_byte_at_position(
+                &mut v[Self::get_size_of_type(&field_type)? - 1],
+                position,
+                value,
+            )),
         }
     }
 
-    pub fn get_flag_at_position(v: &Vec<u8>, position: u8, field_type: &Type) -> Result<bool, Status> {
+    pub fn get_flag_at_position(
+        v: &Vec<u8>,
+        position: u8,
+        field_type: &Type,
+    ) -> Result<bool, Status> {
         match field_type {
-            Type::Null => { Err(Status::InternalExceptionInvalidFieldType) }
-            Type::Boolean => { Ok(Self::byte_to_bool_at_position(v[0], position)) }
-            _ => { Ok(Self::byte_to_bool_at_position(v[Self::get_size_of_type(field_type)? - 1], position)) }
+            Type::Null => Err(Status::InternalExceptionInvalidFieldType),
+            Type::Boolean => Ok(Self::byte_to_bool_at_position(v[0], position)),
+            _ => Ok(Self::byte_to_bool_at_position(
+                v[Self::get_size_of_type(field_type)? - 1],
+                position,
+            )),
         }
     }
 
-    pub fn compare_with_type(a: &Vec<u8>, b: &Vec<u8>, field_type: &Type) -> Result<std::cmp::Ordering, Status> {
+    pub fn compare_with_type(
+        a: &Vec<u8>,
+        b: &Vec<u8>,
+        field_type: &Type,
+    ) -> Result<std::cmp::Ordering, Status> {
         match field_type {
             Type::String => Ok(Self::compare_strings(
                 <[u8; STRING_SIZE]>::try_from(a.to_vec()).unwrap(),
@@ -557,7 +635,10 @@ impl Serializer {
         let mut index = 0;
         let mut skip = true;
         for field in table_schema.fields.clone() {
-            if skip { skip = false; continue; } //first field is the key TODO change this
+            if skip {
+                skip = false;
+                continue;
+            } //first field is the key TODO change this
             let field_type = field.field_type;
             let len = Serializer::get_size_of_type(&field_type).unwrap();
             result += &*Serializer::format_field(&row[index..(index + len)].to_vec(), &field_type)?;
@@ -575,11 +656,17 @@ impl Serializer {
 
     pub fn format_field(bytes: &Vec<u8>, field_type: &Type) -> Result<String, Status> {
         match field_type {
-            Type::String => Ok(Self::format_string(<[u8; STRING_SIZE]>::try_from(bytes.clone()).expect("wrong len for type String"))),
-            Type::Date => Ok(Self::format_date(<[u8; DATE_SIZE]>::try_from(bytes.clone()).expect("wrong len for type Date"))),
-            Type::Integer => Ok(Self::format_int(<[u8; INTEGER_SIZE]>::try_from(bytes.clone()).expect("wrong len for type Integer"))),
+            Type::String => Ok(Self::format_string(
+                <[u8; STRING_SIZE]>::try_from(bytes.clone()).expect("wrong len for type String"),
+            )),
+            Type::Date => Ok(Self::format_date(
+                <[u8; DATE_SIZE]>::try_from(bytes.clone()).expect("wrong len for type Date"),
+            )),
+            Type::Integer => Ok(Self::format_int(
+                <[u8; INTEGER_SIZE]>::try_from(bytes.clone()).expect("wrong len for type Integer"),
+            )),
             Type::Boolean => Ok(Self::format_bool(&bytes[0])),
-            _ => Err(InternalExceptionTypeMismatch)
+            _ => Err(InternalExceptionTypeMismatch),
         }
     }
 
@@ -656,18 +743,19 @@ impl Serializer {
     }
 
     pub fn bytes_to_position(bytes: &[u8; POSITION_SIZE]) -> Position {
-        let mut value = 0i32;
-        for &byte in bytes {
-            value = (value << 8) | (byte as i32);
-        }
-        value
+        //byte 0, 1 -> page
+        //byte 2, 3 -> cell
+        let page = bytes[0] as u16 + 8 * bytes[1] as u16;
+        let cell = bytes[2] as u16 + 8 * bytes[3] as u16;
+        Position::new(page, cell)
     }
 
     pub fn position_to_bytes(position: Position) -> [u8; POSITION_SIZE] {
         let mut bytes = [0u8; POSITION_SIZE];
-        for i in 0..POSITION_SIZE {
-            bytes[POSITION_SIZE - 1 - i] = ((position >> (i * 8)) & 0xFF) as u8;
-        }
+        bytes[0] = (position.page >> 8) as u8;
+        bytes[1] = (position.page & 0xFF) as u8;
+        bytes[2] = (position.cell >> 8) as u8;
+        bytes[3] = (position.cell & 0xFF) as u8;
         bytes
     }
 

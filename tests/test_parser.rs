@@ -1,6 +1,6 @@
 #[cfg(test)]
 mod tests {
-    use rustql::parser::{Parser, ParsedQuery};
+    use rustql::parser::{ParsedQuery, Parser};
 
     #[test]
     fn test_create_table_valid() {
@@ -25,10 +25,7 @@ mod tests {
         let mut parser = Parser::new(query.to_string());
         let result = parser.parse_query();
         assert!(result.is_err());
-        assert_eq!(
-            result.unwrap_err(),
-            "Expected field type".to_string()
-        );
+        assert_eq!(result.unwrap_err(), "Expected field type".to_string());
     }
 
     #[test]
@@ -37,10 +34,7 @@ mod tests {
         let mut parser = Parser::new(query.to_string());
         let result = parser.parse_query();
         assert!(result.is_err());
-        assert_eq!(
-            result.unwrap_err(),
-            "Invalid type: )".to_string()
-        );
+        assert_eq!(result.unwrap_err(), "Invalid type: )".to_string());
     }
 
     #[test]
@@ -119,7 +113,10 @@ mod tests {
         let mut parser = Parser::new(query.to_string());
         let result = parser.parse_query();
         assert!(result.is_err());
-        assert_eq!(result.unwrap_err(), "Expected 'FROM', but found 'users'".to_string());
+        assert_eq!(
+            result.unwrap_err(),
+            "Expected 'FROM', but found 'users'".to_string()
+        );
     }
 
     #[test]
@@ -128,7 +125,10 @@ mod tests {
         let mut parser = Parser::new(query.to_string());
         let result = parser.parse_query();
         assert!(result.is_err());
-        assert_eq!(result.unwrap_err(), "Unknown statement type: UNKNOWN".to_string());
+        assert_eq!(
+            result.unwrap_err(),
+            "Unknown statement type: UNKNOWN".to_string()
+        );
     }
 
     #[test]
@@ -149,7 +149,8 @@ mod tests {
 
     #[test]
     fn test_parse_insert_multiple_values() {
-        let query = "INSERT INTO products (id, name, price) VALUES (101, 'Laptop', 999.99)".to_string();
+        let query =
+            "INSERT INTO products (id, name, price) VALUES (101, 'Laptop', 999.99)".to_string();
         let mut parser = Parser::new(query);
         let result = parser.parse_query();
 
@@ -193,7 +194,10 @@ mod tests {
         let result = parser.parse_query();
 
         assert!(result.is_err());
-        assert_eq!(result.unwrap_err(), "Expected 'VALUES', but reached end of input");
+        assert_eq!(
+            result.unwrap_err(),
+            "Expected 'VALUES', but reached end of input"
+        );
     }
 
     #[test]
@@ -247,7 +251,9 @@ mod tests {
 
     #[test]
     fn test_parse_insert_whitespace_handling() {
-        let query = "  INSERT   INTO   users   ( id , name , age )   VALUES (  1 ,  'John Doe' ,  30  )  ".to_string();
+        let query =
+            "  INSERT   INTO   users   ( id , name , age )   VALUES (  1 ,  'John Doe' ,  30  )  "
+                .to_string();
         let mut parser = Parser::new(query);
         let result = parser.parse_query();
 

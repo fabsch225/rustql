@@ -56,9 +56,18 @@ mod tests {
             key_type: Type::Integer,
             row_length: 16,
             fields: vec![
-                Field { name: "id".to_string(), field_type: Type::Integer },
-                Field { name: "name".to_string(), field_type: Type::String },
-                Field { name: "active".to_string(), field_type: Type::Boolean },
+                Field {
+                    name: "id".to_string(),
+                    field_type: Type::Integer,
+                },
+                Field {
+                    name: "name".to_string(),
+                    field_type: Type::String,
+                },
+                Field {
+                    name: "active".to_string(),
+                    field_type: Type::Boolean,
+                },
             ],
         };
 
@@ -115,9 +124,10 @@ mod tests {
             key_length: 5,
             key_type: Type::Integer,
             row_length: 0,
-            fields: vec![
-                Field { name: "id".to_string(), field_type: Type::Integer },
-            ],
+            fields: vec![Field {
+                name: "id".to_string(),
+                field_type: Type::Integer,
+            }],
         };
 
         let expected_bytes = vec![

@@ -1,6 +1,6 @@
+use crate::btree::Btree;
 use std::cmp::PartialEq;
 use std::fmt::{Debug, Formatter};
-use crate::btree::Btree;
 
 #[derive(PartialEq, Debug)]
 pub enum Status {

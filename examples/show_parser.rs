@@ -1,6 +1,6 @@
+use rustql::parser::*;
 use std::io;
 use std::io::Write;
-use rustql::parser::*;
 
 fn main() {
     loop {

@@ -1,6 +1,6 @@
+use rustql::executor::Executor;
 use std::io;
 use std::io::Write;
-use rustql::executor::Executor;
 
 /// # Thoughts on the completed Project
 /// The Schema will contain multiple tables -> Table ID and multiple indices
@@ -34,12 +34,11 @@ use rustql::executor::Executor;
 //current status, note to future self
 // - changing executor + pager to work with master_table, bigger pages etc
 
-
-//C in/out
-//Executor <-> Parser
+//IO in/out
+//Parser -> Planner -> Executor
 //B-Tree
-//PagerFrontend / PagerAccessor -> PagerCore
-//Disk
+//PagerFrontend <-> PagerAccessor <-> PagerCore
+//File on Disk
 
 const BTREE_NODE_SIZE: usize = 3; //this means a maximum of 5 keys per node
 const TOMB_THRESHOLD: usize = 10; //10 percent
@@ -48,7 +47,11 @@ fn main() {
     let executor = Executor::init("./default.db.bin", BTREE_NODE_SIZE);
     executor.exec("CREATE TABLE table (id Integer, name String)".to_string());
     for i in 0..300 {
-        executor.exec(format!("INSERT INTO table (id, name) VALUES ({}, 'Kunde Nummer {}')", i, i * 3));
+        executor.exec(format!(
+            "INSERT INTO table (id, name) VALUES ({}, 'Kunde Nummer {}')",
+            i,
+            i * 3
+        ));
     }
     println!("running RustSQL shell...");
     loop {

@@ -13,19 +13,19 @@ pub struct ParsedSelectQuery {
 
     //conditions can be expressed like this:
     //SELECT [] FROM table WHERE a = "xx" AND ... AND z > 34
-    pub conditions: Vec<(String, String, String)>
+    pub conditions: Vec<(String, String, String)>,
 }
 
 #[derive(Debug)]
 pub struct ParsedDropQuery {
-    pub table_name: String
+    pub table_name: String,
 }
 
 #[derive(Debug)]
 pub struct ParsedCreateTableQuery {
     pub table_name: String,
     pub table_fields: Vec<String>,
-    pub table_types: Vec<String>
+    pub table_types: Vec<String>,
 }
 
 #[derive(Debug)]
@@ -40,7 +40,7 @@ pub enum ParsedQuery {
     DropTable(ParsedDropQuery),
     Select(ParsedSelectQuery),
     Insert(ParsedInsertQuery),
-    Delete(ParsedDeleteQuery)
+    Delete(ParsedDeleteQuery),
 }
 
 pub struct Lexer {
@@ -50,10 +50,7 @@ pub struct Lexer {
 
 impl Lexer {
     pub fn new(input: String) -> Self {
-        Self {
-            input,
-            position: 0,
-        }
+        Self { input, position: 0 }
     }
 
     pub fn next_token(&mut self) -> Option<String> {
@@ -103,12 +100,15 @@ impl Lexer {
     }
 
     fn skip_whitespace(&mut self) {
-        while self.position < self.input.len() && self.input[self.position..=self.position].chars().all(|c| c.is_whitespace()) {
+        while self.position < self.input.len()
+            && self.input[self.position..=self.position]
+                .chars()
+                .all(|c| c.is_whitespace())
+        {
             self.position += 1;
         }
     }
 }
-
 
 pub struct Parser {
     lexer: Lexer,
@@ -138,7 +138,10 @@ impl Parser {
 
     fn parse_create_table(&mut self) -> Result<ParsedQuery, String> {
         self.expect_token("TABLE")?;
-        let table_name = self.lexer.next_token().ok_or_else(|| "Expected table name".to_string())?;
+        let table_name = self
+            .lexer
+            .next_token()
+            .ok_or_else(|| "Expected table name".to_string())?;
         self.expect_token("(")?;
         let mut fields = Vec::new();
         let mut types = Vec::new();
@@ -175,10 +178,9 @@ impl Parser {
         Ok(ParsedQuery::CreateTable(ParsedCreateTableQuery {
             table_name,
             table_fields: fields,
-            table_types: types
+            table_types: types,
         }))
     }
-
 
     fn parse_drop_table(&mut self) -> Result<ParsedQuery, String> {
         self.expect_token("TABLE")?;
@@ -192,7 +194,10 @@ impl Parser {
     fn parse_select(&mut self) -> Result<ParsedQuery, String> {
         let mut fields = Vec::new();
         loop {
-            let token = self.lexer.next_token().ok_or_else(|| "Expected field or FROM".to_string())?;
+            let token = self
+                .lexer
+                .next_token()
+                .ok_or_else(|| "Expected field or FROM".to_string())?;
             if token.to_uppercase() == "FROM" {
                 break;
             }
@@ -204,7 +209,10 @@ impl Parser {
             } else if let Some("FROM") = next_token.clone().as_deref() {
                 break;
             } else {
-                return Err(format!("Expected 'FROM', but found '{}'", next_token.expect("Expected 'FROM'")));
+                return Err(format!(
+                    "Expected 'FROM', but found '{}'",
+                    next_token.expect("Expected 'FROM'")
+                ));
             }
         }
 
@@ -231,7 +239,7 @@ impl Parser {
             .ok_or_else(|| "Expected table name".to_string())?;
 
         if table_name == "(" {
-            return Err("Expected table name".to_string())
+            return Err("Expected table name".to_string());
         }
 
         self.expect_token("(")?;
@@ -304,7 +312,10 @@ impl Parser {
         }))
     }
 
-    fn parse_where_conditions(&mut self, conditions: &mut Vec<(String, String, String)>) -> Result<(), String> {
+    fn parse_where_conditions(
+        &mut self,
+        conditions: &mut Vec<(String, String, String)>,
+    ) -> Result<(), String> {
         if let Some(token) = self.lexer.next_token() {
             if token.to_uppercase() == "WHERE" {
                 loop {
@@ -312,8 +323,14 @@ impl Parser {
                         .lexer
                         .next_token()
                         .ok_or_else(|| "Expected field name in condition".to_string())?;
-                    let operator = self.lexer.next_token().ok_or_else(|| "Expected comparison operator".to_string())?;
-                    let value = self.lexer.next_token().ok_or_else(|| "Expected value in condition".to_string())?;
+                    let operator = self
+                        .lexer
+                        .next_token()
+                        .ok_or_else(|| "Expected comparison operator".to_string())?;
+                    let value = self
+                        .lexer
+                        .next_token()
+                        .ok_or_else(|| "Expected value in condition".to_string())?;
                     conditions.push((field_name, operator, value));
 
                     match self.lexer.next_token().as_deref() {
@@ -330,9 +347,10 @@ impl Parser {
     }
 
     fn expect_token(&mut self, expected: &str) -> Result<(), String> {
-        let token = self.lexer.next_token().ok_or_else(|| {
-            format!("Expected '{}', but reached end of input", expected)
-        })?;
+        let token = self
+            .lexer
+            .next_token()
+            .ok_or_else(|| format!("Expected '{}', but reached end of input", expected))?;
         if token.to_uppercase() != expected.to_uppercase() {
             return Err(format!("Expected '{}', but found '{}'", expected, token));
         }
