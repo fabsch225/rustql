@@ -6,6 +6,7 @@ use crate::status::Status::InternalExceptionKeyNotFound;
 use std::cell::RefCell;
 use std::fmt::Display;
 use std::fmt::{Debug, Formatter};
+use crate::executor::TableSchema;
 
 #[derive(Clone, Debug)]
 pub struct BTreeNode {
@@ -15,7 +16,7 @@ pub struct BTreeNode {
 
 impl BTreeNode {
     fn is_leaf(&self) -> bool {
-        PagerFrontend::is_leaf(self.page_position, self.pager_accessor.clone()).unwrap()
+        PagerFrontend::is_leaf(self.page_position.clone(), self.pager_accessor.clone()).unwrap()
     }
 
     fn get_keys_count(&self) -> Result<usize, Status> {
@@ -170,11 +171,12 @@ impl BTreeNode {
 pub struct Btree {
     pub root: Option<BTreeNode>,
     pub t: usize,
-    pub pager_accessor: PagerAccessor,
+    pub pager_accessor: PagerAccessor, //both of these could be references
+    pub table_schema: TableSchema
 }
 
 impl Btree {
-    pub fn new(t: usize, pager_accessor: PagerAccessor) -> Result<Self, Status> {
+    pub fn new(t: usize, pager_accessor: PagerAccessor, table_schema: TableSchema) -> Result<Self, Status> {
         let mut root = None;
         if pager_accessor.has_root() {
             root = Some(PagerFrontend::get_node(
@@ -186,6 +188,7 @@ impl Btree {
             root,
             t,
             pager_accessor,
+            table_schema
         })
     }
 
@@ -696,7 +699,7 @@ impl Display for Btree {
                     }
                     write!(f, "[")?;
                     for (child) in children {
-                        write!(f, "{}", child.page_position)?;
+                        write!(f, "{:?}", child.page_position)?;
                         write!(f, " , ")?;
                     }
                     write!(f, "]")?;

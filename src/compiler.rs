@@ -1,6 +1,6 @@
 use std::str::FromStr;
-use crate::executor::QueryResult;
-use crate::pager::{Field, Key, Position, Row, Schema, TableSchema, Type, ROW_NAME_SIZE, TYPE_SIZE};
+use crate::executor::{Field, QueryResult, Schema};
+use crate::pager::{Key, Position, Row, TableSchema, Type, ROW_NAME_SIZE, TYPE_SIZE};
 use crate::parser::ParsedQuery;
 use crate::serializer::Serializer;
 use crate::status::Status;
@@ -57,6 +57,7 @@ pub struct CompiledDeleteQuery {
 
 #[derive(Debug)]
 pub struct CompiledCreateTableQuery {
+    pub table_name: String,
     pub schema: TableSchema
 }
 
@@ -137,19 +138,18 @@ impl Compiler {
                 }
                 let col_count = fields.len();
                 let schema = TableSchema {
-                    root: 0,
-                    next_position: (14 + fields.len() * (ROW_NAME_SIZE + TYPE_SIZE)) as Position,
+                    root: Position::make_empty(),
+                    next_position: Position::make_empty(),//(14 + fields.len() * (ROW_NAME_SIZE + TYPE_SIZE)) as Position, TODO
                     col_count,
                     whole_row_length: fields.iter().map(|f| Serializer::get_size_of_type(&f.field_type).unwrap()).sum(),
                     key_length: Serializer::get_size_of_type(&fields[0].field_type).unwrap(),
                     key_type: fields[0].field_type.clone(),
                     row_length: fields.iter().map(|f| Serializer::get_size_of_type(&f.field_type).unwrap()).sum::<usize>() - Serializer::get_size_of_type(&fields[0].field_type).unwrap(),
                     fields,
-                    offset: 0,
                     entry_count: 0,
                     table_type: 0
                 };
-                Ok(CompiledQuery::CreateTable(CompiledCreateTableQuery { schema }))
+                Ok(CompiledQuery::CreateTable(CompiledCreateTableQuery { table_name: create_table_query.table_name, schema }))
             },
             ParsedQuery::DropTable(_) => {
                 Ok(CompiledQuery::DropTable(CompiledDropTableQuery { table_id: 0 }))

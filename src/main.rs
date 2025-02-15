@@ -11,6 +11,9 @@ use rustql::executor::Executor;
 /// - implement multiple tables
 ///     - next: change bytes_to_schema, and schema_to_bytes, init_from_file
 ///     - Gameplan: implement the Schema struct, and change PagerCore.read_schema to return always index 0.
+///     - Refactor Paging: use a variable Pagesize
+///         - Position => (PageNumber, Position on page)
+///     - Store the Schema in a Master Table
 ///     - change how the btree is instantiated
 ///     - make the final changes to the executor
 /// - implement nullable values (groundwork is layed)
@@ -27,6 +30,9 @@ use rustql::executor::Executor;
 /// - as well as a modified
 /// To calculate a position on Disk, add the offset
 /// if we insert bytes somewhere, just increase that tables offset
+
+//current status, note to future self
+// - changing executor + pager to work with master_table, bigger pages etc
 
 
 //C in/out

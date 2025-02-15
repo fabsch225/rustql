@@ -1,7 +1,7 @@
 use std::cell::RefCell;
 use crate::btree::Btree;
-use crate::compiler::{CompiledDeleteQuery, CompiledQuery, CompiledSelectQuery, Compiler, SqlConditionOpCode, SqlStatementComparisonOperator};
-use crate::pager::{Field, Key, PagerAccessor, PagerCore, Row, Schema, TableIndex, TableSchema, Type};
+use crate::compiler::{CompiledCreateTableQuery, CompiledDeleteQuery, CompiledQuery, CompiledSelectQuery, Compiler, SqlConditionOpCode, SqlStatementComparisonOperator};
+use crate::pager::{Key, PagerAccessor, PagerCore, Position, Row, TableName, TableSchema, Type};
 use crate::status::Status;
 use crate::status::Status::ExceptionQueryMisformed;
 use std::collections::HashMap;
@@ -12,6 +12,56 @@ use std::io::{ErrorKind, Write};
 use crate::compiler::SqlStatementComparisonOperator::{Equal, Greater, GreaterOrEqual, LesserOrEqual, Lesser};
 use crate::parser::Parser;
 use crate::serializer::Serializer;
+
+const MASTER_TABLE_NAME: &str = "rustsql_master";
+pub const MASTER_TABLE_SQL: String = format!("CREATE TABLE {} (
+    name STRING,
+    type STRING,
+    rootpage INTEGER,
+    sql STRING
+)", MASTER_TABLE_NAME);
+
+#[derive(Clone, Debug)]
+pub struct Schema {
+    pub(crate) table_index: TableIndex,
+    pub(crate) tables: Vec<TableSchema>
+}
+
+impl Schema {
+    pub fn make_empty() -> Self {
+        Schema {
+            table_index: TableIndex { index: vec![] },
+            tables: vec![],
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct TableIndex {
+    pub(crate) index: Vec<TableName>
+}
+
+#[derive(Clone, Debug)]
+pub struct TableSchema {
+    pub next_position: Position,
+    pub root: Position, //if 0 -> no tree
+    pub col_count: usize,
+    pub whole_row_length: usize,
+    pub key_length: usize, //includes flag
+    pub key_type: Type,
+    pub row_length: usize,
+    pub fields: Vec<Field>,
+    pub table_type: u8,
+    pub entry_count: i32
+    //Todo Fields
+    // count (of entries)
+}
+
+#[derive(Debug, Clone)]
+pub struct Field {
+    pub field_type: Type, // Assuming the type size is a single byte.
+    pub name: String,     // The name of the field, extracted from 128 bits (16 bytes).
+}
 
 #[derive(Debug)]
 pub struct QueryResult {
@@ -113,11 +163,13 @@ impl Display for DataFrame {
 pub struct Executor {
     pub pager_accessor: PagerAccessor,
     pub query_cache: HashMap<String, CompiledQuery>, //must be invalidated once schema is changed or in a smart way
+    pub schema: Schema,
     pub btree_node_width: usize
 }
 
 impl Executor {
     pub fn init(file_path: &str, t: usize) -> Self {
+        let master_table_schema = Self::make_master_table_schema();
         let pager_accessor = match PagerCore::init_from_file(file_path, t) {
             Ok(pa) => pa,
             Err(e) => {
@@ -137,6 +189,10 @@ impl Executor {
         Executor {
             pager_accessor: pager_accessor.clone(),
             query_cache: HashMap::new(),
+            schema: Schema {
+                table_index: TableIndex { index: vec![TableName::from(MASTER_TABLE_NAME)] },
+                tables: vec![master_table_schema],
+            },
             btree_node_width: t,
         }
     }
@@ -157,14 +213,20 @@ impl Executor {
     }
 
     fn exec_intern(&self, query: String) -> Result<QueryResult, QueryResult> {
-        let mut parser = Parser::new(query);
+        let mut parser = Parser::new(query.clone());
         let parsed_query = parser.parse_query().map_err(|s|QueryResult::user_input_wrong(s))?;
         let compiled_query = Compiler::compile_and_plan(&self.pager_accessor.read_schema(), parsed_query)?;
 
         match compiled_query {
             CompiledQuery::CreateTable(q) => {
-                self.pager_accessor.set_table_schema(q.schema);
-                Ok(QueryResult::went_fine())
+                let insert_query = format!("INSERT INTO {} (name, type, rootpage, sql) VALUES ({}, {}, {}, {})",
+                    MASTER_TABLE_NAME,
+                    q.table_name,
+                    0,
+                    self.pager_accessor.get_next_page_index(),
+                    query
+                );
+                Ok(self.exec(insert_query))
             }
             CompiledQuery::DropTable(q) => { todo!() }
             CompiledQuery::Select(q) => {
@@ -378,23 +440,21 @@ impl Executor {
     }
 
     pub fn create_database(file_name: &str) -> Result<(), Status> {
-        let empty_schema = Schema {
-            table_index: TableIndex { index: vec![] },
-            tables: vec![],
-        };
-        let bytes = Serializer::schema_to_bytes(&empty_schema);
-        let file = OpenOptions::new()
-            .write(true)
+        match OpenOptions::new()
             .create_new(true)
-            .open(file_name);
+            .open(file_name) {
+            Ok(f) => Ok(()),
+            _ => Err(Status::InternalExceptionFileOpenFailed)
+        }
+    }
 
-        match file {
-            Ok(mut f) => {
-                f.write_all(&bytes).map_err(|_| Status::InternalExceptionFileWriteError)?;
-                Ok(())
-            }
-            Err(ref e) if e.kind() == ErrorKind::AlreadyExists => Err(Status::InternalExceptionFileAlreadyExists),
-            Err(_) => Err(Status::InternalExceptionFileWriteError),
+    fn make_master_table_schema() -> TableSchema {
+        let mut parser = Parser::new(MASTER_TABLE_SQL);
+        let parsed_query = parser.parse_query().expect("why would there be an error here");
+        let compiled_query = Compiler::compile_and_plan(&Schema::make_empty(), parsed_query);
+        match compiled_query {
+            CompiledQuery::CreateTable(create) => create.schema,
+            _ => { panic!("wtf") }
         }
     }
 }
