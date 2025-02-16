@@ -8,7 +8,7 @@ use crate::status::Status::InternalSuccess;
 pub struct PagerFrontend {}
 
 impl PagerFrontend {
-    pub fn set_root(
+    pub fn set_table_root(
         schema: &TableSchema,
         pager_interface: PagerAccessor,
         root_node: &BTreeNode,
@@ -25,9 +25,16 @@ impl PagerFrontend {
     pub fn create_new_table_root(
         schema: &TableSchema,
         pager_interface: PagerAccessor,
-        root_node: &BTreeNode,
-    ) -> Result<(), Status> {
-        todo!()
+    ) -> Result<BTreeNode, Status> {
+        let page = pager_interface.access_pager_write(|p| p.create_page())?;
+        let cell = 0u16;
+        let position = Position { page, cell };
+        let node = BTreeNode {
+            position,
+            pager_accessor: pager_interface.clone(),
+            table_schema: schema.clone(),
+        };
+        Ok(node)
     }
     pub fn switch_nodes(
         schema: &TableSchema,
@@ -52,7 +59,7 @@ impl PagerFrontend {
         todo!();
     }
 
-    pub fn create_singular_node(
+    pub fn create_node_without_children(
         schema: TableSchema,
         pager_interface: PagerAccessor,
         key: Key,
@@ -181,6 +188,8 @@ impl PagerFrontend {
             &mut page.data,
             &parent.table_schema,
         )?;
+
+        println!("wrote page: {:?}", page);
 
         parent.pager_accessor.access_page_write(parent, |d| {
             d.data = page.data;

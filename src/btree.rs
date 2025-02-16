@@ -212,7 +212,7 @@ impl Btree {
     pub fn insert(&mut self, k: Key, v: Row) -> Result<(), Status> {
         if let Some(ref root) = self.root {
             if root.get_keys_count()? == (2 * self.t) - 1 {
-                let mut new_root = PagerFrontend::create_singular_node(
+                let mut new_root = PagerFrontend::create_node_without_children(
                     self.table_schema.clone(),
                     self.pager_accessor.clone(),
                     Serializer::empty_key(&self.table_schema),
@@ -235,17 +235,11 @@ impl Btree {
                 self.insert_non_full(root, k, v, self.t)?;
             }
         } else {
-            let new_root = PagerFrontend::create_singular_node(
-                self.table_schema.clone(),
-                self.pager_accessor.clone(),
-                k.clone(),
-                v,
-            )?;
-            PagerFrontend::create_new_table_root(
+            let new_root = PagerFrontend::create_new_table_root(
                 &self.table_schema,
-                self.pager_accessor.clone(),
-                &new_root,
+                self.pager_accessor.clone()
             )?;
+            new_root.push_key(k, v)?;
             //self.pager_accessor.set_root(&new_root)?; //this is much easier: create a new page, and set the root's position to that
             self.root = Some(new_root);
         }
@@ -491,14 +485,14 @@ impl Btree {
             if root.get_keys_count()? == 0 {
                 if !root.is_leaf() {
                     let new_root = root.get_child(0)?.clone();
-                    PagerFrontend::set_root(
+                    PagerFrontend::set_table_root(
                         &self.table_schema,
                         self.pager_accessor.clone(),
                         &new_root,
                     )?;
                     self.root = Some(new_root);
                 } else {
-                    PagerFrontend::set_root(
+                    PagerFrontend::set_table_root(
                         &self.table_schema,
                         self.pager_accessor.clone(),
                         &BTreeNode::make_empty(&self.table_schema, self.pager_accessor.clone()),

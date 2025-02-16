@@ -178,7 +178,7 @@ pub struct Executor {
     pub pager_accessor: PagerAccessor,
     pub query_cache: HashMap<String, CompiledQuery>, //must be invalidated once schema is changed or in a smart way
     pub schema: Schema,
-    pub btree_node_width: usize,
+    pub btree_node_width: usize
 }
 
 impl Executor {
@@ -210,7 +210,7 @@ impl Executor {
                 },
                 tables: vec![master_table_schema],
             },
-            btree_node_width: t,
+            btree_node_width: t
         }
     }
 
@@ -234,32 +234,32 @@ impl Executor {
     }
 
     pub fn exec(&self, query: String) -> QueryResult {
-        let result = self.exec_intern(query);
+        let result = self.exec_intern(query, false);
         if !result.is_ok() {
             result.err().unwrap()
         } else {
-            result.expect("nothing")
+            result.expect("just checked")
         }
     }
 
-    fn exec_intern(&self, query: String) -> Result<QueryResult, QueryResult> {
+    fn exec_intern(&self, query: String, allow_modification_to_system_table: bool) -> Result<QueryResult, QueryResult> {
         let mut parser = Parser::new(query.clone());
         let parsed_query = parser
             .parse_query()
             .map_err(|s| QueryResult::user_input_wrong(s))?;
         let compiled_query = Planner::plan(&self.schema, parsed_query)?;
-
         match compiled_query {
             CompiledQuery::CreateTable(q) => {
                 let insert_query = format!(
-                    "INSERT INTO {} (name, type, rootpage, sql) VALUES ({}, {}, {}, {})",
+                    "INSERT INTO {} (name, type, rootpage, sql) VALUES ({}, {}, {}, '{}')",
                     MASTER_TABLE_NAME,
                     q.table_name,
                     0,
                     self.pager_accessor.get_next_page_index(),
                     query
                 );
-                Ok(self.exec(insert_query))
+                println!("{}", insert_query);
+                self.exec_intern(insert_query, true)
             }
             CompiledQuery::DropTable(q) => {
                 todo!()
@@ -536,7 +536,7 @@ impl Executor {
     }
 
     pub fn create_database(file_name: &str) -> Result<(), Status> {
-        match OpenOptions::new().create_new(true).open(file_name) {
+        match OpenOptions::new().create_new(true).read(true).write(true).open(file_name).unwrap().write(&[0,0]) {
             Ok(f) => Ok(()),
             _ => Err(Status::InternalExceptionFileOpenFailed),
         }

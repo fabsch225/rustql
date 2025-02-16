@@ -20,7 +20,7 @@ use std::io::{ErrorKind, Read, Seek, SeekFrom, Write};
 use std::sync::{Arc, RwLock};
 //in byte
 
-pub const PAGE_SIZE: u16 = 1024;
+pub const PAGE_SIZE: u16 = 4096; //16384
 pub const PAGE_SIZE_WITH_META: u16 = PAGE_SIZE + 3; //2 for free space on page, 1 for flag
 
 pub const STRING_SIZE: usize = 256; //len: 255
@@ -114,7 +114,7 @@ impl Debug for Type {
 }
 
 //represents a whole page except the position i.e. keys, child-position and data
-pub type PageData = Vec<u8>; //[u8; PAGE_SIZE as usize];
+pub type PageData = Vec<u8>; //[u8; PAGE_SIZE as usize]; this is possible eventually
 
 #[derive(Clone, Debug)]
 pub struct PageContainer {
@@ -209,8 +209,9 @@ impl PagerAccessor {
     }
 
     pub(crate) fn get_next_page_index(&self) -> u16 {
-        todo!()
+        self.access_pager_read(|p| p.next_page_index)
     }
+
     //this does create lots of overhead / could be removed
     pub fn verify(&self, pager: &PagerCore) -> bool {
         pager.hash == self.hash
@@ -282,12 +283,11 @@ impl PagerCore {
         //would work
         //but Filter first TODO
         for position in positions {
-            let page = self.cache[&position].clone();
-            if Serializer::is_dirty(&page.data)? {
-                self.write_page_to_disk(&page)?;
+            let page_container = self.cache[&position].clone();
+            if page_container.flag & 1 == 1 {
+                self.write_page_to_disk(&page_container)?;
             }
         }
-
         Ok(())
     }
 
@@ -360,24 +360,26 @@ impl PagerCore {
         let miss = !self.cache.contains_key(&position);
         //TODO optimize this ?
         if miss {
-            let page = self.read_page_from_disk(position);
-            if page.is_ok() {
-                let mut page = page?;
-                Serializer::set_is_dirty(&mut page.data, true)?;
+            let page_container = self.read_page_from_disk(position);
+            if page_container.is_ok() {
+                let mut page = page_container?;
+                //Serializer::set_is_dirty(&mut page_container.data, true)?;
+                Serializer::write_byte_at_position(&mut page.flag, 0, true); //TODO Create a Method in Serializer for this, so less magic numbers
                 self.cache.insert(position.clone(), page);
                 Ok(self
                     .cache
                     .get_mut(&position)
                     .expect("This should not happen, i checked just now"))
             } else {
-                Err(page.err().unwrap())
+                Err(page_container.err().unwrap())
             }
         } else {
             Ok(self
                 .cache
                 .get_mut(&position)
                 .map(|pc| {
-                    Serializer::set_is_dirty(&mut pc.data, true)?;
+                    //Serializer::set_is_dirty(&mut pc.data, true)?;
+                    Serializer::write_byte_at_position(&mut pc.flag, 0, true); //TODO Create a Method in Serializer for this, so less magic numbers
                     return Ok(pc);
                 })
                 .ok_or(Status::InternalExceptionCacheDenied)??)
@@ -385,7 +387,16 @@ impl PagerCore {
     }
 
     pub fn create_page(&mut self) -> Result<u16, Status> {
-        todo!();
+        let position = Position::new(self.next_page_index, 0);
+        self.next_page_index += 1;
+        let page_container = PageContainer {
+            data: vec![0; PAGE_SIZE as usize],
+            position: position.clone(),
+            free_space: PAGE_SIZE,
+            flag: 0,
+        };
+        self.cache.insert(position.clone(), page_container);
+        Ok(position.page)
     }
 
     #[deprecated] //this is not wrong, I just don't see any use for this !?
@@ -425,7 +436,7 @@ impl PagerCore {
         self.file
             .seek(SeekFrom::Start(page.position.get_file_position()))
             .map_err(|_| Status::InternalExceptionWriteFailed)?;
-        assert!(page.data.len() as u16 <= PAGE_SIZE);
+        assert_eq!(page.data.len() as u16, PAGE_SIZE);
         self.file
             .write_all(&page.data)
             .map_err(|_| Status::InternalExceptionWriteFailed)?;

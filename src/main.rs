@@ -9,8 +9,8 @@ use std::io::Write;
 /// # NEXT STEPS
 /// - how to optimize disk space? -> flag: deleted, then shift everything to the left? -> rather expensive!
 /// - implement multiple tables
-///     - next: change bytes_to_schema, and schema_to_bytes, init_from_file
-///     - Gameplan: implement the Schema struct, and change PagerCore.read_schema to return always index 0.
+///     - next: change the Serializer methods to work on a large, fixed size page
+///     - [Gameplan]: implement the Schema struct, and change PagerCore.read_schema to return always index 0.
 ///     - Refactor Paging: use a variable Pagesize
 ///         - Position => (PageNumber, Position on page)
 ///     - Store the Schema in a Master Table
