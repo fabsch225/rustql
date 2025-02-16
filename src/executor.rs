@@ -446,7 +446,7 @@ impl Executor {
             let field_index = schema
                 .fields
                 .iter()
-                .position(|f| f.name == field.name)
+                .position(|f| f.name == field.name) //TODO optimize that
                 .unwrap();
             let field_type = &schema.fields[field_index].field_type;
 
