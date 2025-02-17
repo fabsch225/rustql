@@ -45,6 +45,72 @@ mod tests {
         Serializer::init_page_data_with_children(keys, children, rows, &schema).unwrap()
     }
 
+    fn create_mock_page_data_multiple_nodes(num_nodes: usize, num_keys_lambda: fn(usize) -> usize) -> PageData {
+        let schema = get_schema();
+        let mut page = create_mock_page_data(num_keys_lambda(0));
+        for i in 1..num_nodes {
+            let keys: Vec<Key> = (0..num_keys_lambda(i))
+                .map(|i| vec![i as u8; schema.key_length])
+                .collect();
+            let children: Vec<Position> = vec![Position::new(2,2); num_keys_lambda(i) + 1];
+            let rows: Vec<Row> = (0..num_keys_lambda(i))
+                .map(|i| {
+                    let mut row = vec![0u8; schema.row_length];
+                    row[0..9].copy_from_slice(b"Mock Name");
+                    row
+                })
+                .collect();
+            let new_page = Serializer::init_page_data_with_children(keys, children, rows, &schema).unwrap();
+            page.extend(new_page);
+        }
+        page
+    }
+
+    #[test]
+    fn test_switch_nodes_same_page() {
+        let schema = get_schema();
+        let mut page = create_mock_page_data(2);
+        println!("page is {:?}", page);
+        let pos_a = Position::new(0, 0);
+        let pos_b = Position::new(0, 1);
+
+        Serializer::switch_nodes(&schema, &pos_a, &pos_b, &mut page, None).unwrap();
+        println!("page is {:?}", page);
+
+        let keys = Serializer::read_keys_as_vec(&page, &Position::make_empty(), &schema).unwrap();
+        assert_eq!(keys[0], vec![1u8; schema.key_length]);
+        assert_eq!(keys[1], vec![0u8; schema.key_length]);
+    }
+
+    #[test]
+    fn test_switch_nodes_different_pages() {
+        let schema = get_schema();
+        let mut page_a = create_mock_page_data(1);
+        let mut page_b = create_mock_page_data(1);
+        let pos_a = Position::new(0, 0);
+        let pos_b = Position::new(1, 0);
+
+        Serializer::switch_nodes(&schema, &pos_a, &pos_b, &mut page_a, Some(&mut page_b)).unwrap();
+
+        let keys_a = Serializer::read_keys_as_vec(&page_a, &Position::make_empty(), &schema).unwrap();
+        let keys_b = Serializer::read_keys_as_vec(&page_b, &Position::make_empty(), &schema).unwrap();
+        assert_eq!(keys_a[0], vec![0u8; schema.key_length]);
+        assert_eq!(keys_b[0], vec![0u8; schema.key_length]);
+    }
+    #[test]
+    fn test_switch_nodes_large_page() {
+        let schema = get_schema();
+        let mut page = create_mock_page_data(5);
+        let pos_a = Position::new(0, 0);
+        let pos_b = Position::new(0, 4);
+
+        Serializer::switch_nodes(&schema, &pos_a, &pos_b, &mut page, None).unwrap();
+
+        let keys = Serializer::read_keys_as_vec(&page, &Position::make_empty(), &schema).unwrap();
+        assert_eq!(keys[0], vec![4u8; schema.key_length]);
+        assert_eq!(keys[4], vec![0u8; schema.key_length]);
+    }
+
     #[test]
     fn test_init_page_data_w_children() {
         let schema = get_schema();

@@ -78,9 +78,10 @@ pub enum PageFlag {
 pub enum NodeFlag {
     Leaf = 1,
 }
+
 #[repr(u8)]
 pub enum KeyMeta {
-    Tomb = 0,
+    Tomb = 0
 }
 #[repr(u8)]
 pub enum FieldMeta {
@@ -171,17 +172,14 @@ impl Position {
         }
     }
 
+    pub fn swap(&mut self, other: &mut Position) {
+        std::mem::swap(self, other);
+    }
+
     fn get_file_position(&self) -> u64 {
         //(0,0) is an invalid position. the cells officially start at 1
         // (of course, the location in the page starts at zero)
-        (self.page * PAGE_SIZE_WITH_META + self.cell + PAGES_START_AT) as u64
-    }
-}
-
-//cache whole pages, so only lookup the page_index
-impl Hash for Position {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        state.write_usize(self.page);
+        (self.page * PAGE_SIZE_WITH_META + PAGES_START_AT) as u64
     }
 }
 
@@ -190,7 +188,7 @@ pub type Row = Vec<u8>;
 #[derive(Debug)]
 pub struct PagerCore {
     pub hash: String,
-    cache: HashMap<Position, PageContainer>,
+    cache: HashMap<usize, PageContainer>,
     file: File,
     next_page_index: usize,
 }
@@ -288,12 +286,12 @@ impl PagerAccessor {
 
 impl PagerCore {
     pub fn flush(&mut self) -> Result<(), Status> {
-        let positions: Vec<Position> = self.cache.keys().cloned().collect();
+        let page_indices: Vec<usize> = self.cache.keys().cloned().collect();
         //TODO!!!!!!!!!!!!!: this will write lots of pages lots of times instead of once
         //would work
         //but Filter first TODO
-        for position in positions {
-            let page_container = self.cache[&position].clone();
+        for index in page_indices {
+            let page_container = self.cache[&index].clone();
             if page_container.flag & 1 == 1 {
                 self.write_page_to_disk(&page_container)?;
             }
@@ -344,14 +342,14 @@ impl PagerCore {
         }
     */
     pub fn access_page_read(&mut self, position: &Position) -> Result<PageContainer, Status> {
-        let miss = !self.cache.contains_key(&position);
+        let miss = !self.cache.contains_key(&position.page());
 
         //TODO optimize this! lets hope the compiler does magic for now
         if miss {
             let page = self.read_page_from_disk(position);
             if page.is_ok() {
                 let page = page?.clone();
-                self.cache.insert(position.clone(), page.clone());
+                self.cache.insert(position.page(), page.clone());
                 Ok(page)
             } else {
                 Err(page.err().unwrap())
@@ -359,7 +357,7 @@ impl PagerCore {
         } else {
             Ok(self
                 .cache
-                .get(&position)
+                .get(&position.page())
                 .expect("This should not happen")
                 .clone())
         }
@@ -367,7 +365,7 @@ impl PagerCore {
 
     //this should be the only function that writes to pages, so we can keep track of the dirty-flag
     pub fn access_page_write(&mut self, position: &Position) -> Result<&mut PageContainer, Status> {
-        let miss = !self.cache.contains_key(&position);
+        let miss = !self.cache.contains_key(&position.page());
         //TODO optimize this ?
         if miss {
             let page_container = self.read_page_from_disk(position);
@@ -375,10 +373,10 @@ impl PagerCore {
                 let mut page = page_container?;
                 //Serializer::set_is_dirty(&mut page_container.data, true)?;
                 Serializer::write_byte_at_position(&mut page.flag, 0, true); //TODO Create a Method in Serializer for this, so less magic numbers
-                self.cache.insert(position.clone(), page);
+                self.cache.insert(position.page(), page);
                 Ok(self
                     .cache
-                    .get_mut(&position)
+                    .get_mut(&position.page())
                     .expect("This should not happen, i checked just now"))
             } else {
                 Err(page_container.err().unwrap())
@@ -386,7 +384,7 @@ impl PagerCore {
         } else {
             Ok(self
                 .cache
-                .get_mut(&position)
+                .get_mut(&position.page())
                 .map(|pc| {
                     //Serializer::set_is_dirty(&mut pc.data, true)?;
                     Serializer::write_byte_at_position(&mut pc.flag, 0, true); //TODO Create a Method in Serializer for this, so less magic numbers
@@ -405,7 +403,7 @@ impl PagerCore {
             free_space: PAGE_SIZE,
             flag: 0,
         };
-        self.cache.insert(position.clone(), page_container);
+        self.cache.insert(position.page(), page_container);
         Ok(position.page)
     }
 
@@ -417,7 +415,7 @@ impl PagerCore {
             free_space: PAGE_SIZE,
             flag: 0,
         };
-        self.cache.insert(position.clone(), page);
+        self.cache.insert(position.page(), page);
         InternalSuccess
     }
 

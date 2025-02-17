@@ -1,5 +1,5 @@
 use crate::executor::{Field, QueryResult, Schema, TableSchema};
-use crate::pager::{Key, Position, Row, Type, NODE_METADATA_SIZE, ROW_NAME_SIZE, TYPE_SIZE};
+use crate::pager::{Key, Position, Row, TableName, Type, NODE_METADATA_SIZE, ROW_NAME_SIZE, TYPE_SIZE};
 use crate::parser::ParsedQuery;
 use crate::serializer::Serializer;
 use crate::status::Status;
@@ -36,13 +36,13 @@ pub enum SqlStatementComparisonOperator {
 
 #[derive(Debug)]
 pub struct CompiledInsertQuery {
-    pub table_id: u8,
+    pub table_id: usize,
     pub data: (Key, Row),
 }
 
 #[derive(Debug)]
 pub struct CompiledSelectQuery {
-    pub table_id: u8,
+    pub table_id: usize,
     pub operation: SqlConditionOpCode,
     pub result: Vec<Field>,
     pub conditions: Vec<(SqlStatementComparisonOperator, Vec<u8>)>,
@@ -50,7 +50,7 @@ pub struct CompiledSelectQuery {
 
 #[derive(Debug)]
 pub struct CompiledDeleteQuery {
-    pub table_id: u8,
+    pub table_id: usize,
     pub operation: SqlConditionOpCode,
     pub conditions: Vec<(SqlStatementComparisonOperator, Vec<u8>)>,
 }
@@ -63,7 +63,7 @@ pub struct CompiledCreateTableQuery {
 
 #[derive(Debug)]
 pub struct CompiledDropTableQuery {
-    pub table_id: u8,
+    pub table_id: usize,
 }
 
 #[derive(Debug)]
@@ -80,6 +80,8 @@ impl Planner {
     pub fn plan(schema: &Schema, query: ParsedQuery) -> Result<CompiledQuery, QueryResult> {
         match query {
             ParsedQuery::Insert(insert_query) => {
+                let table_id = Self::find_table_id(schema, &insert_query.table_name)?;
+                let table_schema = &schema.tables[table_id];
                 if insert_query.fields.len() != insert_query.values.len() {
                     return Err(QueryResult::user_input_wrong(format!(
                         "the fields and values must be the same amount"
@@ -88,7 +90,7 @@ impl Planner {
                 //we dont have nullable values...
                 //TODO add nullable Values!
                 //TODO allow custom ordering of fields: INSERT INTO ... (Name, Id) VALUES (a, 1) <=> (Id, Name) VALUES  (1, a)
-                if insert_query.fields.len() != schema.tables[0].fields.len() {
+                if insert_query.fields.len() != table_schema.fields.len() {
                     return Err(QueryResult::user_input_wrong(
                         "all fields must be set, there is are nullable values".to_string(),
                     ));
@@ -96,7 +98,7 @@ impl Planner {
 
                 let mut data = Vec::new();
                 for (field, value) in insert_query.fields.iter().zip(insert_query.values.iter()) {
-                    let field_schema = schema.tables[0]
+                    let field_schema = table_schema
                         .fields
                         .iter()
                         .find(|f| &f.name == field)
@@ -113,18 +115,20 @@ impl Planner {
                 let row: Vec<u8> = data[1..].iter().flat_map(|r| r.clone()).collect();
 
                 Ok(CompiledQuery::Insert(CompiledInsertQuery {
-                    table_id: 0,
+                    table_id,
                     data: (key, row),
                 }))
             }
             ParsedQuery::Select(select_query) => {
+                let table_id = Self::find_table_id(schema, &select_query.table_name)?;
+                let table_schema = &schema.tables[table_id];
                 let mut result = Vec::new();
 
                 if select_query.result[0] == "*" {
-                    result.append(&mut schema.tables[0].fields.clone());
+                    result.append(&mut table_schema.fields.clone());
                 } else {
                     for field in select_query.result.iter() {
-                        let field_schema = schema.tables[0]
+                        let field_schema = table_schema
                             .fields
                             .iter()
                             .find(|f| &f.name == field)
@@ -140,10 +144,10 @@ impl Planner {
                 let operation = Self::compile_conditions(
                     select_query.conditions,
                     &mut conditions,
-                    &schema.tables[0],
+                    &table_schema,
                 )?;
                 Ok(CompiledQuery::Select(CompiledSelectQuery {
-                    table_id: 0,
+                    table_id,
                     operation,
                     result,
                     conditions,
@@ -186,24 +190,39 @@ impl Planner {
                     schema,
                 }))
             }
-            ParsedQuery::DropTable(_) => Ok(CompiledQuery::DropTable(CompiledDropTableQuery {
-                table_id: 0,
+            ParsedQuery::DropTable(drop_table_query) => Ok(CompiledQuery::DropTable(CompiledDropTableQuery {
+                table_id: Self::find_table_id(schema, &drop_table_query.table_name)? as usize,
             })),
             ParsedQuery::Delete(delete_query) => {
+                let table_id = Self::find_table_id(schema, &delete_query.table_name)?;
+                let table_schema = &schema.tables[table_id];
                 let mut conditions = Vec::new();
                 let operation = Self::compile_conditions(
                     delete_query.conditions,
                     &mut conditions,
-                    &schema.tables[0],
+                    table_schema,
                 )?;
 
                 Ok(CompiledQuery::Delete(CompiledDeleteQuery {
-                    table_id: 0,
+                    table_id,
                     operation,
                     conditions,
                 }))
             }
         }
+    }
+
+    pub fn find_table_id(schema: &Schema, table_name: &str) -> Result<usize, QueryResult> {
+        let table_id = schema
+            .table_index
+            .index
+            .iter()
+            .position(|t| t.clone() == TableName::from(table_name))
+            .ok_or(QueryResult::user_input_wrong(format!(
+                "table not found: {}",
+                table_name
+            )))?;
+        Ok(table_id)
     }
 
     fn compile_conditions(

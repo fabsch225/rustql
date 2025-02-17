@@ -11,7 +11,7 @@ use crate::status::Status::{
 
 
 /// # Responsibilities
-/// - Execute basic operations on the pages
+/// - Execute operations on the pages
 /// - Convert RustSQl Datatypes to Strings / Rust-Datatypes
 /// - Manage flags with Getters / Setters
 
@@ -129,6 +129,54 @@ impl Serializer {
 
         offset
     }
+
+    pub fn switch_nodes(table_schema: &TableSchema, position_a: &Position, position_b: &Position, page_a: &mut PageData, page_b: Option<&mut PageData>) -> Result<(), Status> {
+        //case one: both nodes are on the same page
+        if page_b.is_none() {
+            assert_eq!(position_a.page(), position_b.page());
+            assert_ne!(position_a.cell(), position_b.cell());
+            let mut position_a = position_a.clone();
+            let mut position_b = position_b.clone();
+            if position_a.cell() > position_b.cell() {
+                position_a.swap(&mut position_b);
+            } //position_a is now the smaller one
+            let offset_a = Self::find_position_offset(page_a, &position_a, &table_schema);
+            let num_keys_a = page_a[offset_a] as usize;
+            let offset_b = Self::find_position_offset(page_a, &position_b, &table_schema);
+            let num_keys_b = page_a[offset_b] as usize;
+            let full_size_a = NODE_METADATA_SIZE + num_keys_a * table_schema.key_and_row_length + (num_keys_a + 1) * POSITION_SIZE;
+            let full_size_b = NODE_METADATA_SIZE + num_keys_b * table_schema.key_and_row_length + (num_keys_b + 1) * POSITION_SIZE;
+
+            let mut temp = vec![0u8; full_size_a];
+            temp.copy_from_slice(&page_a[offset_a..offset_a + full_size_a]);
+            let shift_for_a = full_size_b as isize - full_size_a as isize;
+            Self::shift_page(page_a, offset_a+full_size_a, shift_for_a);
+            page_a.copy_within(offset_b..offset_b + full_size_b, offset_a);
+            page_a[offset_b..offset_b + full_size_a].copy_from_slice(&temp);
+            Self::shift_page(page_a, offset_b+full_size_a, -shift_for_a);
+        } else {
+            assert_ne!(position_a.page(), position_b.page());
+            let page_b = page_b.unwrap();
+            let offset_a = Self::find_position_offset(page_a, position_a, &table_schema);
+            let num_keys_a = page_a[offset_a] as usize;
+            let offset_b = Self::find_position_offset(page_b, position_b, &table_schema);
+            let num_keys_b = page_b[offset_b] as usize;
+            let full_size_a = NODE_METADATA_SIZE + num_keys_a * table_schema.key_and_row_length + (num_keys_a + 1) * POSITION_SIZE;
+            let full_size_b = NODE_METADATA_SIZE + num_keys_b * table_schema.key_and_row_length + (num_keys_b + 1) * POSITION_SIZE;
+
+            let mut temp = vec![0u8; full_size_a];
+            temp.copy_from_slice(&page_a[offset_a..offset_a + full_size_a]);
+            let shift_for_a = full_size_b as isize - full_size_a as isize;
+            Self::shift_page(page_a, offset_a+full_size_a, shift_for_a);
+            page_a.copy_within(offset_b..offset_b + full_size_b, offset_a);
+
+            let shift_for_b = full_size_a as isize - full_size_b as isize;
+            Self::shift_page(page_b, offset_b+full_size_b, shift_for_b);
+            page_b[offset_b..offset_b + full_size_a].copy_from_slice(&temp);
+        }
+        Ok(())
+    }
+
 
     //TODO not all of these are used in the end
 
@@ -325,9 +373,10 @@ impl Serializer {
         schema: &TableSchema
     ) -> Result<(), Status> {
         let offset = Self::find_position_offset(page, position, schema);
-        let num_keys = page[offset] as usize;
-        
-        if num_keys != keys.len() {
+        let old_num_keys = page[offset] as usize;
+        let new_num_keys = keys.len();
+
+        if old_num_keys != new_num_keys {
             return Self::write_keys_vec_resize(keys, page, position, schema);
         }
 
@@ -339,6 +388,7 @@ impl Serializer {
             let end_pos = start_pos + key_length;
             page[start_pos..end_pos].copy_from_slice(key);
         }
+
         Ok(())
     }
     pub fn write_keys_vec_resize_with_rows(
@@ -715,6 +765,7 @@ impl Serializer {
         match field_type {
             Type::Null => Err(Status::InternalExceptionInvalidFieldType),
             Type::Boolean => Ok(Self::byte_to_bool_at_position(v[0], position)),
+            Type::Integer => Ok(Self::byte_to_bool_at_position(v[0], position)),
             _ => Ok(Self::byte_to_bool_at_position(
                 v[Self::get_size_of_type(field_type)? - 1],
                 position,

@@ -215,7 +215,6 @@ impl Btree {
     pub fn insert(&mut self, k: Key, v: Row) -> Result<(), Status> {
         if let Some(ref root) = self.root {
             if root.get_keys_count()? == (2 * self.t) - 1 {
-                todo!();
                 let mut new_root = PagerFrontend::create_node(
                     self.table_schema.clone(),
                     self.pager_accessor.clone(),

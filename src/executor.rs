@@ -202,17 +202,30 @@ impl Executor {
         }
     }
 
-    pub fn debug(&mut self) {
-        println!("Cached Schema: {:?}", self.schema);
-        println!(
-            "System Table: {}",
-            Btree::init(
+    pub fn debug(&mut self, table: Option<&str>) {
+        if table.is_none() {
+            println!("Cached Schema: {:?}", self.schema);
+            println!(
+                "System Table: {}",
+                Btree::init(
+                    self.btree_node_width,
+                    self.pager_accessor.clone(),
+                    self.schema.tables[0].clone()
+                )
+                .unwrap()
+            );
+        } else {
+            let table_name = table.unwrap();
+            let table_id = Planner::find_table_id(&self.schema, table_name).unwrap();
+            let table_schema = self.schema.tables[table_id].clone();
+            let btree = Btree::init(
                 self.btree_node_width,
                 self.pager_accessor.clone(),
-                self.schema.tables[0].clone()
+                table_schema.clone(),
             )
-            .unwrap()
-        );
+            .unwrap();
+            println!("Table: {}", btree);
+        }
         println!("System Table Data: \n {}", self.exec("SELECT * FROM rustsql_master".to_string()));
     }
 
@@ -253,7 +266,11 @@ impl Executor {
                     self.pager_accessor.clone(),
                    )
                     .map_err(|status| QueryResult::err(status))
-                    .map(|node| node.position.page())?;
+                    .map(|node| {
+                        //println!("{:?}", PagerFrontend::is_leaf(&node));
+                        //println!("{:?}", PagerFrontend::get_keys(&node).unwrap().0.len());
+                        return node.position.page();
+                    })?;
 
                 let insert_query = format!(
                     "INSERT INTO {} (name, type, rootpage, sql) VALUES ({}, {}, {}, '{}')",
@@ -271,7 +288,7 @@ impl Executor {
                 todo!()
             }
             CompiledQuery::Select(q) => {
-                let schema = &self.schema.tables[0];
+                let schema = &self.schema.tables[q.table_id];
                 let btree = Btree::init(
                     self.btree_node_width,
                     self.pager_accessor.clone(),
@@ -294,7 +311,7 @@ impl Executor {
                 Ok(QueryResult::return_data(result.into_inner()))
             }
             CompiledQuery::Insert(q) => {
-                let schema = &self.schema.tables[0];
+                let schema = &self.schema.tables[q.table_id];
                 let mut btree = Btree::init(
                     self.btree_node_width,
                     self.pager_accessor.clone(),
@@ -307,7 +324,7 @@ impl Executor {
                 Ok(QueryResult::went_fine())
             }
             CompiledQuery::Delete(q) => {
-                let schema = &self.schema.tables[0];
+                let schema = &self.schema.tables[q.table_id];
                 let btree = Btree::init(
                     self.btree_node_width,
                     self.pager_accessor.clone(),
@@ -437,31 +454,31 @@ impl Executor {
         row: &mut Row,
         result: &mut DataFrame,
         query: &CompiledSelectQuery,
-        schema: &TableSchema,
+        table_schema: &TableSchema,
     ) -> Result<bool, Status> {
-        if Serializer::is_tomb(key, &schema)? {
+        if Serializer::is_tomb(key, &table_schema)? {
             return Ok(false);
         }
-        if !Executor::exec_condition_on_row(row, &query.conditions, schema) {
+        if !Executor::exec_condition_on_row(row, &query.conditions, table_schema) {
             return Ok(false);
         }
 
         let mut data_row = Vec::new();
 
         for field in &query.result {
-            let field_index = schema
+            let field_index = table_schema
                 .fields
                 .iter()
                 .position(|f| f.name == field.name) //TODO optimize that
                 .unwrap();
-            let field_type = &schema.fields[field_index].field_type;
+            let field_type = &table_schema.fields[field_index].field_type;
 
             if field_index == 0 {
                 data_row.append(&mut key.clone());
             } else {
                 let mut position = 0;
                 for i in 1..field_index {
-                    position += Serializer::get_size_of_type(&schema.fields[i].field_type).unwrap();
+                    position += Serializer::get_size_of_type(&table_schema.fields[i].field_type).unwrap();
                 }
                 let field_len = Serializer::get_size_of_type(field_type).unwrap();
                 data_row.append(&mut row[position..position + field_len].to_vec());
@@ -578,7 +595,7 @@ impl Executor {
         let select_query = CompiledSelectQuery {
             table_id: 0,
             operation: SqlConditionOpCode::SelectFTS,
-            result: vec![Field { field_type: Type::String, name: "name".to_string() }, Field { field_type: Type::String, name: "sql".to_string() }],
+            result: vec![Field { field_type: Type::String, name: "name".to_string() }, Field { field_type: Type::String, name: "sql".to_string() }, Field { field_type: Type::Integer, name: "rootpage".to_string() }],
             conditions: vec![(SqlStatementComparisonOperator::None, vec![]); 4],
         };
         let action = |key: &mut Key, row: &mut Row| {
@@ -588,15 +605,17 @@ impl Executor {
         result.borrow().data.iter().for_each(|entry|{
             let name = Serializer::get_field_on_row(entry, 0, &master_table_schema).expect("Failed to get field: Name");
             let sql = Serializer::format_field_on_row(entry, 1, &master_table_schema).expect("Failed to format field: SQL");
+            let rootpage = Serializer::bytes_to_int(<[u8; 5]>::try_from(Serializer::get_field_on_row(entry, 2, &master_table_schema).expect("Failed to get field: Rootpage")).unwrap());
             let mut parser = Parser::new(sql);
             let parsed_query = parser.parse_query().expect("Failed to parse query");
             let compiled_query = Planner::plan(&Schema::make_empty(), parsed_query).expect("Failed to compile query");
             match compiled_query {
-                CompiledQuery::CreateTable(create) => {
+                CompiledQuery::CreateTable(mut table) => {
                     let strip_pos = name.iter().rposition(|&x| x != 0).expect("cant be empty");
                     schema.table_index.index.push(name[0..strip_pos+1].to_vec());
-                    schema.tables.push(create.schema);
-                },
+                    table.schema.root = Position::new(rootpage as usize, 0);
+                    schema.tables.push(table.schema);
+                }
                 _ => {
                     panic!("in the system table should only be create table queries")
                 }

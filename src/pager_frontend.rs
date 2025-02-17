@@ -64,7 +64,7 @@ impl PagerFrontend {
         data: Vec<Row>,
     ) -> Result<BTreeNode, Status> {
         let create_new_page = parent.is_none() || pager_interface.access_page_read(parent.expect("cant be none"), |p| {
-            Ok(p.free_space < schema.key_and_row_length + NODE_METADATA_SIZE)
+            Ok(p.free_space < schema.key_and_row_length + NODE_METADATA_SIZE) //TODO would it not be key_and_row_and_children_length ??
         })?;
         let mut new_node;
         if create_new_page {
@@ -221,7 +221,7 @@ impl PagerFrontend {
         let mut page = parent
             .pager_accessor
             .access_pager_write(|p| p.access_page_read(&parent.position))?;
-
+        let len = keys.len();
         Serializer::write_keys_vec_resize_with_rows(
             &keys,
             &data,
@@ -234,7 +234,9 @@ impl PagerFrontend {
             d.free_space = PAGE_SIZE - ( parent.table_schema.key_and_row_length + NODE_METADATA_SIZE ) * keys.len();
             d.data = page.data;
             Ok(())
-        })
+        })?;
+
+        Ok(())
     }
 
     pub fn get_key(index: usize, parent: &BTreeNode) -> Result<(Key, Row), Status> {

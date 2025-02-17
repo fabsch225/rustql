@@ -49,11 +49,13 @@ fn main() {
     let mut executor = Executor::init("./default.db.bin", BTREE_NODE_SIZE);
     executor.exec("CREATE TABLE table (id Integer, name String)".to_string());
     for i in 0..300 {
-        executor.exec(format!(
+        let query = format!(
             "INSERT INTO table (id, name) VALUES ({}, 'Kunde Nummer {}')",
             i,
             i * 3
-        ));
+        );
+        println!("{}", query);
+        executor.exec(query);
     }
     println!("running RustSQL shell...");
     loop {
@@ -67,8 +69,14 @@ fn main() {
             executor.exit();
             break;
         }
-        if command.eq_ignore_ascii_case("debug") {
-            executor.debug();
+        let v = command.split(" ").collect::<Vec<&str>>();
+        if v[0].eq_ignore_ascii_case("debug") {
+            if v.len() == 2 {
+                let parameter = v[1];
+                executor.debug(Some(parameter));
+            } else {
+                executor.debug(None);
+            }
         } else {
             let result = executor.exec(command.to_string());
             println!("{}", result);
