@@ -1,6 +1,7 @@
+use std::io::Chain;
 use crate::btree::BTreeNode;
 use crate::executor::TableSchema;
-use crate::pager::{Key, PagerAccessor, Position, Row};
+use crate::pager::{Key, PagerAccessor, Position, Row, NODE_METADATA_SIZE, PAGE_SIZE};
 use crate::serializer::Serializer;
 use crate::status::Status;
 use crate::status::Status::InternalSuccess;
@@ -25,7 +26,7 @@ impl PagerFrontend {
             Ok(())
         })
     }
-    pub fn create_new_table_root(
+    pub fn create_empty_node_on_new_page(
         schema: &TableSchema,
         pager_interface: PagerAccessor,
     ) -> Result<BTreeNode, Status> {
@@ -37,6 +38,13 @@ impl PagerFrontend {
             pager_accessor: pager_interface.clone(),
             table_schema: schema.clone(),
         };
+
+        //create the inital node-flag (set is_leaf to true)
+        pager_interface.access_page_write(&node, |d| {
+            d.free_space -= schema.key_and_row_length + NODE_METADATA_SIZE;
+            d.data[1] = Serializer::create_node_flag(true);
+            Ok(())
+        })?;
         Ok(node)
     }
     pub fn switch_nodes(
@@ -50,25 +58,44 @@ impl PagerFrontend {
     pub fn create_node(
         schema: TableSchema,
         pager_interface: PagerAccessor,
+        parent: Option<&BTreeNode>,
         keys: Vec<Key>,
         children: Vec<Position>,
         data: Vec<Row>,
     ) -> Result<BTreeNode, Status> {
-        let page_index = pager_interface
-            .access_pager_write(|p| p.create_page())
-            .expect("error creating page");
-        //we should create the node in the same page as its parent, if it fits
-        //if not, create a new page!
-        todo!();
+        let create_new_page = parent.is_none() || pager_interface.access_page_read(parent.expect("cant be none"), |p| {
+            Ok(p.free_space < schema.key_and_row_length + NODE_METADATA_SIZE)
+        })?;
+        let mut new_node;
+        if create_new_page {
+            new_node = Self::create_empty_node_on_new_page(&schema, pager_interface.clone())?;
+            Self::set_keys_and_children_as_positions(&new_node, keys, children)?;
+            Self::set_data(&new_node, data)?;
+        } else {
+            let new_position = parent.expect("cant be none").position.increase_cell();
+            new_node = BTreeNode {
+                position: new_position,
+                pager_accessor: pager_interface.clone(),
+                table_schema: schema.clone(),
+            };
+            pager_interface.access_page_write(&new_node, |d| {
+                d.data[1] = Serializer::create_node_flag(true);
+                Ok(())
+            })?;
+            Self::set_keys_and_children_as_positions(&new_node, keys, children)?;
+            Self::set_data(&new_node, data)?;
+        }
+        Ok(new_node)
     }
 
     pub fn create_node_without_children(
         schema: TableSchema,
         pager_interface: PagerAccessor,
+        parent: Option<&BTreeNode>,
         key: Key,
         data: Row,
     ) -> Result<BTreeNode, Status> {
-        Self::create_node(schema, pager_interface, vec![key], vec![], vec![data])
+        Self::create_node(schema, pager_interface, parent, vec![key], vec![], vec![data])
     }
 
     pub fn is_leaf(btree_node: &BTreeNode) -> Result<bool, Status> {
@@ -81,14 +108,14 @@ impl PagerFrontend {
 
     pub fn get_keys_count(node: &BTreeNode) -> Result<usize, Status> {
         //TODO this is very suboptimal
-        node.pager_accessor.access_page_read(&node, |d| {
-            Serializer::read_keys_as_vec(d, &node.position, &node.table_schema).map(|v| v.len())
+        node.pager_accessor.access_page_read(&node, |page_container| {
+            Serializer::read_keys_as_vec(&page_container.data, &node.position, &node.table_schema).map(|v| v.len())
         })
     }
 
     pub fn get_children_count(node: &BTreeNode) -> Result<usize, Status> {
-        node.pager_accessor.access_page_read(&node, |d| {
-            Serializer::read_children_as_vec(d, &node.position, &node.table_schema).map(|v| v.len())
+        node.pager_accessor.access_page_read(&node, |page_container| {
+            Serializer::read_children_as_vec(&page_container.data, &node.position, &node.table_schema).map(|v| v.len())
         })
     }
 
@@ -159,12 +186,16 @@ impl PagerFrontend {
     }
 
     pub fn set_children(parent: &BTreeNode, children: Vec<BTreeNode>) -> Result<(), Status> {
+        Self::set_children_as_positions(parent, children.iter().map(|c| c.position.clone()).collect())
+    }
+
+    pub fn set_children_as_positions(parent: &BTreeNode, children: Vec<Position>) -> Result<(), Status>  {
         let mut page = parent
             .pager_accessor
             .access_pager_write(|p| p.access_page_read(&parent.position))?;
 
         Serializer::write_children_vec(
-            &children.iter().map(|c| c.position.clone()).collect(),
+            &children,
             &mut page.data,
             &page.position,
             &parent.table_schema,
@@ -174,7 +205,9 @@ impl PagerFrontend {
             d.data = page.data;
             Ok(())
         })
+
     }
+
     pub fn get_keys(parent: &BTreeNode) -> Result<(Vec<Key>, Vec<Row>), Status> {
         let page = parent
             .pager_accessor
@@ -198,6 +231,7 @@ impl PagerFrontend {
         )?;
 
         parent.pager_accessor.access_page_write(parent, |d| {
+            d.free_space = PAGE_SIZE - ( parent.table_schema.key_and_row_length + NODE_METADATA_SIZE ) * keys.len();
             d.data = page.data;
             Ok(())
         })
@@ -252,22 +286,33 @@ impl PagerFrontend {
         keys: Vec<Key>,
         children: Vec<BTreeNode>,
     ) -> Result<(), Status> {
+        Self::set_children_as_positions(parent, children.iter().map(|c| c.position.clone()).collect())
+    }
+
+    pub fn set_keys_and_children_as_positions(
+        parent: &BTreeNode,
+        keys: Vec<Key>,
+        children: Vec<Position>,
+    ) -> Result<(), Status> {
         let mut page = parent
             .pager_accessor
             .access_pager_write(|p| p.access_page_read(&parent.position))?;
 
         Serializer::write_keys_vec(&keys, &mut page.data, &page.position, &parent.table_schema)?;
         Serializer::write_children_vec(
-            &children.iter().map(|c| c.position.clone()).collect(),
+            &children,
             &mut page.data,
             &page.position,
             &parent.table_schema,
         )?;
         parent.pager_accessor.access_page_write(parent, |d| {
+            d.free_space = PAGE_SIZE - ( parent.table_schema.key_and_row_length + NODE_METADATA_SIZE ) * keys.len();
             d.data = page.data;
             Ok(())
-        })
+        })?;
+        Ok(())
     }
+
 
     pub fn get_data(node: &BTreeNode) -> Result<Vec<Row>, Status> {
         let page = node

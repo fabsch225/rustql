@@ -18,12 +18,11 @@ use std::fs::{File, OpenOptions};
 use std::hash::{Hash, Hasher};
 use std::io::{ErrorKind, Read, Seek, SeekFrom, Write};
 use std::sync::{Arc, RwLock};
-//in byte
 
+//in bytes
 pub const PAGE_SIZE: usize = 4096; //16384
 pub const PAGE_SIZE_WITH_META: usize = PAGE_SIZE + 3; //<2 for free space on page>, <1 for flag>
 pub const NODE_METADATA_SIZE: usize = 2; //<number of keys> <flag> -- the number of keys is used to skip through the nodes on a page
-
 pub const STRING_SIZE: usize = 256; //len: 255
 pub const INTEGER_SIZE: usize = 5;
 pub const DATE_SIZE: usize = 5;
@@ -40,47 +39,27 @@ pub const TABLE_NAME_SIZE: usize = 32;
 // 2 byte: next page index
 // [Pages {Free-Space, Flag, PAGE_SIZE}] fyi (0,0) is an invalid position. the cells officially start at 1
 //                     (of course, the location in the page starts at zero)
+
+// Currently, there are no overflow pages. On a page, there can exist a fixed number of rows
+// (they are assumed to have full length, although in practice they are still shifted around, because in the future there will be overflow pages)
+// so, we calculate free-space as PAGE_SIZE - (Number of Rows * Row Length), and create a new page if there is not enough space
+
 pub const PAGES_START_AT: usize = 2;
 
-//---
-
-// Database (File) Structure Overview [deprecated]
-
-// Meta Information
-// 32 Bits: Meta Information Length (divisible by the following: TABLE_NAME_SIZE -> equal to the amount of tables * TABLE_NAME_SIZE)
-// [TABLE_NAME_SIZE]: names (identifiers) of the tables
-
-// [Table-Schema Information] tables
-// 16 Bits: Specifies the length of a row.
-// 8 Bits: Type of Table (Entity, Index, View, Internal Table, Virtual Table *Joined*)
-// 32 Bits: Root Position
-// 32 Bits: Next Position
-// 32 Bits: Offset Position
-// 32 Bits: Approximate Count of Entries (new)
-// Fields: Each field is defined as follows:
-// [TYPE_SIZE - Type of Field][128 Bits - Name of Field (Ascii)] -> 8 Chars
-// The first field is the ID.
-
-// Page Storage
-// Pages are nodes in a B-tree structure. Each page contains a fixed maximum of keys/rows (T - 1)
-// and child nodes (T). All rows belong to the same table, and the schema is stored separately.
-
-// Page Layout
+// Node Layout
 // - 8 Bits: Number of Keys (n)
 // - 8 Bits: Flag
 // - n Keys: Each key is the length of the ID type read earlier.
 // - n+1 Child/Page Pointers: Each pointer is [POSITION] bytes long.
 // - Next There is the Data, According to the Schema Definition
 
-// - so the size of a pages Header (until the actual data) is like this: n * (Number Of Keys) + (n + 1) * POSITION_SIZE
-
-//---
+// - so the size of a Node's Header (until the rows) is: n * (Number Of Keys) + (n + 1) * POSITION_SIZE
 
 // ## Each Flag is a Byte =>
 // Page-Flag Definition
-// - Bit 0: Indicates if the page is dirty
+// - Bit 0: Indicates if the page is dirty (needs to be written to disk)
 // - Bit 2: Indicates if a page is deleted (marked for vacuum)
-// - Bit 3: Lock
+// - Bit 4: Lock
 
 // Node-Flag Definition
 // - Bit 1: Indicates if the Btree Node is a Leaf
@@ -91,7 +70,7 @@ pub const PAGES_START_AT: usize = 2;
 
 #[repr(u8)]
 pub enum PageFlag {
-    Dirty = 1,
+    Dirty = 0,
     Deleted = 2,
     Lock = 4,
 }
@@ -137,7 +116,7 @@ impl Debug for Type {
 }
 
 //represents a whole page except the position i.e. keys, child-position and data
-pub type PageData = [u8; PAGE_SIZE as usize]; //[u8; PAGE_SIZE as usize]; this is possible eventually
+pub type PageData = [u8; PAGE_SIZE]; //[u8; PAGE_SIZE as usize]; this is possible eventually
 
 #[derive(Clone, Debug)]
 pub struct PageContainer {
@@ -185,6 +164,13 @@ impl Position {
         self.cell
     }
 
+    pub fn increase_cell(&self) -> Self {
+            Position {
+            page: self.page,
+            cell: self.cell + 1,
+        }
+    }
+
     fn get_file_position(&self) -> u64 {
         //(0,0) is an invalid position. the cells officially start at 1
         // (of course, the location in the page starts at zero)
@@ -200,15 +186,6 @@ impl Hash for Position {
 }
 
 pub type Row = Vec<u8>;
-
-impl Serializer {
-    pub fn empty_key(schema: &TableSchema) -> Key {
-        vec![0; schema.key_length]
-    }
-    pub fn empty_row(schema: &TableSchema) -> Row {
-        vec![0; schema.row_length]
-    }
-}
 
 #[derive(Debug)]
 pub struct PagerCore {
@@ -276,7 +253,7 @@ impl PagerAccessor {
     // (now we have to account for the possibility of loading a page from disk, which requires mutating the filestream)
     pub fn access_page_read<F, T>(&self, node: &BTreeNode, func: F) -> Result<T, Status>
     where
-        F: FnOnce(&PageData) -> Result<T, Status>,
+        F: FnOnce(&PageContainer) -> Result<T, Status>,
     {
         let mut pager = self.pager.write().map_err(|e| {
             println!("{:?}", e);
@@ -285,7 +262,7 @@ impl PagerAccessor {
         let page = pager.access_page_read(&node.position);
 
         if page.is_ok() {
-            func(&page?.data)
+            func(&page?)
         } else {
             Err(page.unwrap_err())
         }

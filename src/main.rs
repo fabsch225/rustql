@@ -46,7 +46,7 @@ const BTREE_NODE_SIZE: usize = 3; //this means a maximum of 5 keys per node
 const TOMB_THRESHOLD: usize = 10; //10 percent
 
 fn main() {
-    let executor = Executor::init("./default.db.bin", BTREE_NODE_SIZE);
+    let mut executor = Executor::init("./default.db.bin", BTREE_NODE_SIZE);
     executor.exec("CREATE TABLE table (id Integer, name String)".to_string());
     for i in 0..300 {
         executor.exec(format!(

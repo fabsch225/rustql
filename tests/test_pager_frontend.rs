@@ -13,10 +13,10 @@ mod tests {
 
     fn get_schema() -> TableSchema {
         TableSchema {
-            next_position: Position { page: 0, cell: 0 },
-            root: Position { page: 0, cell: 0 },
+            next_position: Position::new(0,0),
+            root: Position::new(0,0),
             col_count: 2,
-            whole_row_length: 260,
+            key_and_row_length: 260,
             key_length: 4,
             key_type: Type::Integer,
             row_length: 256,
@@ -52,25 +52,7 @@ mod tests {
             })
             .collect();
 
-        //let page_data = Serializer::init_page_data_with_children(keys.clone(), children.clone(), rows.clone());
-        let schema = get_schema();
-
-        let page = pager_interface
-            .access_pager_write(|p| {
-                p.create_page()
-            })
-            .unwrap();
-
-        let node = BTreeNode::new(Position { page, cell: 0 }, pager_interface.clone(), schema.clone());
-
-        pager_interface
-            .access_page_write(&node, |pc| {
-                pc.data = Serializer::init_page_data_with_children(keys.clone(), children.clone(), rows.clone(), &schema)?;
-                Ok(())
-            })
-            .unwrap();
-
-        node
+        PagerFrontend::create_node(schema, pager_interface, None, keys, children, rows).unwrap()
     }
 
     #[test]
@@ -101,6 +83,7 @@ mod tests {
         let pager_interface =
             PagerCore::init_from_file("./default.db.bin").unwrap();
         let node = create_and_insert_mock_btree_node(2, pager_interface.clone());
+
         let (key, data) = PagerFrontend::get_key(1, &node).unwrap();
         assert_eq!(key, vec![1u8; 4]);
         assert_eq!(data[0..9], b"Mock Name"[..]);
@@ -183,6 +166,9 @@ mod tests {
         let pager_interface =
             PagerCore::init_from_file("./default.db.bin").unwrap();
         let node = create_and_insert_mock_btree_node(2, pager_interface.clone());
+        pager_interface.access_page_read(&node, |data| {
+            Ok(())
+        });
         let is_leaf = PagerFrontend::is_leaf(&node).unwrap();
         assert!(is_leaf);
     }

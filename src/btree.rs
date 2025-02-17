@@ -3,8 +3,6 @@ use crate::pager::{Key, PagerAccessor, Position, Row};
 use crate::pager_frontend::PagerFrontend;
 use crate::serializer::Serializer;
 use crate::status::Status;
-use crate::status::Status::InternalExceptionKeyNotFound;
-use std::cell::RefCell;
 use std::fmt::Display;
 use std::fmt::{Debug, Formatter};
 
@@ -79,7 +77,7 @@ impl BTreeNode {
             keys_and_rows.0[index] = new_key;
             PagerFrontend::set_keys(self, keys_and_rows.0, keys_and_rows.1)
         } else {
-            Err(InternalExceptionKeyNotFound)
+            Err(Status::InternalExceptionKeyNotFound)
         }
     }
 
@@ -217,11 +215,14 @@ impl Btree {
     pub fn insert(&mut self, k: Key, v: Row) -> Result<(), Status> {
         if let Some(ref root) = self.root {
             if root.get_keys_count()? == (2 * self.t) - 1 {
-                let mut new_root = PagerFrontend::create_node_without_children(
+                todo!();
+                let mut new_root = PagerFrontend::create_node(
                     self.table_schema.clone(),
                     self.pager_accessor.clone(),
-                    Serializer::empty_key(&self.table_schema),
-                    Serializer::empty_row(&self.table_schema),
+                    None,
+                    vec![Serializer::empty_key(&self.table_schema)],
+                    vec![],
+                    vec![Serializer::empty_row(&self.table_schema)],
                 )?;
                 new_root.push_child(root.clone())?;
                 self.split_child(&new_root, 0, self.t, true)?;
@@ -241,7 +242,7 @@ impl Btree {
             }
         } else {
             panic!("Root is None");
-            let new_root = PagerFrontend::create_new_table_root(
+            let new_root = PagerFrontend::create_empty_node_on_new_page(
                 &self.table_schema,
                 self.pager_accessor.clone()
             )?;
@@ -291,9 +292,10 @@ impl Btree {
     fn split_child(&self, x: &BTreeNode, i: usize, t: usize, is_root: bool) -> Result<(), Status> {
         let mut y = x.get_child(i)?.clone();
         let keys_and_rows = y.get_keys_from(t)?;
-        let mut z = PagerFrontend::create_node(
+        let mut z = PagerFrontend::create_node( //TODO: should this be here? the BTree should call BTreeNode methods !?
             self.table_schema.clone(),
             y.pager_accessor.clone(),
+            Some(x),
             keys_and_rows.0,
             vec![],
             keys_and_rows.1,
@@ -490,6 +492,7 @@ impl Btree {
             self.cleanup_node(root, self.t)?;
 
             if root.get_keys_count()? == 0 {
+                todo!();
                 if !root.is_leaf() {
                     let new_root = root.get_child(0)?.clone();
                     PagerFrontend::set_table_root(
@@ -620,7 +623,7 @@ impl Btree {
         }
 
         if node.is_leaf() {
-            return Err(InternalExceptionKeyNotFound);
+            return Err(Status::InternalExceptionKeyNotFound);
         }
 
         self.find_in_node(&node.get_child(i)?, key, exec)

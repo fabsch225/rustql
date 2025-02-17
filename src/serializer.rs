@@ -90,11 +90,11 @@ impl Serializer {
     }
     pub fn is_leaf(page_data: &PageData, position: &Position, table_schema: &TableSchema) -> Result<bool, Status> {
         let location = Self::find_position_offset(page_data, &position, &table_schema);
-        Ok(Self::byte_to_bool_at_position(page_data[location + 1], 1))
+        Ok(Self::byte_to_bool_at_position(page_data[location + 1], NodeFlag::Leaf as u8))
     }
     pub fn set_is_leaf(page_data: &mut PageData, position: &Position, table_schema: &TableSchema, new_value: bool) -> Result<(), Status> {
         let location = Self::find_position_offset(page_data, &position, &table_schema);
-        Self::write_byte_at_position(&mut page_data[location + 1], 1, new_value);
+        Self::write_byte_at_position(&mut page_data[location + 1], NodeFlag::Leaf as u8, new_value);
         Ok(())
     }
     pub fn is_deleted(page_container: &PageContainer) -> Result<bool, Status> {
@@ -413,19 +413,17 @@ impl Serializer {
             return Err(InternalExceptionInvalidColCount);
         }
 
-        //let mut check_for_leaf = true;
+        let mut check_for_leaf = true;
         for (i, child) in children.iter().enumerate() {
             let start_pos = children_start + i * POSITION_SIZE;
             let end_pos = start_pos + POSITION_SIZE;
             page[start_pos..end_pos].copy_from_slice(&Serializer::position_to_bytes(child.clone()));
-            /*
-            if child.is_empty() && check_for_leaf {
+
+            if check_for_leaf && !child.is_empty() {
                 check_for_leaf = false;
-                Self::set_is_leaf(page, false)?;
+                Self::set_is_leaf(page, position, &schema, false)?;
             }
-             */
         }
-        Self::write_byte_at_position(&mut page[1], NodeFlag::Leaf as u8, children.is_empty());
         Ok(())
     }
 
@@ -621,7 +619,6 @@ impl Serializer {
             page.copy_within(start..end - offset, start + offset);
             page[start..start + offset].fill(0);
         } else {
-            println!("shifting left: {}..{} {}", start, end, offset);
             page.copy_within(start..end, start - offset);
             page[end - offset..end].fill(0);
         }
@@ -655,13 +652,21 @@ impl Serializer {
             .map(|field| Self::get_size_of_type(&field.field_type).unwrap_or(0))
             .sum();
 
-        if computed_row_length != schema.whole_row_length {
+        if computed_row_length != schema.key_and_row_length {
             return Err(InternalExceptionInvalidSchema);
         }
         if schema.fields.len() != schema.col_count {
             return Err(InternalExceptionInvalidSchema);
         }
         Ok(())
+    }
+
+    pub fn empty_key(schema: &TableSchema) -> Key {
+        vec![0; schema.key_length]
+    }
+
+    pub fn empty_row(schema: &TableSchema) -> Row {
+        vec![0; schema.row_length]
     }
 
     //TODO adjust for NULL-flag
@@ -740,9 +745,10 @@ impl Serializer {
         }
     }
 
-    pub fn create_flag(is_leaf: bool) -> Flag {
-        let bits = [false, is_leaf, true, true, true, true, true, true];
-        Serializer::bits_to_bytes(&bits)[0]
+    pub fn create_node_flag(is_leaf: bool) -> Flag {
+        let mut flag = 0u8;
+        Self::write_byte_at_position(&mut flag, NodeFlag::Leaf as u8, is_leaf);
+        flag
     }
 
     pub fn compare_strings(a: [u8; STRING_SIZE], b: [u8; STRING_SIZE]) -> std::cmp::Ordering {

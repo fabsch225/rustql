@@ -7,7 +7,7 @@ mod tests {
         TableSchema {
             root: 0,
             col_count: 2,
-            whole_row_length: 260,
+            key_and_row_length: 260,
             key_length: 4,
             key_type: Type::Integer,
             row_length: 256,

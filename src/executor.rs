@@ -14,6 +14,7 @@ use std::fmt;
 use std::fmt::{format, Display, Formatter};
 use std::fs::OpenOptions;
 use std::io::{ErrorKind, Write};
+use crate::pager_frontend::PagerFrontend;
 
 const MASTER_TABLE_NAME: &str = "rustsql_master";
 
@@ -43,25 +44,19 @@ pub struct TableIndex {
     pub(crate) index: Vec<TableName>,
 }
 
+//TODO remove redundant fields, i. e. decide which to keep, implement derivation methods for the others
 #[derive(Clone, Debug)]
 pub struct TableSchema {
     pub next_position: Position,
     pub root: Position, //if 0 -> no tree
     pub col_count: usize,
-    pub whole_row_length: usize,
+    pub key_and_row_length: usize,
     pub key_length: usize, //includes flag
     pub key_type: Type,
     pub row_length: usize,
     pub fields: Vec<Field>,
     pub table_type: u8,
-    pub entry_count: i32, //Todo Fields
-                          // count (of entries)
-}
-
-impl TableSchema {
-    pub fn has_valid_root(&self) -> bool {
-        !self.root.is_empty()
-    }
+    pub entry_count: i32,
 }
 
 #[derive(Debug, Clone)]
@@ -207,7 +202,7 @@ impl Executor {
         }
     }
 
-    pub fn debug(&self) {
+    pub fn debug(&mut self) {
         println!("Cached Schema: {:?}", self.schema);
         println!(
             "System Table: {}",
@@ -217,7 +212,8 @@ impl Executor {
                 self.schema.tables[0].clone()
             )
             .unwrap()
-        )
+        );
+        println!("System Table Data: \n {}", self.exec("SELECT * FROM rustsql_master".to_string()));
     }
 
     pub fn exit(&self) {
@@ -226,7 +222,7 @@ impl Executor {
             .expect("Error Flushing the Pager");
     }
 
-    pub fn exec(&self, query: String) -> QueryResult {
+    pub fn exec(&mut self, query: String) -> QueryResult {
         let result = self.exec_intern(query, false);
         if !result.is_ok() {
             result.err().unwrap()
@@ -235,7 +231,7 @@ impl Executor {
         }
     }
 
-    fn exec_intern(&self, query: String, allow_modification_to_system_table: bool) -> Result<QueryResult, QueryResult> {
+    fn exec_intern(&mut self, query: String, allow_modification_to_system_table: bool) -> Result<QueryResult, QueryResult> {
         let mut parser = Parser::new(query.clone());
         let parsed_query = parser
             .parse_query()
@@ -252,16 +248,24 @@ impl Executor {
                     return Err(QueryResult::err(Status::ExceptionTableAlreadyExists));
                 }
 
+                let root_page = PagerFrontend::create_empty_node_on_new_page(
+                    &q.schema,
+                    self.pager_accessor.clone(),
+                   )
+                    .map_err(|status| QueryResult::err(status))
+                    .map(|node| node.position.page())?;
+
                 let insert_query = format!(
                     "INSERT INTO {} (name, type, rootpage, sql) VALUES ({}, {}, {}, '{}')",
                     MASTER_TABLE_NAME,
                     q.table_name,
                     0,
-                    self.pager_accessor.get_next_page_index(),
+                    root_page,
                     query
                 );
                 println!("{}", insert_query);
-                self.exec_intern(insert_query, true)
+                self.exec_intern(insert_query, true);
+                self.reload_schema()
             }
             CompiledQuery::DropTable(q) => {
                 todo!()
@@ -539,17 +543,21 @@ impl Executor {
 
     pub fn create_database(file_name: &str) -> Result<(), Status> {
         let mut db = [0u8; 2 + PAGE_SIZE_WITH_META];
-        //TODO move this somewhere else
+        //i think this will continue to be hardcoded here for the foreseeable future
         // [<0, 1> Next Page, <0, 1> Free Space, Flag, Num-keys, Flag]
         db[1] = 1; //next page: [0, 1] -> 1
-
         db[2] = (PAGE_SIZE << 8) as u8;
         db[3] = (PAGE_SIZE & 0xFF) as u8;
-        db[6] = Serializer::create_flag(true); //flag: is a leaf
+        db[6] = Serializer::create_node_flag(true); //flag: is a leaf
         match OpenOptions::new().create_new(true).read(true).write(true).open(file_name).unwrap().write(&db) {
             Ok(f) => Ok(()),
             _ => Err(Status::InternalExceptionFileOpenFailed),
         }
+    }
+
+    fn reload_schema(&mut self) -> Result<QueryResult, QueryResult> {
+        self.schema = Self::load_schema(self.pager_accessor.clone(), self.btree_node_width);
+        Ok(QueryResult::went_fine())
     }
 
     fn load_schema(pager_accessor: PagerAccessor, t: usize) -> Schema {
