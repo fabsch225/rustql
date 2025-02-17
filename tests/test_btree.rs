@@ -60,7 +60,7 @@ mod tests {
     fn test_scan() {
         let pager_interface =
             PagerCore::init_from_schema("./default.db.bin", get_schema()).unwrap();
-        let mut btree = Btree::new(2, pager_interface.clone());
+        let mut btree = Btree::init(2, pager_interface.clone());
         let node = create_and_insert_mock_btree_node(5, pager_interface.clone());
         btree.root = Some(node);
 
@@ -73,7 +73,7 @@ mod tests {
     fn test_insert() {
         let pager_interface =
             PagerCore::init_from_schema("./default.db.bin", get_schema()).unwrap();
-        let mut btree = Btree::new(2, pager_interface.clone());
+        let mut btree = Btree::init(2, pager_interface.clone());
 
         let key: Key = vec![1, 0, 0, 0];
         let mut row: Row = vec![0u8; 256];
@@ -92,7 +92,7 @@ mod tests {
     fn test_delete() {
         let pager_interface =
             PagerCore::init_from_schema("./default.db.bin", get_schema()).unwrap();
-        let mut btree = Btree::new(2, pager_interface.clone()).unwrap();
+        let mut btree = Btree::init(2, pager_interface.clone()).unwrap();
 
         for i in 0..4 {
             let key: Key = vec![i, 0, 0, 0];
@@ -115,7 +115,7 @@ mod tests {
     fn test_find_range() {
         let pager_interface =
             PagerCore::init_from_schema("./default.db.bin", get_schema()).unwrap();
-        let mut btree = Btree::new(2, pager_interface.clone()).expect("");
+        let mut btree = Btree::init(2, pager_interface.clone()).expect("");
 
         for i in 0..10 {
             let key: Key = vec![i, 0, 0, 0];

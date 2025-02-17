@@ -1,13 +1,10 @@
 use crate::btree::Btree;
-use crate::pager::{Key, PagerAccessor, PagerCore, Position, Row, TableName, Type};
+use crate::pager::{Key, PagerAccessor, PagerCore, Position, Row, TableName, Type, PAGE_SIZE, PAGE_SIZE_WITH_META};
 use crate::parser::Parser;
 use crate::planner::SqlStatementComparisonOperator::{
     Equal, Greater, GreaterOrEqual, Lesser, LesserOrEqual,
 };
-use crate::planner::{
-    CompiledCreateTableQuery, CompiledDeleteQuery, CompiledQuery, CompiledSelectQuery, Planner,
-    SqlConditionOpCode, SqlStatementComparisonOperator,
-};
+use crate::planner::{CompiledCreateTableQuery, CompiledDeleteQuery, CompiledInsertQuery, CompiledQuery, CompiledSelectQuery, Planner, SqlConditionOpCode, SqlStatementComparisonOperator};
 use crate::serializer::Serializer;
 use crate::status::Status;
 use crate::status::Status::ExceptionQueryMisformed;
@@ -183,7 +180,6 @@ pub struct Executor {
 
 impl Executor {
     pub fn init(file_path: &str, t: usize) -> Self {
-        let master_table_schema = Self::make_master_table_schema();
         let pager_accessor = match PagerCore::init_from_file(file_path) {
             Ok(pa) => pa,
             Err(e) => {
@@ -201,24 +197,21 @@ impl Executor {
                 }
             }
         };
+
+
         Executor {
             pager_accessor: pager_accessor.clone(),
             query_cache: HashMap::new(),
-            schema: Schema {
-                table_index: TableIndex {
-                    index: vec![TableName::from(MASTER_TABLE_NAME)],
-                },
-                tables: vec![master_table_schema],
-            },
+            schema: Self::load_schema(pager_accessor, t),
             btree_node_width: t
         }
     }
 
     pub fn debug(&self) {
-        println!("Schema: {:?}", self.schema);
+        println!("Cached Schema: {:?}", self.schema);
         println!(
-            "B-Tree: {}",
-            Btree::new(
+            "System Table: {}",
+            Btree::init(
                 self.btree_node_width,
                 self.pager_accessor.clone(),
                 self.schema.tables[0].clone()
@@ -250,6 +243,15 @@ impl Executor {
         let compiled_query = Planner::plan(&self.schema, parsed_query)?;
         match compiled_query {
             CompiledQuery::CreateTable(q) => {
+                //check if the table already exists
+                //this could be achieved using a unique / pk constraint on the system table.
+                //but there are no constraints implemented ;D
+                let stripped_mame = q.table_name.trim_end_matches(|char| char == '0');
+                let table_name : TableName = stripped_mame.as_bytes().to_vec();
+                if self.schema.table_index.index.contains(&table_name) {
+                    return Err(QueryResult::err(Status::ExceptionTableAlreadyExists));
+                }
+
                 let insert_query = format!(
                     "INSERT INTO {} (name, type, rootpage, sql) VALUES ({}, {}, {}, '{}')",
                     MASTER_TABLE_NAME,
@@ -266,7 +268,7 @@ impl Executor {
             }
             CompiledQuery::Select(q) => {
                 let schema = &self.schema.tables[0];
-                let btree = Btree::new(
+                let btree = Btree::init(
                     self.btree_node_width,
                     self.pager_accessor.clone(),
                     schema.clone(),
@@ -289,7 +291,7 @@ impl Executor {
             }
             CompiledQuery::Insert(q) => {
                 let schema = &self.schema.tables[0];
-                let mut btree = Btree::new(
+                let mut btree = Btree::init(
                     self.btree_node_width,
                     self.pager_accessor.clone(),
                     schema.clone(),
@@ -302,7 +304,7 @@ impl Executor {
             }
             CompiledQuery::Delete(q) => {
                 let schema = &self.schema.tables[0];
-                let btree = Btree::new(
+                let btree = Btree::init(
                     self.btree_node_width,
                     self.pager_accessor.clone(),
                     schema.clone(),
@@ -505,7 +507,7 @@ impl Executor {
         true
     }
     pub fn check_integrity(&self) -> Result<(), Status> {
-        let mut btree = Btree::new(self.btree_node_width, self.pager_accessor.clone(), self.schema.tables[0].clone())?;
+        let mut btree = Btree::init(self.btree_node_width, self.pager_accessor.clone(), self.schema.tables[0].clone())?;
         let table_schema = self.schema.tables[0].clone();
         let mut last_key: RefCell<Option<Key>> = RefCell::new(None);
         let mut valid = RefCell::new(true);
@@ -536,10 +538,63 @@ impl Executor {
     }
 
     pub fn create_database(file_name: &str) -> Result<(), Status> {
-        match OpenOptions::new().create_new(true).read(true).write(true).open(file_name).unwrap().write(&[0,0]) {
+        let mut db = [0u8; 2 + PAGE_SIZE_WITH_META];
+        //TODO move this somewhere else
+        // [<0, 1> Next Page, <0, 1> Free Space, Flag, Num-keys, Flag]
+        db[1] = 1; //next page: [0, 1] -> 1
+
+        db[2] = (PAGE_SIZE << 8) as u8;
+        db[3] = (PAGE_SIZE & 0xFF) as u8;
+        db[6] = Serializer::create_flag(true); //flag: is a leaf
+        match OpenOptions::new().create_new(true).read(true).write(true).open(file_name).unwrap().write(&db) {
             Ok(f) => Ok(()),
             _ => Err(Status::InternalExceptionFileOpenFailed),
         }
+    }
+
+    fn load_schema(pager_accessor: PagerAccessor, t: usize) -> Schema {
+        let master_table_schema = Self::make_master_table_schema();
+        let mut schema = Schema {
+            table_index: TableIndex {
+                index: vec![TableName::from(MASTER_TABLE_NAME)],
+            },
+            tables: vec![master_table_schema.clone()],
+        };
+        //load remaining schema from master table
+        let btree = Btree::init(
+            t,
+            pager_accessor.clone(),
+            master_table_schema.clone(),
+        ).expect("Failed to initialise Btree on System Table");
+        let mut result = RefCell::new(DataFrame::new());
+        let select_query = CompiledSelectQuery {
+            table_id: 0,
+            operation: SqlConditionOpCode::SelectFTS,
+            result: vec![Field { field_type: Type::String, name: "name".to_string() }, Field { field_type: Type::String, name: "sql".to_string() }],
+            conditions: vec![(SqlStatementComparisonOperator::None, vec![]); 4],
+        };
+        let action = |key: &mut Key, row: &mut Row| {
+            Executor::exec_select(key, row, &mut result.borrow_mut(), &select_query, &master_table_schema)
+        };
+        btree.scan(&action).expect("Failed to scan master table");
+        result.borrow().data.iter().for_each(|entry|{
+            let name = Serializer::get_field_on_row(entry, 0, &master_table_schema).expect("Failed to get field: Name");
+            let sql = Serializer::format_field_on_row(entry, 1, &master_table_schema).expect("Failed to format field: SQL");
+            let mut parser = Parser::new(sql);
+            let parsed_query = parser.parse_query().expect("Failed to parse query");
+            let compiled_query = Planner::plan(&Schema::make_empty(), parsed_query).expect("Failed to compile query");
+            match compiled_query {
+                CompiledQuery::CreateTable(create) => {
+                    let strip_pos = name.iter().rposition(|&x| x != 0).expect("cant be empty");
+                    schema.table_index.index.push(name[0..strip_pos+1].to_vec());
+                    schema.tables.push(create.schema);
+                },
+                _ => {
+                    panic!("in the system table should only be create table queries")
+                }
+            }
+        });
+        schema
     }
 
     fn make_master_table_schema() -> TableSchema {

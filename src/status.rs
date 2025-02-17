@@ -40,4 +40,5 @@ pub enum Status {
     InternalExceptionFileWriteError,
     InternalExceptionFileAlreadyExists,
     InternalExceptionFileOpenFailed,
+    ExceptionTableAlreadyExists,
 }

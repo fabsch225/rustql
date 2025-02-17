@@ -12,7 +12,7 @@ use crate::status::Status::{
 };
 use std::cmp::PartialEq;
 use std::collections::HashMap;
-use std::fmt;
+use std::{fmt, usize};
 use std::fmt::{Debug, Display, Formatter};
 use std::fs::{File, OpenOptions};
 use std::hash::{Hash, Hasher};
@@ -20,8 +20,9 @@ use std::io::{ErrorKind, Read, Seek, SeekFrom, Write};
 use std::sync::{Arc, RwLock};
 //in byte
 
-pub const PAGE_SIZE: u16 = 4096; //16384
-pub const PAGE_SIZE_WITH_META: u16 = PAGE_SIZE + 3; //2 for free space on page, 1 for flag
+pub const PAGE_SIZE: usize = 4096; //16384
+pub const PAGE_SIZE_WITH_META: usize = PAGE_SIZE + 3; //<2 for free space on page>, <1 for flag>
+pub const NODE_METADATA_SIZE: usize = 2; //<number of keys> <flag> -- the number of keys is used to skip through the nodes on a page
 
 pub const STRING_SIZE: usize = 256; //len: 255
 pub const INTEGER_SIZE: usize = 5;
@@ -37,8 +38,8 @@ pub const TABLE_NAME_SIZE: usize = 32;
 // File Structure V2
 
 // 2 byte: next page index
-// [Pages {PAGE_SIZE}]
-
+// [Pages {Free-Space, Flag, PAGE_SIZE}] fyi (0,0) is an invalid position. the cells officially start at 1
+//                     (of course, the location in the page starts at zero)
 pub const PAGES_START_AT: usize = 2;
 
 //---
@@ -78,24 +79,46 @@ pub const PAGES_START_AT: usize = 2;
 // ## Each Flag is a Byte =>
 // Page-Flag Definition
 // - Bit 0: Indicates if the page is dirty
-// - Bit 1: Indicates if the Btree Node is a Leaf
-// - Bit 2: Indicates if a page is deleted
+// - Bit 2: Indicates if a page is deleted (marked for vacuum)
 // - Bit 3: Lock
+
+// Node-Flag Definition
+// - Bit 1: Indicates if the Btree Node is a Leaf
 
 // Key-Flag Definition
 // - Bit 0: Indicates if the Key is marked for deletion
 // (keys cannot be null)
 
+#[repr(u8)]
+pub enum PageFlag {
+    Dirty = 1,
+    Deleted = 2,
+    Lock = 4,
+}
+#[repr(u8)]
+pub enum NodeFlag {
+    Leaf = 1,
+}
+#[repr(u8)]
+pub enum KeyMeta {
+    Tomb = 0,
+}
+#[repr(u8)]
+pub enum FieldMeta {
+    Null = 0,
+}
+
 #[derive(PartialEq, Clone)]
 pub enum Type {
-    Null,
+    Null, //TODO remove this. this is not a type. each type can be null
     Integer,
     String,
     //Double, future feature
     //Varchar, future feature
     Date,
     Boolean,
-    //Blob    future feature
+    //Blob    future feature, requires special treatment
+    //Character future feature (?)
 }
 
 impl Debug for Type {
@@ -114,13 +137,13 @@ impl Debug for Type {
 }
 
 //represents a whole page except the position i.e. keys, child-position and data
-pub type PageData = Vec<u8>; //[u8; PAGE_SIZE as usize]; this is possible eventually
+pub type PageData = [u8; PAGE_SIZE as usize]; //[u8; PAGE_SIZE as usize]; this is possible eventually
 
 #[derive(Clone, Debug)]
 pub struct PageContainer {
-    pub data: PageData, //not like this, look at my comments in BTreeNode
+    pub data: PageData,
     pub position: Position,
-    pub free_space: u16,
+    pub free_space: usize,
     pub flag: Flag,
 }
 
@@ -135,12 +158,12 @@ pub type Flag = u8;
 //TODO if this throws errors if i change it, i must abstract every implementation :) not **every** implementation
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Position {
-    pub page: u16,
-    pub cell: u16,
+    page: usize,
+    cell: usize,
 }
 
 impl Position {
-    pub fn new(page_index: u16, location_on_page: u16) -> Self {
+    pub fn new(page_index: usize, location_on_page: usize) -> Self {
         Position {
             page: page_index,
             cell: location_on_page,
@@ -154,15 +177,25 @@ impl Position {
         self.page == 0 && self.cell == 0
     }
 
+    pub fn page(&self) -> usize {
+        self.page
+    }
+
+    pub fn cell(&self) -> usize {
+        self.cell
+    }
+
     fn get_file_position(&self) -> u64 {
-        (self.page * PAGE_SIZE_WITH_META + self.cell) as u64
+        //(0,0) is an invalid position. the cells officially start at 1
+        // (of course, the location in the page starts at zero)
+        (self.page * PAGE_SIZE_WITH_META + self.cell + PAGES_START_AT) as u64
     }
 }
 
 //cache whole pages, so only lookup the page_index
 impl Hash for Position {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        state.write_u16(self.page);
+        state.write_usize(self.page);
     }
 }
 
@@ -182,7 +215,7 @@ pub struct PagerCore {
     pub hash: String,
     cache: HashMap<Position, PageContainer>,
     file: File,
-    next_page_index: u16,
+    next_page_index: usize,
 }
 
 #[derive(Clone)]
@@ -208,7 +241,7 @@ impl PagerAccessor {
         }
     }
 
-    pub(crate) fn get_next_page_index(&self) -> u16 {
+    pub(crate) fn get_next_page_index(&self) -> usize {
         self.access_pager_read(|p| p.next_page_index)
     }
 
@@ -311,7 +344,7 @@ impl PagerCore {
                 next_page_index = 0;
             }
             Ok(()) => {
-                next_page_index = u16::from_be_bytes(next_page_index_bytes);
+                next_page_index = u16::from_be_bytes(next_page_index_bytes) as usize;
             }
         }
 
@@ -386,11 +419,11 @@ impl PagerCore {
         }
     }
 
-    pub fn create_page(&mut self) -> Result<u16, Status> {
+    pub fn create_page(&mut self) -> Result<usize, Status> {
         let position = Position::new(self.next_page_index, 0);
         self.next_page_index += 1;
         let page_container = PageContainer {
-            data: vec![0; PAGE_SIZE as usize],
+            data: [0; PAGE_SIZE],
             position: position.clone(),
             free_space: PAGE_SIZE,
             flag: 0,
@@ -414,20 +447,26 @@ impl PagerCore {
     fn read_page_from_disk(&mut self, position: &Position) -> Result<PageContainer, Status> {
         self.file
             .seek(SeekFrom::Start(position.get_file_position()))
-            .map_err(|_| Status::InternalExceptionReadFailed)?;
+            .map_err(|_| {
+                panic!("Cannot seek to this position");
+                Status::InternalExceptionReadFailed
+            })?;
         let mut meta_buffer = [0u8; 3];
         self.file
             .read_exact(&mut meta_buffer)
-            .map_err(|_| Status::InternalExceptionReadFailed)?;
-        let mut main_buffer = vec![0u8; PAGE_SIZE as usize];
+            .map_err(|_| {
+                panic!("Cannot read File to this len (metadata len 3)");
+                Status::InternalExceptionReadFailed
+            })?;
+        let mut main_buffer = [0u8; PAGE_SIZE as usize];
         self.file.read_exact(&mut main_buffer).map_err(|e| {
-            eprintln!("Cannot read File to this len: {}", e);
+            panic!("Cannot read File to this len: {}", e);
             Status::InternalExceptionReadFailed
         })?;
         Ok(PageContainer {
             data: main_buffer,
             position: position.clone(),
-            free_space: u16::from_be_bytes([meta_buffer[0], meta_buffer[1]]),
+            free_space: u16::from_be_bytes([meta_buffer[0], meta_buffer[1]]) as usize,
             flag: meta_buffer[2],
         })
     }
@@ -436,7 +475,13 @@ impl PagerCore {
         self.file
             .seek(SeekFrom::Start(page.position.get_file_position()))
             .map_err(|_| Status::InternalExceptionWriteFailed)?;
-        assert_eq!(page.data.len() as u16, PAGE_SIZE);
+        assert_eq!(page.data.len(), PAGE_SIZE);
+        let mut meta_data = [0; 3];
+        meta_data[0..2].copy_from_slice(&(page.free_space as u16).to_be_bytes());
+        meta_data[2] = page.flag;
+        self.file
+            .write_all(&meta_data)
+            .map_err(|_| Status::InternalExceptionWriteFailed)?;
         self.file
             .write_all(&page.data)
             .map_err(|_| Status::InternalExceptionWriteFailed)?;

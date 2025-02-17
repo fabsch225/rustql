@@ -51,7 +51,7 @@ mod tests {
         let w = w.unwrap();
 
         let r = p.access_page_read(&w.clone(), |d, _| {
-            Serializer::read_data_by_vec(d, &get_schema())
+            Serializer::read_data_as_vec(d, &get_schema())
         });
 
         assert!(r.is_ok());

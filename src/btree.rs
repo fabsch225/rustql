@@ -23,8 +23,16 @@ impl BTreeNode {
             table_schema: table_schema.clone(),
         }
     }
+    pub fn new(position: Position, pager_accessor: PagerAccessor, table_schema: TableSchema) -> Self {
+        BTreeNode {
+            position,
+            pager_accessor,
+            table_schema,
+        }
+    }
+    //TODO error handling! i.e. return -> Result<bool, Status>
     fn is_leaf(&self) -> bool {
-        PagerFrontend::is_leaf(self.position.clone(), self.pager_accessor.clone()).unwrap()
+        PagerFrontend::is_leaf(&self).unwrap()
     }
 
     fn get_keys_count(&self) -> Result<usize, Status> {
@@ -184,19 +192,16 @@ pub struct Btree {
 }
 
 impl Btree {
-    pub fn new(
+    pub fn init(
         t: usize,
         pager_accessor: PagerAccessor,
         table_schema: TableSchema,
     ) -> Result<Self, Status> {
-        let mut root = None;
-        if table_schema.has_valid_root() {
-            root = Some(PagerFrontend::get_node(
-                pager_accessor.clone(),
-                table_schema.clone(),
-                table_schema.root.clone(),
-            )?);
-        }
+        let root = Some(PagerFrontend::get_node(
+            pager_accessor.clone(),
+            table_schema.clone(),
+            table_schema.root.clone(),
+        )?);
         Ok(Btree {
             root,
             t,
@@ -235,11 +240,13 @@ impl Btree {
                 self.insert_non_full(root, k, v, self.t)?;
             }
         } else {
+            panic!("Root is None");
             let new_root = PagerFrontend::create_new_table_root(
                 &self.table_schema,
                 self.pager_accessor.clone()
             )?;
-            new_root.push_key(k, v)?;
+            let r = new_root.push_key(k, v);
+            r.unwrap();
             //self.pager_accessor.set_root(&new_root)?; //this is much easier: create a new page, and set the root's position to that
             self.root = Some(new_root);
         }

@@ -7,9 +7,13 @@ use std::io::Write;
 /// A Table consists of an ID Field, and multiple Row Fields -> FieldID
 ///
 /// # NEXT STEPS
-/// - how to optimize disk space? -> flag: deleted, then shift everything to the left? -> rather expensive!
+/// - how to optimize disk space? -> VACUUM
 /// - implement multiple tables
-///     - next: change the Serializer methods to work on a large, fixed size page
+///     - [next]:
+///         - if i save to disk, the db wont load again :(
+///         - update the cached schema when creating a table (OR re-create the schema from the master table every time)
+///         - implement an update to the page's free_space field
+///         - change the pager's cache: the hashmap should contain position indices as keys, not positions (think: the current implementation *could* be fine)
 ///     - [Gameplan]: implement the Schema struct, and change PagerCore.read_schema to return always index 0.
 ///     - Refactor Paging: use a variable Pagesize
 ///         - Position => (PageNumber, Position on page)
@@ -26,13 +30,11 @@ use std::io::Write;
 ///     - WHERE id < 1 does not work (pretty sure thats fixed)
 ///
 /// # Virtual Memory Strategy for working with multiple things
-/// Each table has a property 'offset' of type Position
-/// - as well as a modified
-/// To calculate a position on Disk, add the offset
-/// if we insert bytes somewhere, just increase that tables offset
+/// - Pages just like sqlite
 
-//current status, note to future self
-// - changing executor + pager to work with master_table, bigger pages etc
+
+
+//Architecture
 
 //IO in/out
 //Parser -> Planner -> Executor

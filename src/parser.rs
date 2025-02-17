@@ -5,7 +5,6 @@ pub struct ParsedInsertQuery {
     pub values: Vec<String>,
 }
 
-//for the single Table DB:
 #[derive(Debug)]
 pub struct ParsedSelectQuery {
     pub table_name: String,
@@ -26,6 +25,7 @@ pub struct ParsedCreateTableQuery {
     pub table_name: String,
     pub table_fields: Vec<String>,
     pub table_types: Vec<String>,
+    pub if_not_exists: bool,
 }
 
 #[derive(Debug)]
@@ -138,10 +138,17 @@ impl Parser {
 
     fn parse_create_table(&mut self) -> Result<ParsedQuery, String> {
         self.expect_token("TABLE")?;
-        let table_name = self
-            .lexer
-            .next_token()
-            .ok_or_else(|| "Expected table name".to_string())?;
+        let mut if_not_exists = false;
+        let table_name = match self.lexer.next_token() {
+            Some(token) if token.to_uppercase() == "IF" => {
+                self.expect_token("NOT")?;
+                self.expect_token("EXISTS")?;
+                if_not_exists = true;
+                self.lexer.next_token().ok_or_else(|| "Expected table name".to_string())?
+            }
+            Some(token) => token,
+            None => return Err("Expected table name or IF NOT EXISTS".to_string()),
+        };
         self.expect_token("(")?;
         let mut fields = Vec::new();
         let mut types = Vec::new();
@@ -179,6 +186,7 @@ impl Parser {
             table_name,
             table_fields: fields,
             table_types: types,
+            if_not_exists,
         }))
     }
 
