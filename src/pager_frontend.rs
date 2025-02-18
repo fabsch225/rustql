@@ -47,13 +47,63 @@ impl PagerFrontend {
         })?;
         Ok(node)
     }
+
+    /// - switches nodes within pages
+    /// - in both, parameters, the children are updated
+    /// - still, if not carefully used, this could still create cyclic references
     pub fn switch_nodes(
         schema: &TableSchema,
         pager_interface: PagerAccessor,
         node1: &BTreeNode,
         node2: &BTreeNode,
     ) -> Result<(), Status> {
-        todo!();
+        let switch_on_same_page = node1.position.page() == node2.position.page();
+        if switch_on_same_page {
+            pager_interface.access_page_write(node1, |p| {
+                Serializer::switch_nodes(schema, &node1.position, &node2.position, &mut p.data, None)?;
+                Ok(())
+            })?;
+        } else {
+            pager_interface.access_pager_write(|p| {
+                let mut page1 = p.access_page_read(&node1.position)?;
+                let mut page2 = p.access_page_write(&node2.position)?;
+                Serializer::switch_nodes(schema, &node1.position, &node2.position, &mut page1.data, Some(&mut page2.data))?;
+                let mut page1_write = p.access_page_write(&node1.position)?;
+                page1_write.data = page1.data;
+                Ok(())
+            })?;
+        }
+        //search and replace children (only in these 2 nodes)
+        let node_1_position = node1.position.clone();
+        let node_2_position = node2.position.clone();
+        //we assume neither of the nodes had itself as a child on input
+        //mind that now the nodes are switched:
+        let mut node1_children = PagerFrontend::get_children(node1)?;
+        let mut change_to_node1_children = false;
+        for i in 0..node1_children.len() {
+            if node1_children[i].position == node_1_position {
+                node1_children[i].position = node_2_position.clone();
+                change_to_node1_children = true;
+                break; //might as well
+            }
+        }
+        if change_to_node1_children {
+            PagerFrontend::set_children(node1, node1_children.clone())?;
+        }
+        let mut node2_children = PagerFrontend::get_children(node2)?;
+        let mut change_to_node2_children = false;
+        for i in 0..node2_children.len() {
+            if node2_children[i].position == node_2_position {
+                node2_children[i].position = node_1_position.clone();
+                change_to_node2_children = true;
+                break; //might as well
+            }
+        }
+        if change_to_node2_children {
+            PagerFrontend::set_children(node2, node2_children)?;
+        }
+
+        Ok(())
     }
     pub fn create_node(
         schema: TableSchema,

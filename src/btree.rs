@@ -1,4 +1,4 @@
-use crate::executor::TableSchema;
+use crate::executor::{Executor, TableSchema};
 use crate::pager::{Key, PagerAccessor, Position, Row};
 use crate::pager_frontend::PagerFrontend;
 use crate::serializer::Serializer;
@@ -212,7 +212,7 @@ impl Btree {
         Serializer::compare_with_type(a, b, &self.table_schema.key_type)
     }
 
-    pub fn insert(&mut self, k: Key, v: Row) -> Result<(), Status> {
+    pub fn insert(&mut self, k: Key, v: Row, e: &Executor) -> Result<(), Status> {
         if let Some(ref root) = self.root {
             if root.get_keys_count()? == (2 * self.t) - 1 {
                 let mut new_root = PagerFrontend::create_node(
@@ -220,24 +220,37 @@ impl Btree {
                     self.pager_accessor.clone(),
                     None,
                     vec![Serializer::empty_key(&self.table_schema)],
-                    vec![],
+                    vec![root.position.clone()],
                     vec![Serializer::empty_row(&self.table_schema)],
                 )?;
-                new_root.push_child(root.clone())?;
+
+                //new_root.push_child(root.clone())?; moved to create_node
                 self.split_child(&new_root, 0, self.t, true)?;
-
-                self.insert_non_full(&new_root, k, v, self.t)?;
-
-                PagerFrontend::switch_nodes(
+                assert!(!new_root.position.is_empty());
+                println!("new root position: {:?}", new_root.position);
+                e.debug_lite(None);
+                self.insert_non_full(&new_root, k, v, self.t, e)?;
+                e.debug_lite(None);
+                panic!();
+                /*println!("new root children: {:?}", new_root.get_children());
+                println!("new root position: {:?}", new_root.position);
+                println!("old root children: {:?}", root.get_children());
+                println!("old root position: {:?}", root.position);*/
+                /*PagerFrontend::switch_nodes(
                     &self.table_schema,
                     self.pager_accessor.clone(),
-                    root,
+                    &root,
                     &new_root,
-                )?;
-
+                )?;*/
+                /*println!("switched nodes");
+                println!("new root children: {:?}", new_root.get_children());
+                println!("new root position: {:?}", new_root.position);
+                println!("old root children: {:?}", root.get_children());
+                println!("old root position: {:?}", root.position);
+                panic!();*/
                 self.root = Some(new_root);
             } else {
-                self.insert_non_full(root, k, v, self.t)?;
+                self.insert_non_full(root, k, v, self.t, e)?;
             }
         } else {
             panic!("Root is None");
@@ -253,13 +266,22 @@ impl Btree {
         Ok(())
     }
 
-    fn insert_non_full(&self, x: &BTreeNode, key: Key, row: Row, t: usize) -> Result<(), Status> {
+    fn insert_non_full(&self, x: &BTreeNode, key: Key, row: Row, t: usize, e: &Executor) -> Result<(), Status> {
         let mut i = x.get_keys_count()? as isize - 1;
+        println!("insert_non_full on node: {:?}, i={:?}", x, i);
+        println!("is_leaf: {:?}", x.is_leaf());
+        println!("children: {:?}", x.get_children());
+        println!("keys: {:?}", x.get_keys());
+
         if x.is_leaf() {
+            println!("A.1");
+            e.debug_lite(None);
             x.push_key(
                 Serializer::empty_key(&self.table_schema),
                 Serializer::empty_row(&self.table_schema),
             )?; // Add a dummy value
+            println!("A.2");
+            e.debug_lite(None);
             while i >= 0
                 && self.compare(&key, &x.get_key(i as usize)?.0)? == std::cmp::Ordering::Less
             {
@@ -267,7 +289,8 @@ impl Btree {
                 x.set_key((i + 1) as usize, key_and_row.0, key_and_row.1)?;
                 i -= 1;
             }
-
+            println!("A.3");
+            e.debug_lite(None);
             x.set_key((i + 1) as usize, key.clone(), row)?;
         } else {
             while i >= 0
@@ -276,6 +299,7 @@ impl Btree {
                 i -= 1;
             }
             let mut i = (i + 1) as usize;
+            println!("B.1: i={:?}", i);
             if x.get_child(i)?.get_keys_count()? == (2 * t) - 1 {
                 self.split_child(x, i, t, false)?;
                 let key_and_row = x.get_key(i)?;
@@ -283,7 +307,7 @@ impl Btree {
                     i += 1;
                 }
             }
-            self.insert_non_full(&x.get_child(i)?, key, row, t)?;
+            self.insert_non_full(&x.get_child(i)?, key, row, t, e)?;
         }
         Ok(())
     }

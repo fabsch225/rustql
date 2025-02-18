@@ -56,6 +56,8 @@ fn main() {
         );
         println!("{}", query);
         executor.exec(query);
+        //debug does a loop !?!?!?
+        executor.debug(Some("table"));
     }
     println!("running RustSQL shell...");
     loop {

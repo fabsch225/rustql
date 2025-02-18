@@ -119,12 +119,11 @@ impl Serializer {
 
     fn find_position_offset(page: &PageData, position: &Position, schema: &TableSchema) -> usize {
         let mut offset = 0; //[num keys not included]
-        let row_length = schema.row_length;
 
         for _ in 0..position.cell() {
-            offset += NODE_METADATA_SIZE;
             let num_keys = page[offset] as usize;
-            offset += num_keys * row_length;
+            offset += NODE_METADATA_SIZE;
+            offset += num_keys * schema.key_and_row_length + (num_keys + 1) * POSITION_SIZE;
         }
 
         offset
@@ -168,7 +167,7 @@ impl Serializer {
             temp.copy_from_slice(&page_a[offset_a..offset_a + full_size_a]);
             let shift_for_a = full_size_b as isize - full_size_a as isize;
             Self::shift_page(page_a, offset_a+full_size_a, shift_for_a);
-            page_a.copy_within(offset_b..offset_b + full_size_b, offset_a);
+            page_a[offset_a..offset_a + full_size_b].copy_from_slice(&page_b[offset_b..offset_b + full_size_b]);
 
             let shift_for_b = full_size_a as isize - full_size_b as isize;
             Self::shift_page(page_b, offset_b+full_size_b, shift_for_b);
@@ -262,10 +261,11 @@ impl Serializer {
         let children_start = offset + NODE_METADATA_SIZE + num_keys * key_length;
         let start_pos = children_start + index * POSITION_SIZE;
         let end_pos = start_pos + POSITION_SIZE;
-        
-        Ok(Serializer::bytes_to_position(
+        let result = Serializer::bytes_to_position(
             <&[u8; POSITION_SIZE]>::try_from(&page[start_pos..end_pos]).unwrap()
-        ))
+        );
+        assert!(!result.is_empty());
+        Ok(result)
     }
 
     pub fn write_key(

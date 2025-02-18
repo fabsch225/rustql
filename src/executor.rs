@@ -202,6 +202,31 @@ impl Executor {
         }
     }
 
+    pub fn debug_lite(&self, table: Option<&str>) {
+        if table.is_none() {
+            println!(
+                "System Table: {}",
+                Btree::init(
+                    self.btree_node_width,
+                    self.pager_accessor.clone(),
+                    self.schema.tables[0].clone()
+                )
+                .unwrap()
+            );
+        } else {
+            let table_name = table.unwrap();
+            let table_id = Planner::find_table_id(&self.schema, table_name).unwrap();
+            let table_schema = self.schema.tables[table_id].clone();
+            let btree = Btree::init(
+                self.btree_node_width,
+                self.pager_accessor.clone(),
+                table_schema.clone(),
+            )
+                .unwrap();
+            println!("Table: {}", btree);
+        }
+    }
+
     pub fn debug(&mut self, table: Option<&str>) {
         if table.is_none() {
             println!("Cached Schema: {:?}", self.schema);
@@ -319,7 +344,7 @@ impl Executor {
                 )
                 .map_err(|s| QueryResult::err(s))?;
                 btree
-                    .insert(q.data.0, q.data.1)
+                    .insert(q.data.0, q.data.1, &self)
                     .map_err(|s| QueryResult::err(s))?;
                 Ok(QueryResult::went_fine())
             }
