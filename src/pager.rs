@@ -122,7 +122,7 @@ pub type PageData = [u8; PAGE_SIZE]; //[u8; PAGE_SIZE as usize]; this is possibl
 #[derive(Clone, Debug)]
 pub struct PageContainer {
     pub data: PageData,
-    pub position: Position,
+    position: Position,
     pub free_space: usize,
     pub flag: Flag,
 }

@@ -48,7 +48,7 @@ const TOMB_THRESHOLD: usize = 10; //10 percent
 fn main() {
     let mut executor = Executor::init("./default.db.bin", BTREE_NODE_SIZE);
     executor.exec("CREATE TABLE table (id Integer, name String)".to_string());
-    for i in 0..300 {
+    for i in 0..60 {
         let query = format!(
             "INSERT INTO table (id, name) VALUES ({}, 'Kunde Nummer {}')",
             i,

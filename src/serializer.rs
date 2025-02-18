@@ -117,7 +117,7 @@ impl Serializer {
         Self::set_flag_at_position(field, FieldMeta::Null as u8, value, field_type)
     }
 
-    fn find_position_offset(page: &PageData, position: &Position, schema: &TableSchema) -> usize {
+    pub fn find_position_offset(page: &PageData, position: &Position, schema: &TableSchema) -> usize {
         let mut offset = 0; //[num keys not included]
 
         for _ in 0..position.cell() {
@@ -360,6 +360,9 @@ impl Serializer {
             if child_position.is_empty() {
                 break;
             }
+            if child_position.page() > 50 {
+                println!("Page is probably Wrong: {:?}", page)
+            }
             result.push(child_position);
         }
         Ok(result)
@@ -414,6 +417,7 @@ impl Serializer {
         schema: &TableSchema,
     ) -> Result<(), Status> {
         let offset = Self::find_position_offset(page, position, schema);
+        //println!("write_keys_vec_resize before: {:?}", page);
         let orig_num_keys = page[offset] as usize;
         let new_num_keys = keys.len();
         let key_length = schema.key_length;
@@ -440,11 +444,15 @@ impl Serializer {
         if new_num_keys < orig_num_keys {
             let children_offset = (orig_num_keys - new_num_keys) * key_length;
             Self::shift_page_block(page, orig_children_start, orig_data_start, - (children_offset as isize))?;
-            let offset = (orig_num_keys - new_num_keys) * key_length + children_offset;
+            let offset = (orig_num_keys - new_num_keys) * POSITION_SIZE + children_offset;
+            //println!("data (and rest page) offset: -{}", offset);
             Self::shift_page(page, orig_children_end, -(offset as isize))?;
         }
 
         page[offset] = new_num_keys as u8;
+
+        //println!("write_keys_vec_resize after: {:?}", page);
+
         Ok(())
     }
 
@@ -454,6 +462,8 @@ impl Serializer {
         position: &Position,
         schema: &TableSchema,
     ) -> Result<(), Status> {
+        println!("write_children_vec");
+        println!("children: {:?}", children);
         let offset = Self::find_position_offset(page, position, schema);
         let num_keys = page[offset] as usize;
         let key_length = schema.key_length;
@@ -466,12 +476,14 @@ impl Serializer {
 
         let mut check_for_leaf = true;
         for (i, child) in children.iter().enumerate() {
+            assert!(children.len() > 0);
             let start_pos = children_start + i * POSITION_SIZE;
             let end_pos = start_pos + POSITION_SIZE;
             page[start_pos..end_pos].copy_from_slice(&Serializer::position_to_bytes(child.clone()));
 
             if check_for_leaf && !child.is_empty() {
                 check_for_leaf = false;
+                println!("setting is_leaf to false");
                 Self::set_is_leaf(page, position, &schema, false)?;
             }
         }
@@ -582,7 +594,8 @@ impl Serializer {
     ) -> Result<(), Status> {
         let offset = Self::find_position_offset(page, position, schema);
         let num_keys = page[offset] as usize;
-        
+
+        assert_eq!(rows.len(), num_keys);
         if rows.len() != num_keys {
             panic!("rows and keys must have same length");
             return Err(InternalExceptionInvalidColCount);

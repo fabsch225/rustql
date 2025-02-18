@@ -223,32 +223,35 @@ impl Btree {
                     vec![root.position.clone()],
                     vec![Serializer::empty_row(&self.table_schema)],
                 )?;
-
+                //println!("root keys: {:?}", new_root.get_keys());
+                //println!("root children: {:?}", new_root.get_children());
                 //new_root.push_child(root.clone())?; moved to create_node
-                self.split_child(&new_root, 0, self.t, true)?;
-                assert!(!new_root.position.is_empty());
-                println!("new root position: {:?}", new_root.position);
-                e.debug_lite(None);
-                e.debug_lite(Some("table"));
+                self.split_child(&new_root, 0, self.t, true).unwrap();
+                assert!(!root.position.is_empty());
+                //println!("new root keys: {:?}", new_root.get_keys());
+                //panic!();
+
                 self.insert_non_full(&new_root, k, v, self.t, e)?;
                 e.debug_lite(None);
-                panic!();
+
                 /*println!("new root children: {:?}", new_root.get_children());
                 println!("new root position: {:?}", new_root.position);
                 println!("old root children: {:?}", root.get_children());
-                println!("old root position: {:?}", root.position);*/
-                /*PagerFrontend::switch_nodes(
-                    &self.table_schema,
-                    self.pager_accessor.clone(),
-                    &root,
-                    &new_root,
-                )?;*/
+                println!("old root position: {:?}", root.position);
+                */
+
                 /*println!("switched nodes");
                 println!("new root children: {:?}", new_root.get_children());
                 println!("new root position: {:?}", new_root.position);
                 println!("old root children: {:?}", root.get_children());
-                println!("old root position: {:?}", root.position);
-                panic!();*/
+                println!("old root position: {:?}", root.position);*/
+
+                PagerFrontend::switch_nodes(
+                    &self.table_schema,
+                    self.pager_accessor.clone(),
+                    &root,
+                    &new_root,
+                )?;
                 self.root = Some(new_root);
             } else {
                 self.insert_non_full(root, k, v, self.t, e)?;
@@ -269,10 +272,10 @@ impl Btree {
 
     fn insert_non_full(&self, x: &BTreeNode, key: Key, row: Row, t: usize, e: &Executor) -> Result<(), Status> {
         let mut i = x.get_keys_count()? as isize - 1;
-        println!("insert_non_full on node: {:?}, i={:?}", x, i);
-        println!("is_leaf: {:?}", x.is_leaf());
-        println!("children: {:?}", x.get_children());
-        println!("keys: {:?}", x.get_keys()?.0);
+        //println!("insert_non_full on node: {:?}, i={:?}", x, i);
+        //println!("is_leaf: {:?}", x.is_leaf());
+        //println!("children-len: {:?}", x.get_children()?.len());
+        //println!("keys: {:?}", x.get_keys()?.0);
 
         if x.is_leaf() {
             println!("A.1");
@@ -300,7 +303,9 @@ impl Btree {
                 i -= 1;
             }
             let mut i = (i + 1) as usize;
-            println!("B.1: i={:?}", i);
+            //println!("children: {:?}", x.get_children());
+            println!("B.1: i={:?}, children={:?}", i, x.get_children_count()?);
+            assert!(i < x.get_children_count()?);
             if x.get_child(i)?.get_keys_count()? == (2 * t) - 1 {
                 self.split_child(x, i, t, false)?;
                 let key_and_row = x.get_key(i)?;
@@ -314,29 +319,40 @@ impl Btree {
     }
 
     fn split_child(&self, x: &BTreeNode, i: usize, t: usize, is_root: bool) -> Result<(), Status> {
+        //println!("O1 Splitting {:?} of {:?}", i, x.get_keys()?);
+        //println!("X {:?}", x.position);
         let mut y = x.get_child(i)?.clone();
+        //println!("O2 Splitting {:?} of {:?}", i, x.get_keys()?);
+        //println!("Y {:?}", y.position);
         let keys_and_rows = y.get_keys_from(t)?;
+        println!("O3 Splitting {:?} of {:?}", i, x.get_keys()?);
         let mut z = PagerFrontend::create_node( //TODO: should this be here? the BTree should call BTreeNode methods !?
             self.table_schema.clone(),
             y.pager_accessor.clone(),
-            Some(x),
+            None,//Some(x), //the hint-functionality is wrong!!! TODO
             keys_and_rows.0,
             vec![],
             keys_and_rows.1,
         )?;
-        let key_and_row = y.get_key(t - 1)?;
+        //println!("O4 Splitting {:?} of {:?}", i, x.get_keys()?);
+        //println!("Z {:?}", z.position);
+        let key_and_row = y.get_key(t - 1).unwrap();
+        //println!("X {:?}", x.position);
+        println!("O5 Splitting {:?} of {:?}", i, x.get_keys()?);
         //TODO suboptimal
         if is_root {
-            x.set_key(0, key_and_row.0, key_and_row.1)?;
+            x.set_key(0, key_and_row.0, key_and_row.1).unwrap();
         } else {
-            x.insert_key(i, key_and_row.0, key_and_row.1)?;
+            x.insert_key(i, key_and_row.0, key_and_row.1).unwrap();
+        }
+        assert!(z.is_leaf());
+        //println!("A Splitting {:?} of {:?}", i, x.get_keys()?);
+        if !y.is_leaf() {
+            z.set_children(y.get_children_from(t)?).unwrap();
         }
 
-        if !y.is_leaf() {
-            z.set_children(y.get_children_from(t)?)?;
-        }
-        x.insert_child(i + 1, z)?;
-        y.truncate_keys(t - 1)?;
+        x.insert_child(i + 1, z).unwrap();
+        y.truncate_keys(t - 1).unwrap();
 
         Ok(())
     }
