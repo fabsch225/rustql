@@ -7,14 +7,14 @@ mod tests {
 
     #[test]
     fn test_create_table() {
-        let executor = Executor::init("./default.db.bin", BTREE_NODE_SIZE);
+        let mut executor = Executor::init("./default.db.bin", BTREE_NODE_SIZE);
         let result = executor.exec("CREATE TABLE test (id Integer, name String)".to_string());
         assert!(result.success);
     }
 
     #[test]
     fn test_insert_single_row() {
-        let executor = Executor::init("./default.db.bin", BTREE_NODE_SIZE);
+        let mut executor = Executor::init("./default.db.bin", BTREE_NODE_SIZE);
         executor.exec("CREATE TABLE test (id Integer, name String)".to_string());
         let result = executor.exec("INSERT INTO test (id, name) VALUES (1, 'Alice')".to_string());
         assert!(result.success);
@@ -22,7 +22,7 @@ mod tests {
 
     #[test]
     fn test_insert_multiple_rows() {
-        let executor = Executor::init("./default.db.bin", BTREE_NODE_SIZE);
+        let mut executor = Executor::init("./default.db.bin", BTREE_NODE_SIZE);
         executor.exec("CREATE TABLE test (id Integer, name String)".to_string());
         executor.exec("INSERT INTO test (id, name) VALUES (1, 'Alice')".to_string());
         let result = executor.exec("INSERT INTO test (id, name) VALUES (2, 'Bob')".to_string());
@@ -31,7 +31,7 @@ mod tests {
 
     #[test]
     fn test_select_all() {
-        let executor = Executor::init("./default.db.bin", BTREE_NODE_SIZE);
+        let mut executor = Executor::init("./default.db.bin", BTREE_NODE_SIZE);
         executor.exec("CREATE TABLE test (id Integer, name String)".to_string());
         executor.exec("INSERT INTO test (id, name) VALUES (1, 'Alice')".to_string());
         executor.exec("INSERT INTO test (id, name) VALUES (2, 'Bob')".to_string());
@@ -40,17 +40,17 @@ mod tests {
         assert_eq!(result.result.data.len(), 2);
         assert_eq!(
             result.result.data[0][0..10],
-            vec![0, 0, 0, 1u8, 0, b'A', b'l', b'i', b'c', b'e']
+            vec![0, 0, 0, 0, 1u8, b'A', b'l', b'i', b'c', b'e']
         );
         assert_eq!(
             result.result.data[1][0..8],
-            vec![0, 0, 0, 2u8, 0, b'B', b'o', b'b']
+            vec![0, 0, 0, 0, 2u8, b'B', b'o', b'b']
         );
     }
 
     #[test]
     fn test_select_with_condition() {
-        let executor = Executor::init("./default.db.bin", BTREE_NODE_SIZE);
+        let mut executor = Executor::init("./default.db.bin", BTREE_NODE_SIZE);
         executor.exec("CREATE TABLE test (id Integer, name String)".to_string());
         executor.exec("INSERT INTO test (id, name) VALUES (1, 'Alice')".to_string());
         executor.exec("INSERT INTO test (id, name) VALUES (2, 'Bob')".to_string());
@@ -59,13 +59,13 @@ mod tests {
         assert_eq!(result.result.data.len(), 1);
         assert_eq!(
             result.result.data[0][0..10],
-            vec![0, 0, 0, 1, 0, b'A', b'l', b'i', b'c', b'e']
+            vec![0, 0, 0, 0, 1, b'A', b'l', b'i', b'c', b'e']
         );
     }
 
     #[test]
     fn test_delete_single_row() {
-        let executor = Executor::init("./default.db.bin", BTREE_NODE_SIZE);
+        let mut executor = Executor::init("./default.db.bin", BTREE_NODE_SIZE);
         executor.exec("CREATE TABLE test (id Integer, name String)".to_string());
         executor.exec("INSERT INTO test (id, name) VALUES (1, 'Alice')".to_string());
         executor.exec("INSERT INTO test (id, name) VALUES (2, 'Bob')".to_string());
@@ -78,22 +78,22 @@ mod tests {
 
     #[test]
     fn test_insert() {
-        let executor = Executor::init("./default.db.bin", BTREE_NODE_SIZE);
+        let mut executor = Executor::init("./default.db.bin", BTREE_NODE_SIZE);
         executor.exec("CREATE TABLE test (id Integer, other Integer)".to_string());
         for i in 0..=10 {
             let res = executor.exec(format!(
-                "INSERT INTO table (id, other) VALUES ({}, 0)",
+                "INSERT INTO test (id, other) VALUES ({}, 0)",
                 10 - i
             ));
             assert!(res.success);
         }
-        executor.debug();
+        executor.debug(Some("test"));
         assert!(executor.check_integrity().is_ok());
     }
 
     #[test]
     fn test_delete_all_rows() {
-        let executor = Executor::init("./default.db.bin", BTREE_NODE_SIZE);
+        let mut executor = Executor::init("./default.db.bin", BTREE_NODE_SIZE);
         executor.exec("CREATE TABLE test (id Integer, name String)".to_string());
         executor.exec("INSERT INTO test (id, name) VALUES (1, 'Alice')".to_string());
         executor.exec("INSERT INTO test (id, name) VALUES (2, 'Bob')".to_string());
@@ -107,7 +107,7 @@ mod tests {
 
     #[test]
     fn test_insert_and_select_large_dataset() {
-        let executor = Executor::init("./default.db.bin", BTREE_NODE_SIZE);
+        let mut executor = Executor::init("./default.db.bin", BTREE_NODE_SIZE);
         executor.exec("CREATE TABLE test (id Integer, name String)".to_string());
         for i in 1..=100 {
             executor.exec(format!(
@@ -120,16 +120,17 @@ mod tests {
         assert_eq!(result.result.data.len(), 100);
         for (i, row) in result.result.data.iter().enumerate() {
             let expected_name = format!("User{}", i + 1).as_bytes().to_vec();
-            assert_eq!(row[0..5], [0u8, 0, 0, (i + 1) as u8, 0]);
+            assert_eq!(row[0..5], [0u8, 0, 0, 0, (i + 1) as u8]);
             assert_eq!(row[5..10], expected_name[0..5]);
         }
     }
 
     #[test]
     fn test_delete_and_reinsert_with_loops() {
-        let executor = Executor::init("./default.db.bin", BTREE_NODE_SIZE);
+        let mut executor = Executor::init("./default.db.bin", BTREE_NODE_SIZE);
+        executor.exec("CREATE TABLE test (id Integer, other Integer)".to_string());
         for len in (0..350).step_by(10) {
-            executor.exec("CREATE TABLE test (id Integer, other Integer)".to_string());
+            executor.exec("DELETE FROM test".to_string());
             for i in 1..=len {
                 executor.exec(format!(
                     "INSERT INTO test (id, other) VALUES ({}, {})",
@@ -171,7 +172,7 @@ mod tests {
             //println!("{}", result);
             assert_eq!(result.result.data.len(), len);
             if !executor.check_integrity().is_ok() {
-                executor.debug();
+                executor.debug(Some("test"));
             }
             assert!(executor.check_integrity().is_ok())
             //
@@ -180,7 +181,7 @@ mod tests {
 
     #[test]
     fn test_specific_reinsert() {
-        let executor = Executor::init("./default.db.bin", BTREE_NODE_SIZE);
+        let mut executor = Executor::init("./default.db.bin", BTREE_NODE_SIZE);
         executor.exec("CREATE TABLE test (id Integer, other Integer)".to_string());
         for i in 1..=10 {
             let res = executor.exec(format!(
@@ -189,26 +190,26 @@ mod tests {
             ));
             assert!(res.success);
         }
-        executor.debug();
+        executor.debug(Some("test"));
         for i in 1..=5 {
             executor.exec(format!("DELETE FROM test WHERE id = {}", i));
         }
         println!("after deletion");
-        executor.debug();
+        executor.debug(Some("test"));
         for i in 1..=5 {
             executor.exec(format!(
                 "INSERT INTO test (id, other) VALUES ({}, {})",
                 i, 0
             ));
-            //executor.debug();
+            //executor.debug(Some("test"));
         }
-        executor.debug();
+        executor.debug(Some("test"));
         assert!(executor.check_integrity().is_ok());
     }
 
     #[test]
     fn test_modulo() {
-        let executor = Executor::init("./default.db.bin", BTREE_NODE_SIZE);
+        let mut executor = Executor::init("./default.db.bin", BTREE_NODE_SIZE);
         executor.exec("CREATE TABLE test (id Integer, other Integer)".to_string());
 
         let test_sizes = [50, 100, 150, 300, 800];
@@ -216,7 +217,7 @@ mod tests {
 
         for &size in &test_sizes {
             for &modulo in &modulos {
-                executor.exec("DELETE FROM table".to_string());
+                executor.exec("DELETE FROM test".to_string());
 
                 for i in 1..=size {
                     executor.exec(format!(
@@ -237,7 +238,7 @@ mod tests {
                         } else {
                             println!("Failed to delete {}: {}", i, result);
                         }
-                        //executor.debug();
+                        //executor.debug(Some("test"));
                         assert!(result.success);
                     }
                 }
@@ -254,7 +255,7 @@ mod tests {
     }
     #[test]
     fn test_delete_and_insert_complex() {
-        let executor = Executor::init("./default.db.bin", BTREE_NODE_SIZE);
+        let mut executor = Executor::init("./default.db.bin", BTREE_NODE_SIZE);
         executor.exec("CREATE TABLE test (id Integer, name String)".to_string());
 
         // Insert initial rows
@@ -293,7 +294,7 @@ mod tests {
             }
             .as_bytes()
             .to_vec();
-            assert_eq!(row[0..5], [0u8, 0, 0, expected_id as u8, 0]);
+            assert_eq!(row[0..5], [0u8, 0, 0, 0, expected_id as u8]);
             assert_eq!(row[5..10], expected_name[0..5]);
         }
 
@@ -302,7 +303,7 @@ mod tests {
 
     #[test]
     fn test_delete_and_insert_with_conditions() {
-        let executor = Executor::init("./default.db.bin", BTREE_NODE_SIZE);
+        let mut executor = Executor::init("./default.db.bin", BTREE_NODE_SIZE);
         executor.exec("CREATE TABLE test (id Integer, name String)".to_string());
 
         // Insert initial rows
@@ -336,7 +337,7 @@ mod tests {
 
     #[test]
     fn test_modulo_with_reinserts() {
-        let executor = Executor::init("./default.db.bin", BTREE_NODE_SIZE);
+        let mut executor = Executor::init("./default.db.bin", BTREE_NODE_SIZE);
         executor.exec("CREATE TABLE test (id Integer, other Integer)".to_string());
 
         let test_sizes = [50, 100, 150, 300, 800];
@@ -388,6 +389,6 @@ mod tests {
                 assert!(executor.check_integrity().is_ok());
             }
         }
-        executor.debug();
+        executor.debug(Some("test"));
     }
 }

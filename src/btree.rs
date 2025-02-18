@@ -304,7 +304,7 @@ impl Btree {
             }
             let mut i = (i + 1) as usize;
             //println!("children: {:?}", x.get_children());
-            println!("B.1: i={:?}, children={:?}", i, x.get_children_count()?);
+            //println!("B.1: i={:?}, children={:?}", i, x.get_children_count()?);
             assert!(i < x.get_children_count()?);
             if x.get_child(i)?.get_keys_count()? == (2 * t) - 1 {
                 self.split_child(x, i, t, false)?;
@@ -325,7 +325,7 @@ impl Btree {
         //println!("O2 Splitting {:?} of {:?}", i, x.get_keys()?);
         //println!("Y {:?}", y.position);
         let keys_and_rows = y.get_keys_from(t)?;
-        println!("O3 Splitting {:?} of {:?}", i, x.get_keys()?);
+        //println!("O3 Splitting {:?} of {:?}", i, x.get_keys()?);
         let mut z = PagerFrontend::create_node( //TODO: should this be here? the BTree should call BTreeNode methods !?
             self.table_schema.clone(),
             y.pager_accessor.clone(),
@@ -338,7 +338,7 @@ impl Btree {
         //println!("Z {:?}", z.position);
         let key_and_row = y.get_key(t - 1).unwrap();
         //println!("X {:?}", x.position);
-        println!("O5 Splitting {:?} of {:?}", i, x.get_keys()?);
+        //println!("O5 Splitting {:?} of {:?}", i, x.get_keys()?);
         //TODO suboptimal
         if is_root {
             x.set_key(0, key_and_row.0, key_and_row.1).unwrap();

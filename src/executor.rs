@@ -470,6 +470,7 @@ impl Executor {
         if !Executor::exec_condition_on_row(row, &query.conditions, schema) {
             return Ok(false);
         }
+        //TODO this is wrong, modifies lsb instead of msb!!!!!!!!!!!!
         Serializer::set_is_tomb(key, true, &schema)?;
         Ok(true)
     }

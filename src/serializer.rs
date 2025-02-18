@@ -763,6 +763,7 @@ impl Serializer {
         match field_type {
             Type::Null => Err(Status::InternalExceptionInvalidFieldType),
             Type::Boolean => Ok(Self::write_byte_at_position(&mut v[0], position, value)),
+            Type::Integer => Ok(Self::write_byte_at_position(&mut v[0], position, value)),
             _ => Ok(Self::write_byte_at_position(
                 &mut v[Self::get_size_of_type(&field_type)? - 1],
                 position,
