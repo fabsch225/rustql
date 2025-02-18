@@ -10,7 +10,7 @@ use std::io::Write;
 /// - how to optimize disk space? -> VACUUM
 /// - implement multiple tables
 ///     - [next]:
-///         - if i save to disk, the db wont load again :(
+///         - fix one or more bugs: next, implement more pager_frontend unit tests, especially for interacting with multiple pages and nodes
 ///         - update the cached schema when creating a table (OR re-create the schema from the master table every time)
 ///         - implement an update to the page's free_space field
 ///         - change the pager's cache: the hashmap should contain position indices as keys, not positions (think: the current implementation *could* be fine)

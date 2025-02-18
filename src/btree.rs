@@ -229,6 +229,7 @@ impl Btree {
                 assert!(!new_root.position.is_empty());
                 println!("new root position: {:?}", new_root.position);
                 e.debug_lite(None);
+                e.debug_lite(Some("table"));
                 self.insert_non_full(&new_root, k, v, self.t, e)?;
                 e.debug_lite(None);
                 panic!();
@@ -271,7 +272,7 @@ impl Btree {
         println!("insert_non_full on node: {:?}, i={:?}", x, i);
         println!("is_leaf: {:?}", x.is_leaf());
         println!("children: {:?}", x.get_children());
-        println!("keys: {:?}", x.get_keys());
+        println!("keys: {:?}", x.get_keys()?.0);
 
         if x.is_leaf() {
             println!("A.1");

@@ -264,6 +264,7 @@ impl Serializer {
         let result = Serializer::bytes_to_position(
             <&[u8; POSITION_SIZE]>::try_from(&page[start_pos..end_pos]).unwrap()
         );
+        //this assertion worked in the last working test_db
         assert!(!result.is_empty());
         Ok(result)
     }
