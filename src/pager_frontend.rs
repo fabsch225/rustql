@@ -128,22 +128,18 @@ impl PagerFrontend {
                 pager_accessor: pager_interface.clone(),
                 table_schema: schema.clone(),
             };
-            pager_interface.access_page_read(parent.expect("cant be none"), |p| {
-                println!("original page was {:?}", p.data);
-                Ok(())
-            })?;
 
             pager_interface.access_page_write(&new_node, |pc| {
                 let offset = Serializer::find_position_offset(&pc.data, &new_node.position, &schema);
                 pc.data[offset + 1] = Serializer::create_node_flag(true);
                 Ok(())
             })?;
-            assert!(children.len() == 0);
-            assert!(Self::is_leaf(&new_node)?|| children.len() > 0);
+            //assert!(children.len() == 0);
+            //assert!(Self::is_leaf(&new_node)?|| children.len() > 0);
             Self::set_keys_and_children_as_positions(&new_node, keys, children.clone())?;
-            assert!(Self::is_leaf(&new_node)?|| children.len() > 0);
+            //assert!(Self::is_leaf(&new_node)?|| children.len() > 0);
             Self::set_data(&new_node, data)?;
-            assert!(Self::is_leaf(&new_node)? || children.len() > 0);
+            //assert!(Self::is_leaf(&new_node)? || children.len() > 0);
         }
         Ok(new_node)
     }

@@ -232,7 +232,7 @@ impl Btree {
                 //panic!();
 
                 self.insert_non_full(&new_root, k, v, self.t, e)?;
-                e.debug_lite(None);
+                //e.debug_lite(None);
 
                 /*println!("new root children: {:?}", new_root.get_children());
                 println!("new root position: {:?}", new_root.position);
@@ -278,14 +278,10 @@ impl Btree {
         //println!("keys: {:?}", x.get_keys()?.0);
 
         if x.is_leaf() {
-            println!("A.1");
-            e.debug_lite(None);
             x.push_key(
                 Serializer::empty_key(&self.table_schema),
                 Serializer::empty_row(&self.table_schema),
             )?; // Add a dummy value
-            println!("A.2");
-            e.debug_lite(None);
             while i >= 0
                 && self.compare(&key, &x.get_key(i as usize)?.0)? == std::cmp::Ordering::Less
             {
@@ -293,8 +289,6 @@ impl Btree {
                 x.set_key((i + 1) as usize, key_and_row.0, key_and_row.1)?;
                 i -= 1;
             }
-            println!("A.3");
-            e.debug_lite(None);
             x.set_key((i + 1) as usize, key.clone(), row)?;
         } else {
             while i >= 0

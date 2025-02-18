@@ -360,9 +360,6 @@ impl Serializer {
             if child_position.is_empty() {
                 break;
             }
-            if child_position.page() > 50 {
-                println!("Page is probably Wrong: {:?}", page)
-            }
             result.push(child_position);
         }
         Ok(result)

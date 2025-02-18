@@ -226,6 +226,7 @@ mod tests {
                     ));
                 }
                 let result = executor.exec("SELECT * FROM test".to_string());
+                println!("{}", result);
                 assert_eq!(result.result.data.len(), size);
 
                 let mut count_deleted = 0;
