@@ -10,7 +10,6 @@ use std::io::Write;
 /// - how to optimize disk space? -> VACUUM
 /// - implement multiple tables
 ///     - [Next]:
-///         - FIX stuff: deletion (cleanup)
 ///         - varchar
 ///         - implement methods for memory saving
 ///             1. enable the Parent-Hint during the split

@@ -1,6 +1,5 @@
 # Rust-SQL
 - Relational Database in Rust
-- currently, there is only ever one table, CREATE TABLE drops the old one
 
 # Running the Database
 - [install Rust / Cargo](https://rustup.rs/) 
