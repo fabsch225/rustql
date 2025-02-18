@@ -526,7 +526,6 @@ impl Btree {
             self.cleanup_node(root, self.t)?;
 
             if root.get_keys_count()? == 0 {
-                todo!();
                 if !root.is_leaf() {
                     let new_root = root.get_child(0)?.clone();
                     PagerFrontend::set_table_root(
@@ -536,12 +535,10 @@ impl Btree {
                     )?;
                     self.root = Some(new_root);
                 } else {
-                    PagerFrontend::set_table_root(
+                    PagerFrontend::clear_table_root(
                         &self.table_schema,
                         self.pager_accessor.clone(),
-                        &BTreeNode::make_empty(&self.table_schema, self.pager_accessor.clone()),
                     )?;
-                    self.root = None;
                 }
             }
         }

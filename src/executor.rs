@@ -350,7 +350,7 @@ impl Executor {
             }
             CompiledQuery::Delete(q) => {
                 let schema = &self.schema.tables[q.table_id];
-                let btree = Btree::init(
+                let mut btree = Btree::init(
                     self.btree_node_width,
                     self.pager_accessor.clone(),
                     schema.clone(),
@@ -367,7 +367,7 @@ impl Executor {
                 )
                 .map_err(|s| QueryResult::err(s))?;
                 //this should be periodical, but for now
-                //btree.tomb_cleanup();
+                btree.tomb_cleanup();
                 Ok(QueryResult::went_fine())
             }
         }

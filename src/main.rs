@@ -9,25 +9,24 @@ use std::io::Write;
 /// # NEXT STEPS
 /// - how to optimize disk space? -> VACUUM
 /// - implement multiple tables
-///     - [next]:
-///         - fix one or more bugs: next, implement more pager_frontend unit tests, especially for interacting with multiple pages and nodes
-///         - update the cached schema when creating a table (OR re-create the schema from the master table every time)
-///         - implement an update to the page's free_space field
-///         - change the pager's cache: the hashmap should contain position indices as keys, not positions (think: the current implementation *could* be fine)
-///     - [Gameplan]: implement the Schema struct, and change PagerCore.read_schema to return always index 0.
-///     - Refactor Paging: use a variable Pagesize
-///         - Position => (PageNumber, Position on page)
-///     - Store the Schema in a Master Table
-///     - change how the btree is instantiated
-///     - make the final changes to the executor
+///     - [Next]:
+///         - FIX stuff: deletion (cleanup)
+///         - varchar
+///         - implement methods for memory saving
+///             1. enable the Parent-Hint during the split
+///             2. implement overflow pages, and use the free_space parameter correctly (dont assume maximum length of a node)
+///             3. set a max cache size
+///             4. VACUUM
+///     - [Gameplan]:
+///        - constraints (unique, nullable)
+///        - create a more ambitious executer -> "real" compilation + virtual-machine -- this would enable subqueries etc
+///        - joins + constraints: primary key, foreign key,
+///        - indices
+///        - views i.e. virtual tables / virtual b-trees (is this necessary for joins also?)
+///
 /// - implement nullable values (groundwork is layed)
 /// - implement indices
 /// - optimize disk usage further
-///
-/// ## Bugs
-/// - SELECT * FROM table WHERE age >= 80 -> returns empty, > 80 works (pretty sure thats fixed)
-/// - SELECT * FROM table WHERE id = 0 -> returns empty, = 2  works  (pretty sure thats fixed)
-///     - WHERE id < 1 does not work (pretty sure thats fixed)
 ///
 /// # Virtual Memory Strategy for working with multiple things
 /// - Pages just like sqlite
@@ -47,19 +46,6 @@ const TOMB_THRESHOLD: usize = 10; //10 percent
 
 fn main() {
     let mut executor = Executor::init("./default.db.bin", BTREE_NODE_SIZE);
-    executor.exec("CREATE TABLE table (id Integer, name String)".to_string());
-    for i in 0..60 {
-        let query = format!(
-            "INSERT INTO table (id, name) VALUES ({}, 'Kunde Nummer {}')",
-            i,
-            i * 3
-        );
-        println!("{}", query);
-        executor.exec(query);
-        let select = format!("SELECT * FROM table");
-        println!("{}", executor.exec(select));
-        //executor.debug(Some("table"));
-    }
     println!("running RustSQL shell...");
     loop {
         io::stdout().flush().unwrap();

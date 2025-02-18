@@ -93,7 +93,7 @@ pub enum Type {
     Null, //TODO remove this. this is not a type. each type can be null
     Integer,
     String,
-    //Double, future feature
+    //Double, future featuref
     //Varchar, future feature
     Date,
     Boolean,
@@ -286,10 +286,8 @@ impl PagerAccessor {
 
 impl PagerCore {
     pub fn flush(&mut self) -> Result<(), Status> {
+        self.write_next_page_pos_to_disk()?;
         let page_indices: Vec<usize> = self.cache.keys().cloned().collect();
-        //TODO!!!!!!!!!!!!!: this will write lots of pages lots of times instead of once
-        //would work
-        //but Filter first TODO
         for index in page_indices {
             let page_container = self.cache[&index].clone();
             if page_container.flag & 1 == 1 {
@@ -329,6 +327,13 @@ impl PagerCore {
             file,
             next_page_index,
         }))
+    }
+
+    pub fn write_next_page_pos_to_disk(&mut self) -> Result<(), Status> {
+        self.file.seek(SeekFrom::Start(0)).map_err(|_| Status::InternalExceptionWriteFailed)?;
+        let next_page_index_bytes = (self.next_page_index as u16).to_be_bytes();
+        self.file.write_all(&next_page_index_bytes).map_err(|_| Status::InternalExceptionWriteFailed)?;
+        Ok(())
     }
 
     pub fn invalidate_cache(&mut self) -> Status {

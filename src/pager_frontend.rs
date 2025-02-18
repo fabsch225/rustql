@@ -12,17 +12,32 @@ use crate::status::Status::InternalSuccess;
 pub struct PagerFrontend {}
 
 impl PagerFrontend {
+    pub fn clear_table_root(table_schema: &TableSchema, pager_interface: PagerAccessor) -> Result<(), Status> {
+        let src_page = Serializer::init_page_data_with_children(vec![], vec![], vec![], &table_schema)?;
+        let root = BTreeNode {
+            position: table_schema.root.clone(),
+            pager_accessor: pager_interface.clone(),
+            table_schema: table_schema.clone(),
+        };
+        pager_interface.access_page_write(&root, |pc| {
+            Serializer::copy_node(&table_schema, &root.position, &Position::make_empty(), &mut pc.data, &src_page)?;
+            Ok(())
+        })
+    }
+
     pub fn set_table_root(
         schema: &TableSchema,
         pager_interface: PagerAccessor,
-        root_node: &BTreeNode,
+        node: &BTreeNode,
     ) -> Result<(), Status> {
-        let mut page =
-            pager_interface.access_pager_write(|p| p.access_page_read(&root_node.position))?;
-
-        todo!();
-        pager_interface.access_page_write(root_node, |d| {
-            d.data = page.data;
+        let root = BTreeNode {
+            position: schema.root.clone(),
+            pager_accessor: pager_interface.clone(),
+            table_schema: schema.clone(),
+        };
+        let src_page = pager_interface.access_pager_write(|p| p.access_page_read(&node.position))?;
+        pager_interface.access_page_write(&root, |pc| {
+            Serializer::copy_node(&schema, &root.position, &node.position, &mut pc.data, &src_page.data)?;
             Ok(())
         })
     }

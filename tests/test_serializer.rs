@@ -1,8 +1,9 @@
+//mind that the density of tests does not correspond to their significance
+
 #[cfg(test)]
 mod tests {
     use rustql::executor::{Field, TableSchema};
     use rustql::pager::*;
-    use rustql::pager_frontend::PagerFrontend;
     use rustql::serializer::Serializer;
 
     fn get_schema() -> TableSchema {
@@ -71,6 +72,65 @@ mod tests {
             Serializer::write_children_vec(&children, &mut page, &position, &schema).unwrap();
         }
         page
+    }
+
+    #[test]
+    fn test_copy_node_same_page() {
+        let schema = get_schema();
+        let mut page = create_mock_page_data(3);
+        let pos_a = Position::new(0, 0);
+        let pos_b = Position::new(0, 1);
+        let src = page.clone();
+        Serializer::copy_node(&schema, &pos_b, &pos_a, &mut page, &src).unwrap();
+
+        let keys_a = Serializer::read_keys_as_vec(&page, &pos_a, &schema).unwrap();
+        let keys_b = Serializer::read_keys_as_vec(&page, &pos_b, &schema).unwrap();
+        assert_eq!(keys_a, keys_b);
+    }
+
+    #[test]
+    fn test_copy_node_different_pages() {
+        let schema = get_schema();
+        let mut page_a = create_mock_page_data_multiple_nodes(2, |i| 3, |i, j| j*4);
+        let mut page_b = create_mock_page_data_multiple_nodes(3, |i| 3, |i, j| i);
+        let pos_a = Position::new(0, 0);
+        let pos_b = Position::new(1, 4);
+
+        Serializer::copy_node(&schema, &pos_b, &pos_a, &mut page_b, &mut page_a).unwrap();
+
+        let keys_a = Serializer::read_keys_as_vec(&page_a, &pos_a, &schema).unwrap();
+        let keys_b = Serializer::read_keys_as_vec(&page_b, &pos_b, &schema).unwrap();
+        assert_eq!(keys_a, keys_b);
+    }
+
+    #[test]
+    fn test_copy_node_with_data() {
+        let schema = get_schema();
+        let mut page_a = create_mock_page_data(2);
+        let mut page_b = create_mock_page_data(3);
+        let pos_a = Position::new(0, 0);
+        let pos_b = Position::new(1, 0);
+
+        Serializer::copy_node(&schema, &pos_b, &pos_a, &mut page_b, &mut page_a).unwrap();
+
+        let data_a = Serializer::read_data_as_vec(&page_a, &pos_a, &schema).unwrap();
+        let data_b = Serializer::read_data_as_vec(&page_b, &pos_b, &schema).unwrap();
+        assert_eq!(data_a, data_b);
+    }
+
+    #[test]
+    fn test_copy_node_v2() {
+        let schema = get_schema();
+        let mut page_a = create_mock_page_data_multiple_nodes(6, |i| 3, |i, j| j*j*j);
+        let mut page_b = create_mock_page_data_multiple_nodes(5, |i| 3, |i, j| i);
+        let pos_a = Position::new(0, 2);
+        let pos_b = Position::new(1, 4);
+
+        Serializer::copy_node(&schema, &pos_b, &pos_a, &mut page_b, &mut page_a).unwrap();
+
+        let children_a = Serializer::read_children_as_vec(&page_a, &pos_a, &schema).unwrap();
+        let children_b = Serializer::read_children_as_vec(&page_b, &pos_b, &schema).unwrap();
+        assert_eq!(children_a, children_b);
     }
 
     #[test]
