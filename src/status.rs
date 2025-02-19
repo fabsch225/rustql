@@ -41,4 +41,5 @@ pub enum Status {
     InternalExceptionFileAlreadyExists,
     InternalExceptionFileOpenFailed,
     ExceptionTableAlreadyExists,
+    InternalExceptionDBCreationFailed,
 }

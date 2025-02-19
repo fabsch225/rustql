@@ -177,9 +177,7 @@ impl Position {
     }
 
     fn get_file_position(&self) -> u64 {
-        //(0,0) is an invalid position. the cells officially start at 1
-        // (of course, the location in the page starts at zero)
-        (self.page * PAGE_SIZE_WITH_META + PAGES_START_AT) as u64
+        ((self.page-1) * PAGE_SIZE_WITH_META + PAGES_START_AT) as u64
     }
 }
 

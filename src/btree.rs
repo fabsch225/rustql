@@ -341,10 +341,10 @@ impl Btree {
         }
         assert!(z.is_leaf());
         //println!("A Splitting {:?} of {:?}", i, x.get_keys()?);
-        if !y.is_leaf() {
+        if !y.is_leaf() { //y.get_children_from FAILS, because the root table uses position 0, which is empty
             z.set_children(y.get_children_from(t)?).unwrap();
         }
-
+        println!("y is leaf: {:?}", y.is_leaf());
         x.insert_child(i + 1, z).unwrap();
         y.truncate_keys(t - 1).unwrap();
 

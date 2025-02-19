@@ -588,13 +588,14 @@ impl Executor {
         let mut db = [0u8; 2 + PAGE_SIZE_WITH_META];
         //i think this will continue to be hardcoded here for the foreseeable future
         // [<0, 1> Next Page, <0, 1> Free Space, Flag, Num-keys, Flag]
-        db[1] = 1; //next page: [0, 1] -> 1
-        db[2] = (PAGE_SIZE << 8) as u8;
-        db[3] = (PAGE_SIZE & 0xFF) as u8;
+        db[1] = 2; //next page: [0, 1] -> 2 (starts at 1)
+        db[2] = ((PAGE_SIZE - 600) << 8) as u8;
+        db[3] = ((PAGE_SIZE - 600) & 0xFF) as u8;
         db[6] = Serializer::create_node_flag(true); //flag: is a leaf
+
         match OpenOptions::new().create_new(true).read(true).write(true).open(file_name).unwrap().write(&db) {
             Ok(f) => Ok(()),
-            _ => Err(Status::InternalExceptionFileOpenFailed),
+            _ => Err(Status::InternalExceptionDBCreationFailed),
         }
     }
 
@@ -604,7 +605,8 @@ impl Executor {
     }
 
     fn load_schema(pager_accessor: PagerAccessor, t: usize) -> Schema {
-        let master_table_schema = Self::make_master_table_schema();
+        let mut master_table_schema = Self::make_master_table_schema();
+        master_table_schema.root = Position::new(1, 0);
         let mut schema = Schema {
             table_index: TableIndex {
                 index: vec![TableName::from(MASTER_TABLE_NAME)],
