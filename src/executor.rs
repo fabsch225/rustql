@@ -1,10 +1,16 @@
 use crate::btree::Btree;
-use crate::pager::{Key, PagerAccessor, PagerCore, Position, Row, TableName, Type, PAGE_SIZE, PAGE_SIZE_WITH_META};
+use crate::pager::{
+    Key, PagerAccessor, PagerCore, Position, Row, TableName, Type, PAGE_SIZE, PAGE_SIZE_WITH_META,
+};
+use crate::pager_frontend::PagerFrontend;
 use crate::parser::Parser;
 use crate::planner::SqlStatementComparisonOperator::{
     Equal, Greater, GreaterOrEqual, Lesser, LesserOrEqual,
 };
-use crate::planner::{CompiledCreateTableQuery, CompiledDeleteQuery, CompiledInsertQuery, CompiledQuery, CompiledSelectQuery, Planner, SqlConditionOpCode, SqlStatementComparisonOperator};
+use crate::planner::{
+    CompiledCreateTableQuery, CompiledDeleteQuery, CompiledInsertQuery, CompiledQuery,
+    CompiledSelectQuery, Planner, SqlConditionOpCode, SqlStatementComparisonOperator,
+};
 use crate::serializer::Serializer;
 use crate::status::Status;
 use crate::status::Status::ExceptionQueryMisformed;
@@ -14,7 +20,6 @@ use std::fmt;
 use std::fmt::{format, Display, Formatter};
 use std::fs::OpenOptions;
 use std::io::{ErrorKind, Write};
-use crate::pager_frontend::PagerFrontend;
 
 const MASTER_TABLE_NAME: &str = "rustsql_master";
 
@@ -170,7 +175,7 @@ pub struct Executor {
     pub pager_accessor: PagerAccessor,
     pub query_cache: HashMap<String, CompiledQuery>, //must be invalidated once schema is changed or in a smart way
     pub schema: Schema,
-    pub btree_node_width: usize
+    pub btree_node_width: usize,
 }
 
 impl Executor {
@@ -193,12 +198,11 @@ impl Executor {
             }
         };
 
-
         Executor {
             pager_accessor: pager_accessor.clone(),
             query_cache: HashMap::new(),
             schema: Self::load_schema(pager_accessor, t),
-            btree_node_width: t
+            btree_node_width: t,
         }
     }
 
@@ -222,7 +226,7 @@ impl Executor {
                 self.pager_accessor.clone(),
                 table_schema.clone(),
             )
-                .unwrap();
+            .unwrap();
             println!("Table: {}", btree);
         }
     }
@@ -251,7 +255,10 @@ impl Executor {
             .unwrap();
             println!("Table: {}", btree);
         }
-        println!("System Table Data: \n {}", self.exec("SELECT * FROM rustsql_master".to_string()));
+        println!(
+            "System Table Data: \n {}",
+            self.exec("SELECT * FROM rustsql_master".to_string())
+        );
     }
 
     pub fn exit(&self) {
@@ -269,7 +276,11 @@ impl Executor {
         }
     }
 
-    fn exec_intern(&mut self, query: String, allow_modification_to_system_table: bool) -> Result<QueryResult, QueryResult> {
+    fn exec_intern(
+        &mut self,
+        query: String,
+        allow_modification_to_system_table: bool,
+    ) -> Result<QueryResult, QueryResult> {
         let mut parser = Parser::new(query.clone());
         let parsed_query = parser
             .parse_query()
@@ -281,7 +292,7 @@ impl Executor {
                 //this could be achieved using a unique / pk constraint on the system table.
                 //but there are no constraints implemented ;D
                 let stripped_mame = q.table_name.trim_end_matches(|char| char == '0');
-                let table_name : TableName = stripped_mame.as_bytes().to_vec();
+                let table_name: TableName = stripped_mame.as_bytes().to_vec();
                 if self.schema.table_index.index.contains(&table_name) {
                     return Err(QueryResult::err(Status::ExceptionTableAlreadyExists));
                 }
@@ -289,21 +300,17 @@ impl Executor {
                 let root_page = PagerFrontend::create_empty_node_on_new_page(
                     &q.schema,
                     self.pager_accessor.clone(),
-                   )
-                    .map_err(|status| QueryResult::err(status))
-                    .map(|node| {
-                        //println!("{:?}", PagerFrontend::is_leaf(&node));
-                        //println!("{:?}", PagerFrontend::get_keys(&node).unwrap().0.len());
-                        return node.position.page();
-                    })?;
+                )
+                .map_err(|status| QueryResult::err(status))
+                .map(|node| {
+                    //println!("{:?}", PagerFrontend::is_leaf(&node));
+                    //println!("{:?}", PagerFrontend::get_keys(&node).unwrap().0.len());
+                    return node.position.page();
+                })?;
 
                 let insert_query = format!(
                     "INSERT INTO {} (name, type, rootpage, sql) VALUES ({}, {}, {}, '{}')",
-                    MASTER_TABLE_NAME,
-                    q.table_name,
-                    0,
-                    root_page,
-                    query
+                    MASTER_TABLE_NAME, q.table_name, 0, root_page, query
                 );
                 println!("{}", insert_query);
                 self.exec_intern(insert_query, true);
@@ -504,7 +511,8 @@ impl Executor {
             } else {
                 let mut position = 0;
                 for i in 1..field_index {
-                    position += Serializer::get_size_of_type(&table_schema.fields[i].field_type).unwrap();
+                    position +=
+                        Serializer::get_size_of_type(&table_schema.fields[i].field_type).unwrap();
                 }
                 let field_len = Serializer::get_size_of_type(field_type).unwrap();
                 data_row.append(&mut row[position..position + field_len].to_vec());
@@ -554,7 +562,11 @@ impl Executor {
         true
     }
     pub fn check_integrity(&self) -> Result<(), Status> {
-        let mut btree = Btree::init(self.btree_node_width, self.pager_accessor.clone(), self.schema.tables[0].clone())?;
+        let mut btree = Btree::init(
+            self.btree_node_width,
+            self.pager_accessor.clone(),
+            self.schema.tables[0].clone(),
+        )?;
         let table_schema = self.schema.tables[0].clone();
         let mut last_key: RefCell<Option<Key>> = RefCell::new(None);
         let mut valid = RefCell::new(true);
@@ -593,7 +605,14 @@ impl Executor {
         db[3] = ((PAGE_SIZE - 600) & 0xFF) as u8;
         db[6] = Serializer::create_node_flag(true); //flag: is a leaf
 
-        match OpenOptions::new().create_new(true).read(true).write(true).open(file_name).unwrap().write(&db) {
+        match OpenOptions::new()
+            .create_new(true)
+            .read(true)
+            .write(true)
+            .open(file_name)
+            .unwrap()
+            .write(&db)
+        {
             Ok(f) => Ok(()),
             _ => Err(Status::InternalExceptionDBCreationFailed),
         }
@@ -614,33 +633,61 @@ impl Executor {
             tables: vec![master_table_schema.clone()],
         };
         //load remaining schema from master table
-        let btree = Btree::init(
-            t,
-            pager_accessor.clone(),
-            master_table_schema.clone(),
-        ).expect("Failed to initialise Btree on System Table");
+        let btree = Btree::init(t, pager_accessor.clone(), master_table_schema.clone())
+            .expect("Failed to initialise Btree on System Table");
         let mut result = RefCell::new(DataFrame::new());
         let select_query = CompiledSelectQuery {
             table_id: 0,
             operation: SqlConditionOpCode::SelectFTS,
-            result: vec![Field { field_type: Type::String, name: "name".to_string() }, Field { field_type: Type::String, name: "sql".to_string() }, Field { field_type: Type::Integer, name: "rootpage".to_string() }],
+            result: vec![
+                Field {
+                    field_type: Type::String,
+                    name: "name".to_string(),
+                },
+                Field {
+                    field_type: Type::String,
+                    name: "sql".to_string(),
+                },
+                Field {
+                    field_type: Type::Integer,
+                    name: "rootpage".to_string(),
+                },
+            ],
             conditions: vec![(SqlStatementComparisonOperator::None, vec![]); 4],
         };
         let action = |key: &mut Key, row: &mut Row| {
-            Executor::exec_select(key, row, &mut result.borrow_mut(), &select_query, &master_table_schema)
+            Executor::exec_select(
+                key,
+                row,
+                &mut result.borrow_mut(),
+                &select_query,
+                &master_table_schema,
+            )
         };
         btree.scan(&action).expect("Failed to scan master table");
-        result.borrow().data.iter().for_each(|entry|{
-            let name = Serializer::get_field_on_row(entry, 0, &master_table_schema).expect("Failed to get field: Name");
-            let sql = Serializer::format_field_on_row(entry, 1, &master_table_schema).expect("Failed to format field: SQL");
-            let rootpage = Serializer::bytes_to_int(<[u8; 5]>::try_from(Serializer::get_field_on_row(entry, 2, &master_table_schema).expect("Failed to get field: Rootpage")).unwrap());
+        result.borrow().data.iter().for_each(|entry| {
+            let name = Serializer::get_field_on_row(entry, 0, &master_table_schema)
+                .expect("Failed to get field: Name");
+            let sql = Serializer::format_field_on_row(entry, 1, &master_table_schema)
+                .expect("Failed to format field: SQL");
+            let rootpage = Serializer::bytes_to_int(
+                <[u8; 5]>::try_from(
+                    Serializer::get_field_on_row(entry, 2, &master_table_schema)
+                        .expect("Failed to get field: Rootpage"),
+                )
+                .unwrap(),
+            );
             let mut parser = Parser::new(sql);
             let parsed_query = parser.parse_query().expect("Failed to parse query");
-            let compiled_query = Planner::plan(&Schema::make_empty(), parsed_query).expect("Failed to compile query");
+            let compiled_query = Planner::plan(&Schema::make_empty(), parsed_query)
+                .expect("Failed to compile query");
             match compiled_query {
                 CompiledQuery::CreateTable(mut table) => {
                     let strip_pos = name.iter().rposition(|&x| x != 0).expect("cant be empty");
-                    schema.table_index.index.push(name[0..strip_pos+1].to_vec());
+                    schema
+                        .table_index
+                        .index
+                        .push(name[0..strip_pos + 1].to_vec());
                     table.schema.root = Position::new(rootpage as usize, 0);
                     schema.tables.push(table.schema);
                 }

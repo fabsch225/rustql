@@ -1,5 +1,7 @@
 use crate::executor::{Field, QueryResult, Schema, TableSchema};
-use crate::pager::{Key, Position, Row, TableName, Type, NODE_METADATA_SIZE, ROW_NAME_SIZE, TYPE_SIZE};
+use crate::pager::{
+    Key, Position, Row, TableName, Type, NODE_METADATA_SIZE, ROW_NAME_SIZE, TYPE_SIZE,
+};
 use crate::parser::ParsedQuery;
 use crate::serializer::Serializer;
 use crate::status::Status;
@@ -180,7 +182,8 @@ impl Planner {
                     key_and_row_length,
                     key_length: Serializer::get_size_of_type(&fields[0].field_type).unwrap(),
                     key_type: fields[0].field_type.clone(),
-                    row_length: key_and_row_length - Serializer::get_size_of_type(&fields[0].field_type).unwrap(),
+                    row_length: key_and_row_length
+                        - Serializer::get_size_of_type(&fields[0].field_type).unwrap(),
                     fields,
                     entry_count: 0,
                     table_type: 0,
@@ -190,9 +193,11 @@ impl Planner {
                     schema,
                 }))
             }
-            ParsedQuery::DropTable(drop_table_query) => Ok(CompiledQuery::DropTable(CompiledDropTableQuery {
-                table_id: Self::find_table_id(schema, &drop_table_query.table_name)? as usize,
-            })),
+            ParsedQuery::DropTable(drop_table_query) => {
+                Ok(CompiledQuery::DropTable(CompiledDropTableQuery {
+                    table_id: Self::find_table_id(schema, &drop_table_query.table_name)? as usize,
+                }))
+            }
             ParsedQuery::Delete(delete_query) => {
                 let table_id = Self::find_table_id(schema, &delete_query.table_name)?;
                 let table_schema = &schema.tables[table_id];

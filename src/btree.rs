@@ -21,7 +21,11 @@ impl BTreeNode {
             table_schema: table_schema.clone(),
         }
     }
-    pub fn new(position: Position, pager_accessor: PagerAccessor, table_schema: TableSchema) -> Self {
+    pub fn new(
+        position: Position,
+        pager_accessor: PagerAccessor,
+        table_schema: TableSchema,
+    ) -> Self {
         BTreeNode {
             position,
             pager_accessor,
@@ -223,28 +227,8 @@ impl Btree {
                     vec![root.position.clone()],
                     vec![Serializer::empty_row(&self.table_schema)],
                 )?;
-                //println!("root keys: {:?}", new_root.get_keys());
-                //println!("root children: {:?}", new_root.get_children());
-                //new_root.push_child(root.clone())?; moved to create_node
                 self.split_child(&new_root, 0, self.t, true).unwrap();
-                assert!(!root.position.is_empty());
-                //println!("new root keys: {:?}", new_root.get_keys());
-                //panic!();
-
                 self.insert_non_full(&new_root, k, v, self.t, e)?;
-                //e.debug_lite(None);
-
-                /*println!("new root children: {:?}", new_root.get_children());
-                println!("new root position: {:?}", new_root.position);
-                println!("old root children: {:?}", root.get_children());
-                println!("old root position: {:?}", root.position);
-                */
-
-                /*println!("switched nodes");
-                println!("new root children: {:?}", new_root.get_children());
-                println!("new root position: {:?}", new_root.position);
-                println!("old root children: {:?}", root.get_children());
-                println!("old root position: {:?}", root.position);*/
 
                 PagerFrontend::switch_nodes(
                     &self.table_schema,
@@ -258,25 +242,19 @@ impl Btree {
             }
         } else {
             panic!("Root is None");
-            let new_root = PagerFrontend::create_empty_node_on_new_page(
-                &self.table_schema,
-                self.pager_accessor.clone()
-            )?;
-            let r = new_root.push_key(k, v);
-            r.unwrap();
-            //self.pager_accessor.set_root(&new_root)?; //this is much easier: create a new page, and set the root's position to that
-            self.root = Some(new_root);
         }
         Ok(())
     }
 
-    fn insert_non_full(&self, x: &BTreeNode, key: Key, row: Row, t: usize, e: &Executor) -> Result<(), Status> {
+    fn insert_non_full(
+        &self,
+        x: &BTreeNode,
+        key: Key,
+        row: Row,
+        t: usize,
+        e: &Executor,
+    ) -> Result<(), Status> {
         let mut i = x.get_keys_count()? as isize - 1;
-        //println!("insert_non_full on node: {:?}, i={:?}", x, i);
-        //println!("is_leaf: {:?}", x.is_leaf());
-        //println!("children-len: {:?}", x.get_children()?.len());
-        //println!("keys: {:?}", x.get_keys()?.0);
-
         if x.is_leaf() {
             x.push_key(
                 Serializer::empty_key(&self.table_schema),
@@ -297,9 +275,6 @@ impl Btree {
                 i -= 1;
             }
             let mut i = (i + 1) as usize;
-            //println!("children: {:?}", x.get_children());
-            //println!("B.1: i={:?}, children={:?}", i, x.get_children_count()?);
-            assert!(i < x.get_children_count()?);
             if x.get_child(i)?.get_keys_count()? == (2 * t) - 1 {
                 self.split_child(x, i, t, false)?;
                 let key_and_row = x.get_key(i)?;
@@ -313,38 +288,27 @@ impl Btree {
     }
 
     fn split_child(&self, x: &BTreeNode, i: usize, t: usize, is_root: bool) -> Result<(), Status> {
-        //println!("O1 Splitting {:?} of {:?}", i, x.get_keys()?);
-        //println!("X {:?}", x.position);
         let mut y = x.get_child(i)?.clone();
-        //println!("O2 Splitting {:?} of {:?}", i, x.get_keys()?);
-        //println!("Y {:?}", y.position);
         let keys_and_rows = y.get_keys_from(t)?;
-        //println!("O3 Splitting {:?} of {:?}", i, x.get_keys()?);
-        let mut z = PagerFrontend::create_node( //TODO: should this be here? the BTree should call BTreeNode methods !?
+        let mut z = PagerFrontend::create_node(
+            //TODO: should this be here? the BTree should call BTreeNode methods !?
             self.table_schema.clone(),
             y.pager_accessor.clone(),
-            None,//Some(x), //the hint-functionality is wrong!!! TODO
+            None, //Some(x), //TODO the hint-functionality is wrong!!!
             keys_and_rows.0,
             vec![],
             keys_and_rows.1,
         )?;
-        //println!("O4 Splitting {:?} of {:?}", i, x.get_keys()?);
-        //println!("Z {:?}", z.position);
         let key_and_row = y.get_key(t - 1).unwrap();
-        //println!("X {:?}", x.position);
-        //println!("O5 Splitting {:?} of {:?}", i, x.get_keys()?);
-        //TODO suboptimal
+        //TODO suboptimal (works super fine)
         if is_root {
             x.set_key(0, key_and_row.0, key_and_row.1).unwrap();
         } else {
             x.insert_key(i, key_and_row.0, key_and_row.1).unwrap();
         }
-        assert!(z.is_leaf());
-        //println!("A Splitting {:?} of {:?}", i, x.get_keys()?);
-        if !y.is_leaf() { //y.get_children_from FAILS, because the root table uses position 0, which is empty
+        if !y.is_leaf() {
             z.set_children(y.get_children_from(t)?).unwrap();
         }
-        println!("y is leaf: {:?}", y.is_leaf());
         x.insert_child(i + 1, z).unwrap();
         y.truncate_keys(t - 1).unwrap();
 
@@ -422,8 +386,6 @@ impl Btree {
         }
     }
 
-    //TODO optimize this
-    //maybe implement this on a lower level
     fn get_predecessor(&self, x: &BTreeNode) -> Result<(Key, Row), Status> {
         let mut cur = x.clone();
         while !cur.is_leaf() {
@@ -432,7 +394,6 @@ impl Btree {
         cur.get_key(cur.get_keys_count()? - 1)
     }
 
-    //TODO optimize this
     fn get_successor(&self, x: &BTreeNode) -> Result<(Key, Row), Status> {
         let mut cur = x.clone();
         while !cur.is_leaf() {

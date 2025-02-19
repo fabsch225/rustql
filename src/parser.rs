@@ -144,7 +144,9 @@ impl Parser {
                 self.expect_token("NOT")?;
                 self.expect_token("EXISTS")?;
                 if_not_exists = true;
-                self.lexer.next_token().ok_or_else(|| "Expected table name".to_string())?
+                self.lexer
+                    .next_token()
+                    .ok_or_else(|| "Expected table name".to_string())?
             }
             Some(token) => token,
             None => return Err("Expected table name or IF NOT EXISTS".to_string()),

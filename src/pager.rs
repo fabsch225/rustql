@@ -12,12 +12,12 @@ use crate::status::Status::{
 };
 use std::cmp::PartialEq;
 use std::collections::HashMap;
-use std::{fmt, usize};
 use std::fmt::{Debug, Display, Formatter};
 use std::fs::{File, OpenOptions};
 use std::hash::{Hash, Hasher};
 use std::io::{ErrorKind, Read, Seek, SeekFrom, Write};
 use std::sync::{Arc, RwLock};
+use std::{fmt, usize};
 
 //in bytes
 pub const PAGE_SIZE: usize = 4096; //16384
@@ -81,7 +81,7 @@ pub enum NodeFlag {
 
 #[repr(u8)]
 pub enum KeyMeta {
-    Tomb = 0
+    Tomb = 0,
 }
 #[repr(u8)]
 pub enum FieldMeta {
@@ -166,7 +166,7 @@ impl Position {
     }
 
     pub fn increase_cell(&self) -> Self {
-            Position {
+        Position {
             page: self.page,
             cell: self.cell + 1,
         }
@@ -177,7 +177,8 @@ impl Position {
     }
 
     fn get_file_position(&self) -> u64 {
-        ((self.page-1) * PAGE_SIZE_WITH_META + PAGES_START_AT) as u64
+        //the indices are shifted by 1, so (0,0) serves as a NULL value
+        ((self.page - 1) * PAGE_SIZE_WITH_META + PAGES_START_AT) as u64
     }
 }
 
@@ -328,9 +329,13 @@ impl PagerCore {
     }
 
     pub fn write_next_page_pos_to_disk(&mut self) -> Result<(), Status> {
-        self.file.seek(SeekFrom::Start(0)).map_err(|_| Status::InternalExceptionWriteFailed)?;
+        self.file
+            .seek(SeekFrom::Start(0))
+            .map_err(|_| Status::InternalExceptionWriteFailed)?;
         let next_page_index_bytes = (self.next_page_index as u16).to_be_bytes();
-        self.file.write_all(&next_page_index_bytes).map_err(|_| Status::InternalExceptionWriteFailed)?;
+        self.file
+            .write_all(&next_page_index_bytes)
+            .map_err(|_| Status::InternalExceptionWriteFailed)?;
         Ok(())
     }
 
@@ -430,12 +435,10 @@ impl PagerCore {
                 Status::InternalExceptionReadFailed
             })?;
         let mut meta_buffer = [0u8; 3];
-        self.file
-            .read_exact(&mut meta_buffer)
-            .map_err(|_| {
-                panic!("Cannot read File to this len (metadata len 3)");
-                Status::InternalExceptionReadFailed
-            })?;
+        self.file.read_exact(&mut meta_buffer).map_err(|_| {
+            panic!("Cannot read File to this len (metadata len 3)");
+            Status::InternalExceptionReadFailed
+        })?;
         let mut main_buffer = [0u8; PAGE_SIZE as usize];
         self.file.read_exact(&mut main_buffer).map_err(|e| {
             panic!("Cannot read File to this len: {}", e);
