@@ -247,6 +247,8 @@ impl PagerAccessor {
 
     //this is a bit confusing, but the page read function does still require write-access to the pager...
     //TODO Optimize reading / writing to the pager by checking cache beforehand!
+    //Implement Pager::try_read_page_from_cache -> Result<PageContainer, Status>, and if there is a cache miss, return a Status::CacheMiss,
+    //    then we can request write access here and try to load from disk.
     // (now we have to account for the possibility of loading a page from disk, which requires mutating the filestream)
     pub fn access_page_read<F, T>(&self, node: &BTreeNode, func: F) -> Result<T, Status>
     where

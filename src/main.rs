@@ -11,16 +11,19 @@ use std::io::Write;
 ///     3. set a max cache size
 ///     4. VACUUM
 /// # Gameplan:
+/// - autosaving, autocleanup, auto-vacuum (?)
 /// - constraints (unique, nullable)
 /// - create a more ambitious executer -> "real" compilation + virtual-machine -- this would enable subqueries etc
 /// - joins + constraints: primary key, foreign key,
 /// - indices
 /// - views i.e. virtual tables / virtual b-trees (is this necessary for joins also?)
 ///
-///
 /// # Virtual Memory Strategy for working with multiple things
 /// - Pages just like sqlite
+/// - Maybe a freelist for pages? (free table ?)
 /// - How to detect, if a page is not used anymore?
+///    1. perform a tomb cleanup
+///    2. if the first node has 0 keys, the page is unused
 ///
 /// # Architecture
 ///
@@ -31,7 +34,7 @@ use std::io::Write;
 /// - File on Disk
 
 const BTREE_NODE_SIZE: usize = 3; //this means a maximum of 5 keys per node
-const TOMB_THRESHOLD: usize = 10; //10 percent
+pub const TOMB_THRESHOLD: usize = 10; //10 percent
 
 fn main() {
     let mut executor = Executor::init("./default.db.bin", BTREE_NODE_SIZE);
