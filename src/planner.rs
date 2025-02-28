@@ -2,7 +2,7 @@ use crate::executor::{Field, QueryResult, Schema, TableSchema};
 use crate::pager::{
     Key, Position, Row, TableName, Type, NODE_METADATA_SIZE, ROW_NAME_SIZE, TYPE_SIZE,
 };
-use crate::parser::ParsedQuery;
+use crate::parser::{ParsedQuery, ParsedQueryTreeNode, ParsedSource};
 use crate::serializer::Serializer;
 use crate::status::Status;
 use crate::status::Status::ExceptionQueryMisformed;
@@ -122,38 +122,53 @@ impl Planner {
                 }))
             }
             ParsedQuery::Select(select_query) => {
-                let table_id = Self::find_table_id(schema, &select_query.table_name)?;
-                let table_schema = &schema.tables[table_id];
-                let mut result = Vec::new();
+                match select_query {
+                    ParsedQueryTreeNode::SingleQuery(single_select) => {
+                        let table_name = match single_select.source {
+                            ParsedSource::Table(table_name) => {
+                                table_name
+                            }
+                            _ => {
+                                return Err(QueryResult::msg("subqueries are not supported yet"));
+                            }
+                        };
+                        let table_id = Self::find_table_id(schema, &table_name)?;
+                        let table_schema = &schema.tables[table_id];
+                        let mut result = Vec::new();
 
-                if select_query.result[0] == "*" {
-                    result.append(&mut table_schema.fields.clone());
-                } else {
-                    for field in select_query.result.iter() {
-                        let field_schema = table_schema
-                            .fields
-                            .iter()
-                            .find(|f| &f.name == field)
-                            .ok_or(QueryResult::user_input_wrong(format!(
-                                "at least one invalid field: {}",
-                                field
-                            )))?;
-                        result.push(field_schema.clone());
+                        if single_select.result[0] == "*" {
+                            result.append(&mut table_schema.fields.clone());
+                        } else {
+                            for field in single_select.result.iter() {
+                                let field_schema = table_schema
+                                    .fields
+                                    .iter()
+                                    .find(|f| &f.name == field)
+                                    .ok_or(QueryResult::user_input_wrong(format!(
+                                        "at least one invalid field: {}",
+                                        field
+                                    )))?;
+                                result.push(field_schema.clone());
+                            }
+                        }
+
+                        let mut conditions = Vec::new();
+                        let operation = Self::compile_conditions(
+                            single_select.conditions,
+                            &mut conditions,
+                            &table_schema,
+                        )?;
+                        Ok(CompiledQuery::Select(CompiledSelectQuery {
+                            table_id,
+                            operation,
+                            result,
+                            conditions,
+                        }))
+                    },
+                    ParsedQueryTreeNode::SetOperation(set_operation) => {
+                        Err(QueryResult::msg("set operations are not supported yet"))
                     }
                 }
-
-                let mut conditions = Vec::new();
-                let operation = Self::compile_conditions(
-                    select_query.conditions,
-                    &mut conditions,
-                    &table_schema,
-                )?;
-                Ok(CompiledQuery::Select(CompiledSelectQuery {
-                    table_id,
-                    operation,
-                    result,
-                    conditions,
-                }))
             }
             ParsedQuery::CreateTable(create_table_query) => {
                 let mut fields = Vec::new();

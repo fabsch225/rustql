@@ -1,6 +1,6 @@
 #[cfg(test)]
 mod tests {
-    use rustql::parser::{ParsedQuery, Parser};
+    use rustql::parser::{ParsedQuery, ParsedQueryTreeNode, ParsedSource, Parser};
 
     #[test]
     fn test_create_table_valid() {
@@ -59,20 +59,25 @@ mod tests {
         assert!(result.is_ok());
 
         if let ParsedQuery::Select(select_query) = result.unwrap() {
-            assert_eq!(select_query.result.len(), 2);
-            assert_eq!(select_query.result[0], "id");
-            assert_eq!(select_query.result[1], "name");
-            assert_eq!(select_query.conditions.len(), 2);
+            match select_query {
+                ParsedQueryTreeNode::SingleQuery(select_query) => {
+                    assert_eq!(select_query.result.len(), 2);
+                    assert_eq!(select_query.result[0], "id");
+                    assert_eq!(select_query.result[1], "name");
+                    assert_eq!(select_query.conditions.len(), 2);
 
-            let first_condition = &select_query.conditions[0];
-            assert_eq!(first_condition.0, "id");
-            assert_eq!(first_condition.1, "=");
-            assert_eq!(first_condition.2, "10");
+                    let first_condition = &select_query.conditions[0];
+                    assert_eq!(first_condition.0, "id");
+                    assert_eq!(first_condition.1, "=");
+                    assert_eq!(first_condition.2, "10");
 
-            let second_condition = &select_query.conditions[1];
-            assert_eq!(second_condition.0, "name");
-            assert_eq!(second_condition.1, "=");
-            assert_eq!(second_condition.2, "John");
+                    let second_condition = &select_query.conditions[1];
+                    assert_eq!(second_condition.0, "name");
+                    assert_eq!(second_condition.1, "=");
+                    assert_eq!(second_condition.2, "John");
+                },
+                _ => panic!("Expected Select query")
+            }
         } else {
             panic!("Expected Select query");
         }
@@ -86,10 +91,15 @@ mod tests {
         assert!(result.is_ok());
 
         if let ParsedQuery::Select(select_query) = result.unwrap() {
-            assert_eq!(select_query.result.len(), 2);
-            assert_eq!(select_query.result[0], "id");
-            assert_eq!(select_query.result[1], "name");
-            assert!(select_query.conditions.is_empty());
+            match select_query {
+                ParsedQueryTreeNode::SingleQuery(select_query) => {
+                    assert_eq!(select_query.result.len(), 2);
+                    assert_eq!(select_query.result[0], "id");
+                    assert_eq!(select_query.result[1], "name");
+                    assert!(select_query.conditions.is_empty());
+                },
+                _ => panic!("Expected Select query")
+            }
         } else {
             panic!("Expected Select query");
         }
@@ -117,6 +127,56 @@ mod tests {
             result.unwrap_err(),
             "Expected 'FROM', but found 'users'".to_string()
         );
+    }
+
+    #[test]
+    fn test_select_w_join() {
+        let query = "SELECT * FROM (t INNER JOIN (x INNER JOIN (y) ON x.e = y.e) ON t.e = a.e)";
+        let mut parser = Parser::new(query.to_string());
+        let result = parser.parse_query();
+        assert!(result.is_ok());
+        match result.unwrap() {
+            ParsedQuery::Select(select_query) => {
+                match select_query {
+                    ParsedQueryTreeNode::SingleQuery(select_query) => {
+                        assert_eq!(select_query.result.len(), 1);
+                        assert_eq!(select_query.result[0], "*");
+                        assert!(select_query.conditions.is_empty());
+                        match select_query.source {
+                            ParsedSource::Join(join) => {
+                                match *join.left {
+                                    ParsedSource::Table(table) => {
+                                        assert_eq!(table, "t");
+                                    },
+                                    _ => panic!("Expected Table source")
+                                }
+                                match *join.right {
+                                    ParsedSource::Join(join) => {
+                                        match *join.left {
+                                            ParsedSource::Table(table) => {
+                                                assert_eq!(table, "x");
+                                            },
+                                            _ => panic!("Expected Table source")
+                                        }
+                                        match *join.right {
+                                            ParsedSource::Table(table) => {
+                                                assert_eq!(table, "y");
+                                            },
+                                            _ => panic!("Expected Table source")
+                                        }
+                                        assert_eq!(join.condition, ("x.e".to_string(),"=".to_string(),"y.e".to_string()));
+                                    },
+                                    _ => panic!("Expected Join source")
+                                        }
+                                    },
+                                    _ => panic!("Expected Join source")
+                                }
+                            },
+                    _ => panic!("Expected Single Select query"),
+                };
+            },
+            _ => panic!("Expected Select query")
+        }
     }
 
     #[test]

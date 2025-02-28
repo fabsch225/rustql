@@ -11,6 +11,7 @@ use std::io::Write;
 ///     3. set a max cache size
 ///     4. VACUUM
 /// # Gameplan:
+/// - create an Iterator-Pattern on the BTree, add a cursor, implement this in the executor, preferably before joins etc
 /// - autosaving, autocleanup, auto-vacuum (?)
 /// - constraints (unique, nullable)
 /// - create a more ambitious executer -> "real" compilation + virtual-machine -- this would enable subqueries etc

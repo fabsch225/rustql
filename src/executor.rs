@@ -92,6 +92,14 @@ impl QueryResult {
         }
     }
 
+    pub fn msg(str: &str) -> QueryResult {
+        QueryResult {
+            success: false,
+            result: DataFrame::msg(str),
+            status: ExceptionQueryMisformed,
+        }
+    }
+
     pub fn err(s: Status) -> Self {
         QueryResult {
             success: false,
@@ -131,6 +139,7 @@ impl DataFrame {
         }
     }
 
+    //TODO fix when there is a varchar--this is wrong, a string longer than 256 would be cut off
     pub fn msg(message: &str) -> Self {
         DataFrame {
             header: vec![Field {
@@ -280,7 +289,7 @@ impl Executor {
         &mut self,
         query: String,
         allow_modification_to_system_table: bool,
-    ) -> Result<QueryResult, QueryResult> {
+    ) -> Reslt<QueryResult, QueryResult> {
         let mut parser = Parser::new(query.clone());
         let parsed_query = parser
             .parse_query()
@@ -303,8 +312,6 @@ impl Executor {
                 )
                 .map_err(|status| QueryResult::err(status))
                 .map(|node| {
-                    //println!("{:?}", PagerFrontend::is_leaf(&node));
-                    //println!("{:?}", PagerFrontend::get_keys(&node).unwrap().0.len());
                     return node.position.page();
                 })?;
 
@@ -403,7 +410,7 @@ impl Executor {
                 todo!()
             }
             SqlConditionOpCode::SelectKeyRange => {
-                let range_start;
+                let range_start; //TODO one could move this to the planner!!!!!!
                 let range_end;
                 let include_start;
                 let include_end;
@@ -477,7 +484,6 @@ impl Executor {
         if !Executor::exec_condition_on_row(row, &query.conditions, schema) {
             return Ok(false);
         }
-        //TODO this is wrong, modifies lsb instead of msb!!!!!!!!!!!!
         Serializer::set_is_tomb(key, true, &schema)?;
         Ok(true)
     }
@@ -502,7 +508,7 @@ impl Executor {
             let field_index = table_schema
                 .fields
                 .iter()
-                .position(|f| f.name == field.name) //TODO optimize that
+                .position(|f| f.name == field.name) //TODO optimize that. also, the indices can be preprocessed in the planner.
                 .unwrap();
             let field_type = &table_schema.fields[field_index].field_type;
 
@@ -586,7 +592,7 @@ impl Executor {
             Ok(false)
         };
 
-        //this wouldnt consider tombstones
+        //this wouldnt consider tombstones on its own
         btree.scan(&action)?;
 
         if *valid.borrow() {

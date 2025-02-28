@@ -118,7 +118,7 @@ impl BTreeNode {
         let children = PagerFrontend::get_children(self)?;
         Ok(children[index..].to_vec())
     }
-
+                
     fn get_child(&self, index: usize) -> Result<BTreeNode, Status> {
         PagerFrontend::get_child(index, self)
     }
@@ -259,7 +259,7 @@ impl Btree {
             x.push_key(
                 Serializer::empty_key(&self.table_schema),
                 Serializer::empty_row(&self.table_schema),
-            )?; // Add a dummy value
+            )?; // Add a dummy value TODO: should this be here? the BTree should call BTreeNode methods !?
             while i >= 0
                 && self.compare(&key, &x.get_key(i as usize)?.0)? == std::cmp::Ordering::Less
             {
@@ -570,6 +570,7 @@ impl Btree {
                 self.in_order_traversal(&child, exec)?;
             }
             let mut key_and_row = node.get_key(i)?;
+            //TODO -- shouldnt mutate key here. Updating Keys is special: i think delete + reinsert :)
             let modified = exec(&mut key_and_row.0, &mut key_and_row.1)?;
             if modified {
                 node.set_key(i, key_and_row.0, key_and_row.1)?
