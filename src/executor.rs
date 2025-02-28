@@ -289,7 +289,7 @@ impl Executor {
         &mut self,
         query: String,
         allow_modification_to_system_table: bool,
-    ) -> Reslt<QueryResult, QueryResult> {
+    ) -> Result<QueryResult, QueryResult> {
         let mut parser = Parser::new(query.clone());
         let parsed_query = parser
             .parse_query()
