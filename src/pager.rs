@@ -238,6 +238,7 @@ impl PagerAccessor {
             .expect("Failed to acquire read lock on Pager");
         func(&pager)
     }
+
     pub fn access_pager_write<F, T>(&self, func: F) -> T
     where
         F: FnOnce(&mut PagerCore) -> T,
@@ -349,16 +350,11 @@ impl PagerCore {
         self.cache.clear();
         InternalSuccess
     }
-    /*
-        //TODO this will be put somehwere else
-        pub fn get_node_length(&self) -> i32 {
-            ((2 * self.btree_width - 1) + (2 * self.btree_width - 1) * self.schema.tables[0].whole_row_length + self.btree_width * POSITION_SIZE + 2) as i32
-        }
-    */
+    
     pub fn access_page_read(&mut self, position: &Position) -> Result<PageContainer, Status> {
         let miss = !self.cache.contains_key(&position.page());
 
-        //TODO optimize this! lets hope the compiler does magic for now
+        //TODO optimize this!
         if miss {
             let page = self.read_page_from_disk(position);
             if page.is_ok() {

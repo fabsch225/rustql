@@ -609,6 +609,7 @@ impl Executor {
     pub fn create_database(file_name: &str) -> Result<(), Status> {
         let mut db = [0u8; 2 + PAGE_SIZE_WITH_META];
         //i think this will continue to be hardcoded here for the foreseeable future
+        //where to store Next_Page??
         // [<0, 1> Next Page, <0, 1> Free Space, Flag, Num-keys, Flag]
         db[1] = 2; //next page: [0, 1] -> 2 (starts at 1)
         db[2] = ((PAGE_SIZE - 600) << 8) as u8;
