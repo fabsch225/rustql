@@ -20,7 +20,7 @@ use std::sync::{Arc, RwLock};
 use std::{fmt, usize};
 
 //in bytes
-pub const PAGE_SIZE: usize = 4096; //16384
+pub const PAGE_SIZE: usize = 4096; //PAGE_SIZE_WITH_META should be 4096 (TODO: change & test this)
 pub const PAGE_SIZE_WITH_META: usize = PAGE_SIZE + 3; //<2 for free space on page>, <1 for flag>
 pub const NODE_METADATA_SIZE: usize = 2; //<number of keys> <flag> -- the number of keys is used to skip through the nodes on a page
 pub const STRING_SIZE: usize = 256; //len: 255
@@ -44,7 +44,7 @@ pub const TABLE_NAME_SIZE: usize = 32;
 // (they are assumed to have full length, although in practice they are still shifted around, because in the future there will be overflow pages)
 // so, we calculate free-space as PAGE_SIZE - (Number of Rows * Row Length), and create a new page if there is not enough space
 
-pub const PAGES_START_AT: usize = 2;
+pub const PAGES_START_AT: usize = 2; //TODO: can we change this? Pages should start at 0!!!!!!!!!
 
 // Node Layout
 // - 8 Bits: Number of Keys (n)
@@ -74,6 +74,7 @@ pub enum PageFlag {
     Deleted = 2,
     Lock = 4,
 }
+
 #[repr(u8)]
 pub enum NodeFlag {
     Leaf = 1,
@@ -83,6 +84,7 @@ pub enum NodeFlag {
 pub enum KeyMeta {
     Tomb = 0,
 }
+
 #[repr(u8)]
 pub enum FieldMeta {
     Null = 0,
@@ -93,7 +95,7 @@ pub enum Type {
     Null, //TODO remove this. this is not a type. each type can be null
     Integer,
     String,
-    //Double, future featuref
+    //Double, future feature
     //Varchar, future feature
     Date,
     Boolean,
@@ -125,6 +127,8 @@ pub struct PageContainer {
     position: Position,
     pub free_space: usize,
     pub flag: Flag,
+    //pub transaction_shards: HashMap<TransactionId, (PageData, usize)>
+    //if i do this, i should put data and free_space into a struct
 }
 
 pub type TableName = Vec<u8>;

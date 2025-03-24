@@ -90,8 +90,10 @@ impl QueryResult {
             result: DataFrame::msg(msg.as_str()),
             status: ExceptionQueryMisformed,
         }
+
     }
 
+    // TODO rename
     pub fn msg(str: &str) -> QueryResult {
         QueryResult {
             success: false,
@@ -100,6 +102,7 @@ impl QueryResult {
         }
     }
 
+    // TODO rename
     pub fn err(s: Status) -> Self {
         QueryResult {
             success: false,
@@ -264,6 +267,7 @@ impl Executor {
             .unwrap();
             println!("Table: {}", btree);
         }
+        println!("Checking Integrity... Is {}", self.check_integrity().is_ok());
         println!(
             "System Table Data: \n {}",
             self.exec("SELECT * FROM rustsql_master".to_string())
