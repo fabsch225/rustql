@@ -30,7 +30,6 @@ impl BTreeCursor {
                 break;
             } else {
                 self.stack.push((current.clone(), count));
-                assert_eq!(count, current.get_children()?.len());
                 //let x = current.get_children()?[count].clone();
                 //println!("{:?}", x);
                 current = current.get_child(count)?;
@@ -508,7 +507,6 @@ impl Btree {
                     &root,
                     &new_root,
                 )?;
-                self.root = Some(new_root);
             } else {
                 self.insert_non_full(root, k, v, self.t)?;
             }

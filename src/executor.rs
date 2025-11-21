@@ -31,8 +31,8 @@ pub static MASTER_TABLE_SQL: &str = "CREATE TABLE rustsql_master (
     )";
 #[derive(Clone, Debug)]
 pub struct Schema {
-    pub(crate) table_index: TableIndex,
-    pub(crate) tables: Vec<TableSchema>,
+    pub table_index: TableIndex,
+    pub tables: Vec<TableSchema>,
 }
 
 impl Schema {
@@ -46,7 +46,7 @@ impl Schema {
 
 #[derive(Clone, Debug)]
 pub struct TableIndex {
-    pub(crate) index: Vec<TableName>,
+    pub index: Vec<TableName>,
 }
 
 //TODO remove redundant fields, i. e. decide which to keep, implement derivation methods for the others

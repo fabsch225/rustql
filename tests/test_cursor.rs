@@ -5,21 +5,19 @@ mod tests {
         executor::{TableSchema, Field}
     };
     use rand::{seq::SliceRandom, Rng};
+    use rustql::executor::Executor;
+    use rustql::pager::{FieldMeta, KeyMeta};
+    use rustql::serializer::Serializer;
 
     fn make_int_key(k: i32) -> Vec<u8> {
-        let mut v = Vec::with_capacity(5);
-        v.push(0x01);
-        v.extend_from_slice(&k.to_be_bytes());
+        let mut v = Serializer::parse_int(&*k.to_string()).expect("").to_vec();
+        Serializer::set_flag_at_position(&mut v, KeyMeta::Tomb as u8, false, &Type::Integer).expect("");
         v
     }
 
     fn make_row(k: i32) -> Vec<u8> {
-        let mut v = vec![0u8; 256];
-        let b = k.to_be_bytes();
-        v[0] = b[0];
-        v[1] = b[1];
-        v[2] = b[2];
-        v[3] = b[3];
+        let mut v = Serializer::parse_int(&*k.to_string()).expect("").to_vec();
+        Serializer::set_flag_at_position(&mut v, FieldMeta::Null as u8, false, &Type::Integer).expect("");
         v
     }
 
@@ -29,35 +27,26 @@ mod tests {
     }
 
     fn extract_int_from_row(r: &Vec<u8>) -> i32 {
-        let b = [r[0], r[1], r[2], r[3]];
+        let b = [r[1], r[2], r[3], r[4]];
         i32::from_be_bytes(b)
     }
 
-    fn get_schema() -> TableSchema {
-        TableSchema {
-            next_position: Position::new(0, 0),
-            root: Position::new(0, 0),
-            col_count: 2,
-            key_and_row_length: 260,
-            key_length: 4,
-            key_type: Type::Integer,
-            row_length: 256,
-            fields: vec![
-                Field { name: "Id".to_string(), field_type: Type::Integer },
-                Field { name: "Name".to_string(), field_type: Type::String },
-            ],
-            table_type: 0,
-            entry_count: 0,
-        }
-    }
-
     fn make_tree() -> Btree {
-        let pager = PagerCore::init_from_file("./default.db.bin").unwrap();
-        Btree::init(3, pager, get_schema()).unwrap()
+        let mut executor = Executor::init("./default.db.bin", 3);
+        let result = executor.exec("CREATE TABLE test (id Integer, other Integer)".to_string());
+        assert!(result.success);
+        let idx = executor.schema.table_index.index.iter().position(|p|{p == "test".as_bytes()}).unwrap();
+        let schema = executor.schema.tables[idx].clone();
+        Btree::init(
+            executor.btree_node_width,
+            executor.pager_accessor.clone(),
+            schema.clone(),
+        ).unwrap()
     }
 
-    fn collect_cursor_values(tree: &Btree) -> Vec<(i32, i32)> {
+    fn collect_cursor_values_in_order(tree: &Btree) -> Vec<(i32, i32)> {
         let mut c = BTreeCursor::new(tree.clone());
+        c.move_to_start().expect("");
         let mut out = vec![];
         while c.is_valid() {
             let (k, r) = c.current().unwrap().unwrap();
@@ -74,7 +63,8 @@ mod tests {
         for k in &keys {
             t.insert(make_int_key(*k), make_row(*k)).unwrap();
         }
-        let vals = collect_cursor_values(&t);
+        println!("{}", t);
+        let vals = collect_cursor_values_in_order(&t);
         let mut expected: Vec<(i32,i32)> = keys.iter().map(|k| (*k,*k)).collect();
         expected.sort_by_key(|x| x.0);
         assert_eq!(vals, expected);
@@ -91,7 +81,7 @@ mod tests {
         for k in &unique {
             t.insert(make_int_key(*k), make_row(*k)).unwrap();
         }
-        let vals = collect_cursor_values(&t);
+        let vals = collect_cursor_values_in_order(&t);
         let expected: Vec<(i32,i32)> = unique.iter().map(|k| (*k,*k)).collect();
         assert_eq!(vals.len(), expected.len());
         assert_eq!(vals, expected);
@@ -111,7 +101,7 @@ mod tests {
         for k in to_delete {
             t.delete(make_int_key(*k)).unwrap();
         }
-        let vals = collect_cursor_values(&t);
+        let vals = collect_cursor_values_in_order(&t);
         assert_eq!(vals, remaining);
     }
 
@@ -144,7 +134,7 @@ mod tests {
             rev.push((extract_int_from_key(&k),extract_int_from_row(&r)));
             c.decrease().unwrap();
         }
-        assert_eq!(collect_cursor_values(&t), expected);
+        assert_eq!(collect_cursor_values_in_order(&t), expected);
         assert_eq!(rev, expected.iter().rev().cloned().collect::<Vec<_>>());
     }
 
@@ -179,6 +169,7 @@ mod tests {
             v
         };
         let mut c = BTreeCursor::new(t.clone());
+        c.move_to_start().unwrap();
         let mut idx = 0usize;
         for _ in 0..1000 {
             let dir = if rand::random::<bool>() {1} else {-1};
@@ -207,6 +198,7 @@ mod tests {
         let mut t = make_tree();
         for k in 0..5 { t.insert(make_int_key(k), make_row(k)).unwrap(); }
         let mut c = BTreeCursor::new(t.clone());
+        c.move_to_start().unwrap();
         c.advance().unwrap();
         c.decrease().unwrap();
         assert_eq!(extract_int_from_key(&c.current().unwrap().unwrap().0),0);
