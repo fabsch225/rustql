@@ -350,7 +350,7 @@ impl PagerCore {
         self.cache.clear();
         InternalSuccess
     }
-    
+
     pub fn access_page_read(&mut self, position: &Position) -> Result<PageContainer, Status> {
         let miss = !self.cache.contains_key(&position.page());
 

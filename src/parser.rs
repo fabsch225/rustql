@@ -7,7 +7,7 @@ pub enum ParsedQueryTreeNode {
 #[derive(Debug)]
 pub struct ParsedSetOperation {
     pub operation: ParsedSetOperator,
-    pub operands: Vec<ParsedQueryTreeNode>
+    pub operands: Vec<ParsedQueryTreeNode>,
 }
 
 #[derive(Debug)]
@@ -34,7 +34,7 @@ pub struct ParsedInsertQuery {
 #[derive(Debug)]
 pub struct ParsedSelectQuery {
     pub source: ParsedSource,
-    pub result: Vec<String>,//Vec<(String, String)>, //table alias, field name
+    pub result: Vec<String>, //Vec<(String, String)>, //table alias, field name
 
     //conditions can be expressed like this:
     //SELECT [] FROM table WHERE a = "xx" AND ... AND z > 34
@@ -283,17 +283,16 @@ impl Parser {
                 "TIMES" => Some(ParsedSetOperator::Times),
                 "ALL" => Some(ParsedSetOperator::All),
                 "MINUS" => Some(ParsedSetOperator::Minus),
-                _ => { return Err(format!("Unexpected token: {}", token)); }
+                _ => {
+                    return Err(format!("Unexpected token: {}", token));
+                }
             } {
                 self.expect_token("SELECT")?;
                 let right = self.parse_select()?;
 
                 Ok(ParsedQueryTreeNode::SetOperation(ParsedSetOperation {
                     operation,
-                    operands: vec![
-                        ParsedQueryTreeNode::SingleQuery(select_query),
-                        right,
-                    ],
+                    operands: vec![ParsedQueryTreeNode::SingleQuery(select_query), right],
                 }))
             } else {
                 Err(format!("Unexpected token: {}", token))

@@ -121,55 +121,51 @@ impl Planner {
                     data: (key, row),
                 }))
             }
-            ParsedQuery::Select(select_query) => {
-                match select_query {
-                    ParsedQueryTreeNode::SingleQuery(single_select) => {
-                        let table_name = match single_select.source {
-                            ParsedSource::Table(table_name) => {
-                                table_name
-                            }
-                            _ => {
-                                return Err(QueryResult::msg("subqueries are not supported yet"));
-                            }
-                        };
-                        let table_id = Self::find_table_id(schema, &table_name)?;
-                        let table_schema = &schema.tables[table_id];
-                        let mut result = Vec::new();
-
-                        if single_select.result[0] == "*" {
-                            result.append(&mut table_schema.fields.clone());
-                        } else {
-                            for field in single_select.result.iter() {
-                                let field_schema = table_schema
-                                    .fields
-                                    .iter()
-                                    .find(|f| &f.name == field)
-                                    .ok_or(QueryResult::user_input_wrong(format!(
-                                        "at least one invalid field: {}",
-                                        field
-                                    )))?;
-                                result.push(field_schema.clone());
-                            }
+            ParsedQuery::Select(select_query) => match select_query {
+                ParsedQueryTreeNode::SingleQuery(single_select) => {
+                    let table_name = match single_select.source {
+                        ParsedSource::Table(table_name) => table_name,
+                        _ => {
+                            return Err(QueryResult::msg("subqueries are not supported yet"));
                         }
+                    };
+                    let table_id = Self::find_table_id(schema, &table_name)?;
+                    let table_schema = &schema.tables[table_id];
+                    let mut result = Vec::new();
 
-                        let mut conditions = Vec::new();
-                        let operation = Self::compile_conditions(
-                            single_select.conditions,
-                            &mut conditions,
-                            &table_schema,
-                        )?;
-                        Ok(CompiledQuery::Select(CompiledSelectQuery {
-                            table_id,
-                            operation,
-                            result,
-                            conditions,
-                        }))
-                    },
-                    ParsedQueryTreeNode::SetOperation(set_operation) => {
-                        Err(QueryResult::msg("set operations are not supported yet"))
+                    if single_select.result[0] == "*" {
+                        result.append(&mut table_schema.fields.clone());
+                    } else {
+                        for field in single_select.result.iter() {
+                            let field_schema = table_schema
+                                .fields
+                                .iter()
+                                .find(|f| &f.name == field)
+                                .ok_or(QueryResult::user_input_wrong(format!(
+                                    "at least one invalid field: {}",
+                                    field
+                                )))?;
+                            result.push(field_schema.clone());
+                        }
                     }
+
+                    let mut conditions = Vec::new();
+                    let operation = Self::compile_conditions(
+                        single_select.conditions,
+                        &mut conditions,
+                        &table_schema,
+                    )?;
+                    Ok(CompiledQuery::Select(CompiledSelectQuery {
+                        table_id,
+                        operation,
+                        result,
+                        conditions,
+                    }))
                 }
-            }
+                ParsedQueryTreeNode::SetOperation(set_operation) => {
+                    Err(QueryResult::msg("set operations are not supported yet"))
+                }
+            },
             ParsedQuery::CreateTable(create_table_query) => {
                 let mut fields = Vec::new();
                 for (name, type_str) in create_table_query

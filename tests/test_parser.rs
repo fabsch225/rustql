@@ -75,8 +75,8 @@ mod tests {
                     assert_eq!(second_condition.0, "name");
                     assert_eq!(second_condition.1, "=");
                     assert_eq!(second_condition.2, "John");
-                },
-                _ => panic!("Expected Select query")
+                }
+                _ => panic!("Expected Select query"),
             }
         } else {
             panic!("Expected Select query");
@@ -97,8 +97,8 @@ mod tests {
                     assert_eq!(select_query.result[0], "id");
                     assert_eq!(select_query.result[1], "name");
                     assert!(select_query.conditions.is_empty());
-                },
-                _ => panic!("Expected Select query")
+                }
+                _ => panic!("Expected Select query"),
             }
         } else {
             panic!("Expected Select query");
@@ -147,35 +147,38 @@ mod tests {
                                 match *join.left {
                                     ParsedSource::Table(table) => {
                                         assert_eq!(table, "t");
-                                    },
-                                    _ => panic!("Expected Table source")
+                                    }
+                                    _ => panic!("Expected Table source"),
                                 }
                                 match *join.right {
                                     ParsedSource::Join(join) => {
                                         match *join.left {
                                             ParsedSource::Table(table) => {
                                                 assert_eq!(table, "x");
-                                            },
-                                            _ => panic!("Expected Table source")
+                                            }
+                                            _ => panic!("Expected Table source"),
                                         }
                                         match *join.right {
                                             ParsedSource::Table(table) => {
                                                 assert_eq!(table, "y");
-                                            },
-                                            _ => panic!("Expected Table source")
+                                            }
+                                            _ => panic!("Expected Table source"),
                                         }
-                                        assert_eq!(join.condition, ("x.e".to_string(),"=".to_string(),"y.e".to_string()));
-                                    },
-                                    _ => panic!("Expected Join source")
-                                        }
-                                    },
-                                    _ => panic!("Expected Join source")
+                                        assert_eq!(
+                                            join.condition,
+                                            ("x.e".to_string(), "=".to_string(), "y.e".to_string())
+                                        );
+                                    }
+                                    _ => panic!("Expected Join source"),
                                 }
-                            },
+                            }
+                            _ => panic!("Expected Join source"),
+                        }
+                    }
                     _ => panic!("Expected Single Select query"),
                 };
-            },
-            _ => panic!("Expected Select query")
+            }
+            _ => panic!("Expected Select query"),
         }
     }
 

@@ -3,9 +3,8 @@
 use crate::executor::TableSchema;
 use crate::pager::{
     FieldMeta, Flag, Key, KeyMeta, NodeFlag, PageContainer, PageData, PageFlag, Position, Row,
-    Type, BOOLEAN_SIZE, DATE_SIZE, INTEGER_SIZE, NODE_METADATA_SIZE,
-    NULL_SIZE, PAGE_SIZE, POSITION_SIZE, STRING_SIZE
-    ,
+    Type, BOOLEAN_SIZE, DATE_SIZE, INTEGER_SIZE, NODE_METADATA_SIZE, NULL_SIZE, PAGE_SIZE,
+    POSITION_SIZE, STRING_SIZE,
 };
 use crate::status::Status;
 use crate::status::Status::{

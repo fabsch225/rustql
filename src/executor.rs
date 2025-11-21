@@ -90,7 +90,6 @@ impl QueryResult {
             result: DataFrame::msg(msg.as_str()),
             status: ExceptionQueryMisformed,
         }
-
     }
 
     // TODO rename
@@ -267,7 +266,10 @@ impl Executor {
             .unwrap();
             println!("Table: {}", btree);
         }
-        println!("Checking Integrity... Is {}", self.check_integrity().is_ok());
+        println!(
+            "Checking Integrity... Is {}",
+            self.check_integrity().is_ok()
+        );
         println!(
             "System Table Data: \n {}",
             self.exec("SELECT * FROM rustsql_master".to_string())
@@ -362,7 +364,7 @@ impl Executor {
                 )
                 .map_err(|s| QueryResult::err(s))?;
                 btree
-                    .insert(q.data.0, q.data.1, &self)
+                    .insert(q.data.0, q.data.1)
                     .map_err(|s| QueryResult::err(s))?;
                 Ok(QueryResult::went_fine())
             }
@@ -385,7 +387,7 @@ impl Executor {
                 )
                 .map_err(|s| QueryResult::err(s))?;
                 //this should be periodical, but for now
-                btree.tomb_cleanup();
+                btree.tomb_cleanup().map_err(|s| QueryResult::err(s))?;
                 Ok(QueryResult::went_fine())
             }
         }
