@@ -417,8 +417,8 @@ impl Executor {
         Action: Fn(&mut Key, &mut Row) -> Result<bool, Status> + Copy,
     {
         match op_code {
-            SqlConditionOpCode::SelectFTS => btree.scan(action),
-            /*SqlConditionOpCode::SelectFTS => {
+            //SqlConditionOpCode::SelectFTS => btree.scan(action),
+            SqlConditionOpCode::SelectFTS => {
                 //ToDo dont clone here, change the BTreeCursor
                 let mut cursor = BTreeCursor::new(btree.clone());
                 cursor.move_to_start()?;
@@ -427,7 +427,7 @@ impl Executor {
                     cursor.advance()?;
                 }
                 Ok(())
-            },*/
+            },
             SqlConditionOpCode::SelectIndexRange => {
                 todo!()
             }

@@ -86,8 +86,8 @@ impl BTreeCursor {
         Action: Fn(&mut Key, &mut Row) -> Result<bool, Status> + Copy,
     {
         let (ref node, idx) = &self.stack[self.stack.len() - 1];
-        println!("{:?}", node);
-        println!("{:?}", node.get_keys()?);
+        //println!("{:?}", node);
+        //println!("{:?}", node.get_keys()?);
         let mut key_and_row = node.get_key(*idx)?;
         //TODO -- shouldnt mutate key here. Updating Keys is special: i think delete + reinsert :)
         let modified = exec(&mut key_and_row.0, &mut key_and_row.1)?;
