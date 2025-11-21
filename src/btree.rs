@@ -484,7 +484,7 @@ impl Btree {
     }
 
     fn compare(&self, a: &Key, b: &Key) -> Result<std::cmp::Ordering, Status> {
-        Serializer::compare_with_type(a, b, &self.table_schema.key_type)
+        Serializer::compare_with_type(a, b, &self.table_schema.get_key_type()?)
     }
 
     pub fn insert(&mut self, k: Key, v: Row) -> Result<(), Status> {
@@ -494,9 +494,9 @@ impl Btree {
                     self.table_schema.clone(),
                     self.pager_accessor.clone(),
                     None,
-                    vec![Serializer::empty_key(&self.table_schema)],
+                    vec![Serializer::empty_key(&self.table_schema)?],
                     vec![root.position.clone()],
-                    vec![Serializer::empty_row(&self.table_schema)],
+                    vec![Serializer::empty_row(&self.table_schema)?],
                 )?;
                 self.split_child(&new_root, 0, self.t, true).unwrap();
                 self.insert_non_full(&new_root, k, v, self.t)?;
@@ -526,8 +526,8 @@ impl Btree {
         let mut i = x.get_keys_count()? as isize - 1;
         if x.is_leaf() {
             x.push_key(
-                Serializer::empty_key(&self.table_schema),
-                Serializer::empty_row(&self.table_schema),
+                Serializer::empty_key(&self.table_schema)?,
+                Serializer::empty_row(&self.table_schema)?,
             )?; // Add a dummy value TODO: should this be here? the BTree should call BTreeNode methods !?
             while i >= 0
                 && self.compare(&key, &x.get_key(i as usize)?.0)? == std::cmp::Ordering::Less

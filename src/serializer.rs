@@ -66,7 +66,7 @@ impl Serializer {
         let mut current_pos = NODE_METADATA_SIZE;
 
         for key in keys {
-            if key.len() != table_schema.key_length {
+            if key.len() != table_schema.get_key_length()? {
                 return Err(InternalExceptionInvalidRowLength);
             }
             result[current_pos..current_pos + key.len()].copy_from_slice(&key);
@@ -78,7 +78,7 @@ impl Serializer {
             current_pos += POSITION_SIZE;
         }
         for row in data {
-            if row.len() != table_schema.row_length {
+            if row.len() != table_schema.get_row_length()? {
                 return Err(InternalExceptionInvalidRowLength);
             }
             result[current_pos..current_pos + row.len()].copy_from_slice(&row);
@@ -100,7 +100,7 @@ impl Serializer {
         position: &Position,
         table_schema: &TableSchema,
     ) -> Result<bool, Status> {
-        let location = Self::find_position_offset(page_data, &position, &table_schema);
+        let location = Self::find_position_offset(page_data, &position, &table_schema)?;
         Ok(Self::byte_to_bool_at_position(
             page_data[location + 1],
             NodeFlag::Leaf as u8,
@@ -112,7 +112,7 @@ impl Serializer {
         table_schema: &TableSchema,
         new_value: bool,
     ) -> Result<(), Status> {
-        let location = Self::find_position_offset(page_data, &position, &table_schema);
+        let location = Self::find_position_offset(page_data, &position, &table_schema)?;
         Self::write_byte_at_position(
             &mut page_data[location + 1],
             NodeFlag::Leaf as u8,
@@ -134,10 +134,10 @@ impl Serializer {
         Ok(())
     }
     pub fn is_tomb(key: &Key, schema: &TableSchema) -> Result<bool, Status> {
-        Self::get_flag_at_position(key, KeyMeta::Tomb as u8, &schema.key_type)
+        Self::get_flag_at_position(key, KeyMeta::Tomb as u8, &schema.get_key_type()?)
     }
     pub fn set_is_tomb(key: &mut Key, value: bool, schema: &TableSchema) -> Result<(), Status> {
-        Self::set_flag_at_position(key, KeyMeta::Tomb as u8, value, &schema.key_type)
+        Self::set_flag_at_position(key, KeyMeta::Tomb as u8, value, &schema.get_key_type()?)
     }
     pub fn is_null(field: &Vec<u8>, field_type: &Type) -> Result<bool, Status> {
         Self::get_flag_at_position(field, FieldMeta::Null as u8, field_type)
@@ -150,16 +150,16 @@ impl Serializer {
         page: &PageData,
         position: &Position,
         schema: &TableSchema,
-    ) -> usize {
+    ) -> Result<usize, Status> {
         let mut offset = 0; //[num keys not included]
 
         for _ in 0..position.cell() {
             let num_keys = page[offset] as usize;
             offset += NODE_METADATA_SIZE;
-            offset += num_keys * schema.key_and_row_length + (num_keys + 1) * POSITION_SIZE;
+            offset += num_keys * schema.get_key_and_row_length()? + (num_keys + 1) * POSITION_SIZE;
         }
 
-        offset
+        Ok(offset)
     }
 
     pub fn copy_node(
@@ -169,13 +169,13 @@ impl Serializer {
         page_dest: &mut PageData,
         page_source: &PageData,
     ) -> Result<(), Status> {
-        let offset_dest = Self::find_position_offset(page_dest, position_dest, table_schema);
-        let offset_source = Self::find_position_offset(page_source, position_source, table_schema);
+        let offset_dest = Self::find_position_offset(page_dest, position_dest, table_schema)?;
+        let offset_source = Self::find_position_offset(page_source, position_source, table_schema)?;
         let num_keys = page_source[offset_source] as usize;
-        let key_length = table_schema.key_length;
-        let row_length = table_schema.row_length;
+        let key_length = table_schema.get_key_length()?;
+        let row_length = table_schema.get_row_length()?;
         let full_size = NODE_METADATA_SIZE
-            + num_keys * table_schema.key_and_row_length
+            + num_keys * table_schema.get_key_and_row_length()?
             + (num_keys + 1) * POSITION_SIZE;
         page_dest[offset_dest..offset_dest + full_size]
             .copy_from_slice(&page_source[offset_source..offset_source + full_size]);
@@ -198,47 +198,47 @@ impl Serializer {
             if position_a.cell() > position_b.cell() {
                 position_a.swap(&mut position_b);
             } //position_a is now the smaller one
-            let offset_a = Self::find_position_offset(page_a, &position_a, &table_schema);
+            let offset_a = Self::find_position_offset(page_a, &position_a, &table_schema)?;
             let num_keys_a = page_a[offset_a] as usize;
-            let offset_b = Self::find_position_offset(page_a, &position_b, &table_schema);
+            let offset_b = Self::find_position_offset(page_a, &position_b, &table_schema)?;
             let num_keys_b = page_a[offset_b] as usize;
             let full_size_a = NODE_METADATA_SIZE
-                + num_keys_a * table_schema.key_and_row_length
+                + num_keys_a * table_schema.get_key_and_row_length()?
                 + (num_keys_a + 1) * POSITION_SIZE;
             let full_size_b = NODE_METADATA_SIZE
-                + num_keys_b * table_schema.key_and_row_length
+                + num_keys_b * table_schema.get_key_and_row_length()?
                 + (num_keys_b + 1) * POSITION_SIZE;
 
             let mut temp = vec![0u8; full_size_a];
             temp.copy_from_slice(&page_a[offset_a..offset_a + full_size_a]);
             let shift_for_a = full_size_b as isize - full_size_a as isize;
-            Self::shift_page(page_a, offset_a + full_size_a, shift_for_a);
+            Self::shift_page(page_a, offset_a + full_size_a, shift_for_a)?;
             page_a.copy_within(offset_b..offset_b + full_size_b, offset_a);
             page_a[offset_b..offset_b + full_size_a].copy_from_slice(&temp);
-            Self::shift_page(page_a, offset_b + full_size_a, -shift_for_a);
+            Self::shift_page(page_a, offset_b + full_size_a, -shift_for_a)?;
         } else {
             assert_ne!(position_a.page(), position_b.page());
             let page_b = page_b.unwrap();
-            let offset_a = Self::find_position_offset(page_a, position_a, &table_schema);
+            let offset_a = Self::find_position_offset(page_a, position_a, &table_schema)?;
             let num_keys_a = page_a[offset_a] as usize;
-            let offset_b = Self::find_position_offset(page_b, position_b, &table_schema);
+            let offset_b = Self::find_position_offset(page_b, position_b, &table_schema)?;
             let num_keys_b = page_b[offset_b] as usize;
             let full_size_a = NODE_METADATA_SIZE
-                + num_keys_a * table_schema.key_and_row_length
+                + num_keys_a * table_schema.get_key_and_row_length()?
                 + (num_keys_a + 1) * POSITION_SIZE;
             let full_size_b = NODE_METADATA_SIZE
-                + num_keys_b * table_schema.key_and_row_length
+                + num_keys_b * table_schema.get_key_and_row_length()?
                 + (num_keys_b + 1) * POSITION_SIZE;
 
             let mut temp = vec![0u8; full_size_a];
             temp.copy_from_slice(&page_a[offset_a..offset_a + full_size_a]);
             let shift_for_a = full_size_b as isize - full_size_a as isize;
-            Self::shift_page(page_a, offset_a + full_size_a, shift_for_a);
+            Self::shift_page(page_a, offset_a + full_size_a, shift_for_a)?;
             page_a[offset_a..offset_a + full_size_b]
                 .copy_from_slice(&page_b[offset_b..offset_b + full_size_b]);
 
             let shift_for_b = full_size_a as isize - full_size_b as isize;
-            Self::shift_page(page_b, offset_b + full_size_b, shift_for_b);
+            Self::shift_page(page_b, offset_b + full_size_b, shift_for_b)?;
             page_b[offset_b..offset_b + full_size_a].copy_from_slice(&temp);
         }
         Ok(())
@@ -254,11 +254,11 @@ impl Serializer {
         schema: &TableSchema,
     ) -> Result<usize, Status> {
         assert!(expand_size > 0);
-        let mut offset = Self::find_position_offset(page, position, schema);
+        let mut offset = Self::find_position_offset(page, position, schema)?;
         let num_keys = page[offset] as usize;
         offset += NODE_METADATA_SIZE;
-        let key_length = schema.key_length;
-        let row_length = schema.row_length;
+        let key_length = schema.get_key_length()?;
+        let row_length = schema.get_row_length()?;
         let total_length = key_length + row_length;
         let page_length = page.len();
         offset += num_keys * key_length;
@@ -298,9 +298,9 @@ impl Serializer {
         position: &Position,
         schema: &TableSchema,
     ) -> Result<Key, Status> {
-        let offset = Self::find_position_offset(page, position, schema);
+        let offset = Self::find_position_offset(page, position, schema)?;
         let size: usize = page[offset] as usize;
-        let key_length = schema.key_length;
+        let key_length = schema.get_key_length()?;
 
         if position.cell() >= size {
             return Err(InternalExceptionIndexOutOfRange);
@@ -316,7 +316,7 @@ impl Serializer {
         position: &Position,
         schema: &TableSchema,
     ) -> Result<Position, Status> {
-        let offset = Self::find_position_offset(page, position, schema);
+        let offset = Self::find_position_offset(page, position, schema)?;
         let num_keys = page[offset] as usize;
         let num_children = num_keys + 1;
 
@@ -324,7 +324,7 @@ impl Serializer {
             return Err(InternalExceptionIndexOutOfRange);
         }
 
-        let key_length = schema.key_length;
+        let key_length = schema.get_key_length()?;
         let children_start = offset + NODE_METADATA_SIZE + num_keys * key_length;
         let start_pos = children_start + index * POSITION_SIZE;
         let end_pos = start_pos + POSITION_SIZE;
@@ -343,14 +343,14 @@ impl Serializer {
         key: &Key,
         schema: &TableSchema,
     ) -> Result<(), Status> {
-        let offset = Self::find_position_offset(page, position, schema);
+        let offset = Self::find_position_offset(page, position, schema)?;
         let num_keys = page[offset] as usize;
 
         if index >= num_keys {
             return Err(InternalExceptionIndexOutOfRange);
         }
 
-        let key_length = schema.key_length;
+        let key_length = schema.get_key_length()?;
         let list_start_pos = offset + NODE_METADATA_SIZE;
         let start_pos = list_start_pos + index * key_length;
         let end_pos = start_pos + key_length;
@@ -366,7 +366,7 @@ impl Serializer {
         child: Position,
         schema: &TableSchema,
     ) -> Result<(), Status> {
-        let offset = Self::find_position_offset(page, position, schema);
+        let offset = Self::find_position_offset(page, position, schema)?;
         let num_keys = page[offset] as usize;
         let num_children = num_keys + 1;
 
@@ -374,7 +374,7 @@ impl Serializer {
             return Err(InternalExceptionIndexOutOfRange);
         }
 
-        let key_length = schema.key_length;
+        let key_length = schema.get_key_length()?;
         let children_start = offset + NODE_METADATA_SIZE + num_keys * key_length;
         let start_pos = children_start + index * POSITION_SIZE;
         let end_pos = start_pos + POSITION_SIZE;
@@ -393,9 +393,9 @@ impl Serializer {
         position: &Position,
         schema: &TableSchema,
     ) -> Result<Vec<Key>, Status> {
-        let offset = Self::find_position_offset(page, position, schema);
+        let offset = Self::find_position_offset(page, position, schema)?;
         let num_keys = page[offset] as usize;
-        let key_length = schema.key_length;
+        let key_length = schema.get_key_length()?;
         let list_start_pos = offset + NODE_METADATA_SIZE;
 
         let mut result = Vec::with_capacity(num_keys);
@@ -412,9 +412,9 @@ impl Serializer {
         position: &Position,
         schema: &TableSchema,
     ) -> Result<Vec<Position>, Status> {
-        let offset = Self::find_position_offset(page, position, schema);
+        let offset = Self::find_position_offset(page, position, schema)?;
         let num_keys = page[offset] as usize;
-        let key_length = schema.key_length;
+        let key_length = schema.get_key_length()?;
         let children_start = offset + NODE_METADATA_SIZE + num_keys * key_length;
 
         let mut result = Vec::new();
@@ -440,7 +440,7 @@ impl Serializer {
         position: &Position,
         schema: &TableSchema,
     ) -> Result<(), Status> {
-        let offset = Self::find_position_offset(page, position, schema);
+        let offset = Self::find_position_offset(page, position, schema)?;
         let old_num_keys = page[offset] as usize;
         let new_num_keys = keys.len();
 
@@ -448,7 +448,7 @@ impl Serializer {
             return Self::write_keys_vec_resize(keys, page, position, schema);
         }
 
-        let key_length = schema.key_length;
+        let key_length = schema.get_key_length()?;
         let list_start_pos = offset + NODE_METADATA_SIZE;
 
         for (i, key) in keys.iter().enumerate() {
@@ -480,11 +480,11 @@ impl Serializer {
         position: &Position,
         schema: &TableSchema,
     ) -> Result<(), Status> {
-        let offset = Self::find_position_offset(page, position, schema);
+        let offset = Self::find_position_offset(page, position, schema)?;
         //println!("write_keys_vec_resize before: {:?}", page);
         let orig_num_keys = page[offset] as usize;
         let new_num_keys = keys.len();
-        let key_length = schema.key_length;
+        let key_length = schema.get_key_length()?;
         let keys_start = offset + NODE_METADATA_SIZE;
         let orig_children_start = keys_start + orig_num_keys * key_length;
         let orig_children_end = orig_children_start + (orig_num_keys + 1) * POSITION_SIZE;
@@ -537,9 +537,9 @@ impl Serializer {
         position: &Position,
         schema: &TableSchema,
     ) -> Result<(), Status> {
-        let offset = Self::find_position_offset(page, position, schema);
+        let offset = Self::find_position_offset(page, position, schema)?;
         let num_keys = page[offset] as usize;
-        let key_length = schema.key_length;
+        let key_length = schema.get_key_length()?;
         let children_start = offset + NODE_METADATA_SIZE + num_keys * key_length;
 
         if children.len() > num_keys + 1 {
@@ -582,17 +582,17 @@ impl Serializer {
         position: &Position,
         schema: &TableSchema,
     ) -> Result<Row, Status> {
-        let offset = Self::find_position_offset(page, position, schema);
+        let offset = Self::find_position_offset(page, position, schema)?;
         let num_keys = page[offset] as usize;
 
         if index >= num_keys {
             return Err(InternalExceptionIndexOutOfRange);
         }
 
-        let key_length = schema.key_length;
+        let key_length = schema.get_key_length()?;
         let data_start =
             offset + NODE_METADATA_SIZE + num_keys * key_length + (num_keys + 1) * POSITION_SIZE;
-        let data_length = schema.row_length;
+        let data_length = schema.get_row_length()?;
         let start = data_start + index * data_length;
         let end = start + data_length;
 
@@ -621,17 +621,17 @@ impl Serializer {
         row: Row,
         schema: &TableSchema,
     ) -> Result<(), Status> {
-        let offset = Self::find_position_offset(page, position, schema);
+        let offset = Self::find_position_offset(page, position, schema)?;
         let num_keys = page[offset] as usize;
 
         if index >= num_keys {
             return Err(InternalExceptionIndexOutOfRange);
         }
 
-        let key_length = schema.key_length;
+        let key_length = schema.get_key_length()?;
         let data_start =
             offset + NODE_METADATA_SIZE + num_keys * key_length + (num_keys + 1) * POSITION_SIZE;
-        let data_length = schema.row_length;
+        let data_length = schema.get_row_length()?;
 
         if row.len() != data_length {
             return Err(InternalExceptionInvalidRowLength);
@@ -648,12 +648,12 @@ impl Serializer {
         position: &Position,
         schema: &TableSchema,
     ) -> Result<Vec<Row>, Status> {
-        let offset = Self::find_position_offset(page, position, schema);
+        let offset = Self::find_position_offset(page, position, schema)?;
         let num_keys = page[offset] as usize;
-        let key_length = schema.key_length;
+        let key_length = schema.get_key_length()?;
         let data_start =
             offset + NODE_METADATA_SIZE + num_keys * key_length + (num_keys + 1) * POSITION_SIZE;
-        let data_length = schema.row_length;
+        let data_length = schema.get_row_length()?;
 
         let mut rows = Vec::with_capacity(num_keys);
         for i in 0..num_keys {
@@ -670,7 +670,7 @@ impl Serializer {
         rows: &Vec<Row>,
         schema: &TableSchema,
     ) -> Result<(), Status> {
-        let offset = Self::find_position_offset(page, position, schema);
+        let offset = Self::find_position_offset(page, position, schema)?;
         let num_keys = page[offset] as usize;
 
         assert_eq!(rows.len(), num_keys);
@@ -679,10 +679,10 @@ impl Serializer {
             return Err(InternalExceptionInvalidColCount);
         }
 
-        let key_length = schema.key_length;
+        let key_length = schema.get_key_length()?;
         let data_start =
             offset + NODE_METADATA_SIZE + num_keys * key_length + (num_keys + 1) * POSITION_SIZE;
-        let data_length = schema.row_length;
+        let data_length = schema.get_row_length()?;
 
         for (i, row) in rows.iter().enumerate() {
             if row.len() != data_length {
@@ -780,14 +780,14 @@ impl Serializer {
             .iter()
             .map(|field| Self::get_size_of_type(&field.field_type).unwrap_or(0))
             .sum::<usize>()
-            - schema.key_length;
+            - schema.get_key_length()?;
 
-        if computed_data_length != schema.row_length {
+        if computed_data_length != schema.get_row_length()? {
             return Err(InternalExceptionInvalidSchema);
         }
         if let Some(key_field) = schema.fields.get(0) {
             let key_field_size = Self::get_size_of_type(&key_field.field_type).unwrap_or(0);
-            if key_field_size != schema.key_length {
+            if key_field_size != schema.get_key_length()? {
                 return Err(InternalExceptionInvalidSchema);
             }
         } else {
@@ -800,21 +800,21 @@ impl Serializer {
             .map(|field| Self::get_size_of_type(&field.field_type).unwrap_or(0))
             .sum();
 
-        if computed_row_length != schema.key_and_row_length {
+        if computed_row_length != schema.get_key_and_row_length()? {
             return Err(InternalExceptionInvalidSchema);
         }
-        if schema.fields.len() != schema.col_count {
+        if schema.fields.len() != schema.get_col_count()? {
             return Err(InternalExceptionInvalidSchema);
         }
         Ok(())
     }
 
-    pub fn empty_key(schema: &TableSchema) -> Key {
-        vec![0; schema.key_length]
+    pub fn empty_key(schema: &TableSchema) -> Result<Key, Status> {
+        Ok(vec![0; schema.get_key_length()?])
     }
 
-    pub fn empty_row(schema: &TableSchema) -> Row {
-        vec![0; schema.row_length]
+    pub fn empty_row(schema: &TableSchema) -> Result<Row, Status> {
+        Ok(vec![0; schema.get_row_length()?])
     }
 
     //TODO adjust for NULL-flag
@@ -947,7 +947,7 @@ impl Serializer {
     }
 
     pub fn format_key(key: &Key, schema: &TableSchema) -> Result<String, Status> {
-        Self::format_field(key, &schema.key_type)
+        Self::format_field(key, &schema.get_key_type()?)
     }
 
     pub fn format_field(bytes: &Vec<u8>, field_type: &Type) -> Result<String, Status> {

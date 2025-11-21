@@ -13,11 +13,8 @@ mod tests {
         TableSchema {
             next_position: Position::new(0, 0),
             root: Position::new(0, 0),
-            col_count: 2,
-            key_and_row_length: 260,
-            key_length: 4,
-            key_type: Type::Integer,
-            row_length: 256,
+            has_key: true,
+            key_position: 0,
             fields: vec![
                 Field {
                     name: "Id".to_string(),
@@ -39,12 +36,12 @@ mod tests {
     ) -> BTreeNode {
         let schema = get_schema();
         let keys: Vec<Key> = (0..num_keys)
-            .map(|i| vec![i as u8; schema.key_length])
+            .map(|i| vec![i as u8; schema.get_key_length().unwrap()])
             .collect();
         let children: Vec<Position> = vec![Position::make_empty(); num_keys + 1];
         let rows: Vec<Row> = (0..num_keys)
             .map(|i| {
-                let mut row = vec![0u8; schema.row_length];
+                let mut row = vec![0u8; schema.get_row_length().unwrap()];
                 row[0..9].copy_from_slice(b"Mock Name");
                 row
             })
@@ -66,7 +63,7 @@ mod tests {
     fn test_set_keys_and_rows() {
         let pager_interface = PagerCore::init_from_file("./default.db.bin").unwrap();
         let node = create_and_insert_mock_btree_node(2, pager_interface.clone());
-        let new_keys: Vec<Key> = vec![vec![3u8; 4], vec![4u8; 4]];
+        let new_keys: Vec<Key> = vec![vec![3u8; 5], vec![4u8; 5]];
         let new_data: Vec<Row> = vec![vec![0u8; 256], vec![1u8; 256]];
         PagerFrontend::set_keys(&node, new_keys.clone(), new_data.clone()).unwrap();
         let (keys, data) = PagerFrontend::get_keys(&node).unwrap();
@@ -80,7 +77,7 @@ mod tests {
         let node = create_and_insert_mock_btree_node(2, pager_interface.clone());
 
         let (key, data) = PagerFrontend::get_key(1, &node).unwrap();
-        assert_eq!(key, vec![1u8; 4]);
+        assert_eq!(key, vec![1u8; 5]);
         assert_eq!(data[0..9], b"Mock Name"[..]);
     }
 
@@ -88,7 +85,7 @@ mod tests {
     fn test_set_key_and_row() {
         let pager_interface = PagerCore::init_from_file("./default.db.bin").unwrap();
         let node = create_and_insert_mock_btree_node(2, pager_interface.clone());
-        let new_key: Key = vec![5u8; 4];
+        let new_key: Key = vec![5u8; 5];
         let new_data: Row = vec![2u8; 256];
         PagerFrontend::set_key(1, &node, new_key.clone(), new_data.clone()).unwrap();
         let (key, data) = PagerFrontend::get_key(1, &node).unwrap();
@@ -101,7 +98,7 @@ mod tests {
         let pager_interface = PagerCore::init_from_file("./default.db.bin").unwrap();
         let node = create_and_insert_mock_btree_node(2, pager_interface.clone());
         let key = PagerFrontend::get_key(1, &node).unwrap();
-        assert_eq!(key.0, vec![1u8; 4]);
+        assert_eq!(key.0, vec![1u8; 5]);
     }
 
     #[test]
@@ -116,10 +113,10 @@ mod tests {
     fn test_set_keys() {
         let pager_interface = PagerCore::init_from_file("./default.db.bin").unwrap();
         let node = create_and_insert_mock_btree_node(2, pager_interface.clone());
-        let new_keys = vec![vec![9u8; 4], vec![10u8; 4]];
+        let new_keys = vec![vec![9u8; 5], vec![10u8; 5]];
         let new_rows: Vec<Row> = (0..2)
             .map(|i| {
-                let mut row = vec![0u8; get_schema().row_length];
+                let mut row = vec![0u8; get_schema().get_row_length().unwrap()];
                 row[0..9].copy_from_slice(b"Mock Name");
                 row
             })

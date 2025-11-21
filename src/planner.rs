@@ -180,21 +180,12 @@ impl Planner {
                         field_type,
                     });
                 }
-                let col_count = fields.len();
-                let key_and_row_length = fields
-                    .iter()
-                    .map(|f| Serializer::get_size_of_type(&f.field_type).unwrap())
-                    .sum();
                 //let node_size_on_page = key_and_row_length + NODE_METADATA_SIZE;
                 let schema = TableSchema {
                     root: Position::make_empty(),
                     next_position: Position::make_empty(), //(14 + fields.len() * (ROW_NAME_SIZE + TYPE_SIZE)) as Position, TODO
-                    col_count,
-                    key_and_row_length,
-                    key_length: Serializer::get_size_of_type(&fields[0].field_type).unwrap(),
-                    key_type: fields[0].field_type.clone(),
-                    row_length: key_and_row_length
-                        - Serializer::get_size_of_type(&fields[0].field_type).unwrap(),
+                    has_key: true,
+                    key_position: 0,
                     fields,
                     entry_count: 0,
                     table_type: 0,

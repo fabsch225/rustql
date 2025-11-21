@@ -54,14 +54,64 @@ pub struct TableIndex {
 pub struct TableSchema {
     pub next_position: Position,
     pub root: Position, //if 0 -> no tree
-    pub col_count: usize,
-    pub key_and_row_length: usize,
-    pub key_length: usize, //includes flag
-    pub key_type: Type,
-    pub row_length: usize,
+    //pub col_count: usize,
+    //pub key_and_row_length: usize,
+    //pub key_length: usize, //includes flag
+    //pub key_type: Type,
+    //pub row_length: usize,
+    pub has_key: bool,
+    pub key_position: usize,
     pub fields: Vec<Field>,
     pub table_type: u8,
     pub entry_count: i32,
+}
+
+impl TableSchema {
+    pub fn get_col_count(&self) -> Result<usize, Status> {
+        Ok(self.fields.len() - 1)
+    }
+
+    pub fn get_key_and_row_length(&self) -> Result<usize, Status> {
+        let mut len = 0usize;
+        for field in &self.fields {
+            len += Serializer::get_size_of_type(&field.field_type)?;
+        }
+        Ok(len)
+    }
+
+    pub fn get_key_length(&self) -> Result<usize, Status> {
+        if self.fields.is_empty() {
+            return Err(Status::InternalExceptionCompilerError);
+        }
+        if self.key_position >= self.fields.len() {
+            return Err(Status::InternalExceptionCompilerError);
+        }
+        Serializer::get_size_of_type(&self.fields[self.key_position].field_type)
+    }
+
+    pub fn get_key_type(&self) -> Result<Type, Status> {
+        if self.fields.is_empty() {
+            return Err(Status::InternalExceptionCompilerError);
+        }
+        if self.key_position >= self.fields.len() {
+            return Err(Status::InternalExceptionCompilerError);
+        }
+        Ok(self.fields[self.key_position].field_type.clone())
+    }
+
+    pub fn get_row_length(&self) -> Result<usize, Status> {
+        if self.fields.is_empty() {
+            return Err(Status::InternalExceptionCompilerError);
+        }
+        let mut len = 0usize;
+        for (idx, field) in self.fields.iter().enumerate() {
+            if idx == self.key_position {
+                continue;
+            }
+            len += Serializer::get_size_of_type(&field.field_type)?;
+        }
+        Ok(len)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -608,7 +658,7 @@ impl Executor {
             }
             let mut last_key_mut = last_key.borrow_mut();
             if let Some(ref last_key) = *last_key_mut {
-                if Serializer::compare_with_type(last_key, key, &table_schema.key_type)?
+                if Serializer::compare_with_type(last_key, key, &table_schema.get_key_type()?)?
                     != std::cmp::Ordering::Less
                 {
                     *valid.borrow_mut() = false;

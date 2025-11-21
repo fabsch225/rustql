@@ -68,7 +68,7 @@ impl PagerFrontend {
 
         //create the inital node-flag (set is_leaf to true)
         pager_interface.access_page_write(&node, |d| {
-            d.free_space -= schema.key_and_row_length + NODE_METADATA_SIZE;
+            d.free_space -= schema.get_key_and_row_length()? + NODE_METADATA_SIZE;
             d.data[1] = Serializer::create_node_flag(true);
             Ok(())
         })?;
@@ -154,7 +154,7 @@ impl PagerFrontend {
     ) -> Result<BTreeNode, Status> {
         let create_new_page = parent.is_none()
             || pager_interface.access_page_read(parent.expect("cant be none"), |p| {
-                Ok(p.free_space < schema.key_and_row_length + NODE_METADATA_SIZE)
+                Ok(p.free_space < schema.get_key_and_row_length()? + NODE_METADATA_SIZE)
                 //TODO would it not be key_and_row_and_children_length ??
             })?;
         let mut new_node;
@@ -172,7 +172,7 @@ impl PagerFrontend {
 
             pager_interface.access_page_write(&new_node, |pc| {
                 let offset =
-                    Serializer::find_position_offset(&pc.data, &new_node.position, &schema);
+                    Serializer::find_position_offset(&pc.data, &new_node.position, &schema)?;
                 pc.data[offset + 1] = Serializer::create_node_flag(true);
                 Ok(())
             })?;
@@ -358,7 +358,7 @@ impl PagerFrontend {
 
         parent.pager_accessor.access_page_write(parent, |d| {
             d.free_space = PAGE_SIZE
-                - (parent.table_schema.key_and_row_length + NODE_METADATA_SIZE) * keys.len();
+                - (parent.table_schema.get_key_and_row_length()? + NODE_METADATA_SIZE) * keys.len();
             d.data = page.data;
             Ok(())
         })?;
@@ -463,7 +463,7 @@ impl PagerFrontend {
         )?;
         parent.pager_accessor.access_page_write(parent, |d| {
             d.free_space = PAGE_SIZE
-                - (parent.table_schema.key_and_row_length + NODE_METADATA_SIZE) * keys.len();
+                - (parent.table_schema.get_key_and_row_length()? + NODE_METADATA_SIZE) * keys.len();
             d.data = page.data;
             Ok(())
         })?;
