@@ -376,8 +376,11 @@ impl Executor {
                     schema.clone(),
                 )
                 .map_err(|s| QueryResult::err(s))?;
+                let mut keys_to_delete = RefCell::new(vec![]);
                 let action =
-                    |key: &mut Key, row: &mut Row| Self::exec_delete(key, row, &q, &schema);
+                    |key: &mut Key, row: &mut Row| Self::exec_key_collect(key, row, &mut keys_to_delete.borrow_mut(), &q, &schema);
+                /*let action =
+                    |key: &mut Key, row: &mut Row| Self::exec_delete(key, row, &q, &schema);*/
                 Self::exec_action_with_condition(
                     &btree,
                     &schema,
@@ -386,8 +389,11 @@ impl Executor {
                     &action,
                 )
                 .map_err(|s| QueryResult::err(s))?;
+                for key in keys_to_delete.into_inner() {
+                    btree.delete(key.clone()).map_err(|s| QueryResult::err(s))?;
+                }
                 //this should be periodical, but for now
-                btree.tomb_cleanup().map_err(|s| QueryResult::err(s))?;
+                //btree.tomb_cleanup().map_err(|s| QueryResult::err(s))?;
                 Ok(QueryResult::went_fine())
             }
         }
@@ -408,17 +414,17 @@ impl Executor {
         Action: Fn(&mut Key, &mut Row) -> Result<bool, Status> + Copy,
     {
         match op_code {
-            //SqlConditionOpCode::SelectFTS => btree.scan(action),
-            SqlConditionOpCode::SelectFTS => {
+            SqlConditionOpCode::SelectFTS => btree.scan(action),
+            /*SqlConditionOpCode::SelectFTS => {
                 //ToDo dont clone here, change the BTreeCursor
                 let mut cursor = BTreeCursor::new(btree.clone());
-                cursor.move_to_start();
+                cursor.move_to_start()?;
                 while cursor.is_valid() {
                     cursor.perform_action_on_current(action)?;
                     cursor.advance()?;
                 }
                 Ok(())
-            },
+            },*/
             SqlConditionOpCode::SelectIndexRange => {
                 todo!()
             }
@@ -511,6 +517,7 @@ impl Executor {
         query: &CompiledSelectQuery,
         table_schema: &TableSchema,
     ) -> Result<bool, Status> {
+        //ToDo This Check should be in the BTree / Cursor
         if Serializer::is_tomb(key, &table_schema)? {
             return Ok(false);
         }

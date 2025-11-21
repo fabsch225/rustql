@@ -30,6 +30,9 @@ impl BTreeCursor {
                 break;
             } else {
                 self.stack.push((current.clone(), count));
+                assert_eq!(count, current.get_children()?.len());
+                //let x = current.get_children()?[count].clone();
+                //println!("{:?}", x);
                 current = current.get_child(count)?;
             }
         }
@@ -64,16 +67,16 @@ impl BTreeCursor {
         if node.is_leaf() {
             if *idx < keys_count {
                 let (k, r) = node.get_key(*idx)?;
-                return Ok(Some((k, r)));
+                Ok(Some((k, r)))
             } else {
-                return Ok(None);
+                Ok(None)
             }
         } else {
             if *idx < keys_count {
                 let (k, r) = node.get_key(*idx)?;
-                return Ok(Some((k, r)));
+                Ok(Some((k, r)))
             } else {
-                return Ok(None);
+                Ok(None)
             }
         }
     }
@@ -82,12 +85,14 @@ impl BTreeCursor {
     where
         Action: Fn(&mut Key, &mut Row) -> Result<bool, Status> + Copy,
     {
-        let (ref node, idx) = self.stack[self.stack.len() - 1];
-        let mut key_and_row = node.get_key(idx)?;
+        let (ref node, idx) = &self.stack[self.stack.len() - 1];
+        println!("{:?}", node);
+        println!("{:?}", node.get_keys()?);
+        let mut key_and_row = node.get_key(*idx)?;
         //TODO -- shouldnt mutate key here. Updating Keys is special: i think delete + reinsert :)
         let modified = exec(&mut key_and_row.0, &mut key_and_row.1)?;
         if modified {
-            node.set_key(idx, key_and_row.0, key_and_row.1)?
+            node.set_key(*idx, key_and_row.0, key_and_row.1)?
         }
         Ok(())
     }
@@ -748,7 +753,7 @@ impl Btree {
 
         Ok(())
     }
-
+    
     pub fn tomb_cleanup(&mut self) -> Result<(), Status> {
         if let Some(ref root) = self.root {
             self.cleanup_node(root, self.t)?;
@@ -777,7 +782,7 @@ impl Btree {
         let mut i = 0;
         while i < node.get_keys_count()? {
             let key_and_row = node.get_key(i)?;
-
+            //ToDo This should be a node Method
             if Serializer::is_tomb(&key_and_row.0, &self.table_schema)? {
                 if node.is_leaf() {
                     let ch = node.get_children()?;

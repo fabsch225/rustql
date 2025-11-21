@@ -267,10 +267,14 @@ mod tests {
             ));
         }
 
+        executor.debug_lite(Some("test"));
+
         // Delete some rows
         for i in 1..=5 {
             executor.exec(format!("DELETE FROM test WHERE id = {}", i));
         }
+
+        executor.debug_lite(Some("test"));
 
         // Insert new rows
         for i in 11..=15 {
@@ -279,7 +283,7 @@ mod tests {
                 i, i
             ));
         }
-
+        executor.debug_lite(Some("test"));
         // Verify the remaining rows
         let result = executor.exec("SELECT * FROM test".to_string());
         println!("{}", result);
