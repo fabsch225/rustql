@@ -390,10 +390,13 @@ impl Executor {
                 )
                 .map_err(|s| QueryResult::err(s))?;
                 for key in keys_to_delete.into_inner() {
+                    //println!("Deleting {:?}", key);
+                    //println!("{}", btree);
                     btree.delete(key.clone()).map_err(|s| QueryResult::err(s))?;
                 }
                 //this should be periodical, but for now
                 //btree.tomb_cleanup().map_err(|s| QueryResult::err(s))?;
+                //println!("Deleting Done");
                 Ok(QueryResult::went_fine())
             }
         }

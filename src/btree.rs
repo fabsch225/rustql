@@ -590,11 +590,16 @@ impl Btree {
         let mut new_root = None;
         if let Some(ref root) = self.root {
             new_root = self.delete_from(root, k, self.t)?;
+            if new_root.is_some() {
+                PagerFrontend::switch_nodes(
+                    &self.table_schema,
+                    self.pager_accessor.clone(),
+                    &root,
+                    &new_root.clone().unwrap(),
+                )?;
+            }
         } else {
             return Err(Status::InternalExceptionNoRoot);
-        }
-        if new_root.is_some() {
-            self.root = new_root;
         }
         Ok(())
     }

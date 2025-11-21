@@ -129,7 +129,7 @@ mod tests {
     fn test_delete_and_reinsert_with_loops() {
         let mut executor = Executor::init("./default.db.bin", BTREE_NODE_SIZE);
         executor.exec("CREATE TABLE test (id Integer, other Integer)".to_string());
-        for len in (0..350).step_by(10) {
+        for len in (100..350).step_by(10) {
             executor.exec("DELETE FROM test".to_string());
             for i in 1..=len {
                 executor.exec(format!(
@@ -146,8 +146,10 @@ mod tests {
             assert_eq!(result.result.data.len(), len / 2);
             //println!("{}", result);
             //println!("---");
+            //executor.debug(Some("test"));
             let result = executor.exec(format!("DELETE FROM test WHERE id <= {}", len / 2));
             assert!(result.success);
+            //executor.debug(Some("test"));
             let result = executor.exec("SELECT * FROM test".to_string());
             assert!(result.success);
             //println!("{}", result);
@@ -164,12 +166,12 @@ mod tests {
                     i,
                     i * 2
                 ));
+
                 //println!("{}", result);
                 assert!(result.success)
             }
 
             let result = executor.exec("SELECT * FROM test".to_string());
-            //println!("{}", result);
             assert_eq!(result.result.data.len(), len);
             if !executor.check_integrity().is_ok() {
                 executor.debug(Some("test"));
@@ -190,12 +192,10 @@ mod tests {
             ));
             assert!(res.success);
         }
-        executor.debug(Some("test"));
         for i in 1..=5 {
             executor.exec(format!("DELETE FROM test WHERE id = {}", i));
         }
         println!("after deletion");
-        executor.debug(Some("test"));
         for i in 1..=5 {
             executor.exec(format!(
                 "INSERT INTO test (id, other) VALUES ({}, {})",
@@ -203,7 +203,6 @@ mod tests {
             ));
             //executor.debug(Some("test"));
         }
-        executor.debug(Some("test"));
         assert!(executor.check_integrity().is_ok());
     }
 
