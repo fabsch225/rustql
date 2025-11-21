@@ -1,4 +1,4 @@
-use crate::btree::Btree;
+use crate::btree::{BTreeCursor, Btree};
 use crate::pager::{
     Key, PagerAccessor, PagerCore, Position, Row, TableName, Type, PAGE_SIZE, PAGE_SIZE_WITH_META,
 };
@@ -408,7 +408,17 @@ impl Executor {
         Action: Fn(&mut Key, &mut Row) -> Result<bool, Status> + Copy,
     {
         match op_code {
-            SqlConditionOpCode::SelectFTS => btree.scan(action),
+            //SqlConditionOpCode::SelectFTS => btree.scan(action),
+            SqlConditionOpCode::SelectFTS => {
+                //ToDo dont clone here, change the BTreeCursor
+                let mut cursor = BTreeCursor::new(btree.clone());
+                cursor.move_to_start();
+                while cursor.is_valid() {
+                    cursor.perform_action_on_current(action)?;
+                    cursor.advance()?;
+                }
+                Ok(())
+            },
             SqlConditionOpCode::SelectIndexRange => {
                 todo!()
             }

@@ -60,7 +60,6 @@ impl BTreeCursor {
         }
 
         let (ref node, idx) = &self.stack[self.stack.len() - 1];
-        // make sure idx in-bounds for the node
         let keys_count = node.get_keys_count()?;
         if node.is_leaf() {
             if *idx < keys_count {
@@ -70,8 +69,6 @@ impl BTreeCursor {
                 return Ok(None);
             }
         } else {
-            // For internal nodes, when index points to a key (i < keys_count),
-            // return that key; if idx == keys_count it's not a key but a separator -> invalid current
             if *idx < keys_count {
                 let (k, r) = node.get_key(*idx)?;
                 return Ok(Some((k, r)));
@@ -79,6 +76,20 @@ impl BTreeCursor {
                 return Ok(None);
             }
         }
+    }
+
+    pub fn perform_action_on_current<Action>(&self, exec: &Action) -> Result<(), Status>
+    where
+        Action: Fn(&mut Key, &mut Row) -> Result<bool, Status> + Copy,
+    {
+        let (ref node, idx) = self.stack[self.stack.len() - 1];
+        let mut key_and_row = node.get_key(idx)?;
+        //TODO -- shouldnt mutate key here. Updating Keys is special: i think delete + reinsert :)
+        let modified = exec(&mut key_and_row.0, &mut key_and_row.1)?;
+        if modified {
+            node.set_key(idx, key_and_row.0, key_and_row.1)?
+        }
+        Ok(())
     }
 
     pub fn move_to_start(&mut self) -> Result<(), Status> {

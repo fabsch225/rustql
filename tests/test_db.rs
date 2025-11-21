@@ -282,6 +282,7 @@ mod tests {
 
         // Verify the remaining rows
         let result = executor.exec("SELECT * FROM test".to_string());
+        println!("{}", result);
         assert!(result.success);
         assert_eq!(result.result.data.len(), 10);
 
