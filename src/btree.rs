@@ -442,6 +442,7 @@ impl Btree {
         let mut sibling = x.get_child(i - 1)?;
         let k = x.get_key(i - 1)?;
         child.insert_key(0, k.0, k.1)?;
+        //ToDo why is this so ugly? -> Clean Up
         let mut sibling_children = sibling.get_children()?;
         let mut sibling_keys = sibling.get_keys()?;
         let opt_last_sibling_key = sibling_keys.0.pop();
