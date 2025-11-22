@@ -15,3 +15,8 @@ cargo run
 - INSERT INTO ...
 - SELECT ... WHERE x <= 2 AND ... AND (only AND)
 - DELETE ... WHERE ...
+- JOINS
+- Subqueries
+
+# Architecture
+![Diagram](./architecture.png "Architecture")
