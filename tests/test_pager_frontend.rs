@@ -6,7 +6,7 @@ mod tests {
     use rustql::btree::BTreeNode;
     use rustql::executor::{Field, TableSchema};
     use rustql::pager::{Key, PageData, PagerAccessor, PagerCore, Position, Row, Type};
-    use rustql::pager_frontend::PagerFrontend;
+    use rustql::pager_proxy::PagerProxy;
     use rustql::serializer::Serializer;
 
     fn get_schema() -> TableSchema {
@@ -47,14 +47,14 @@ mod tests {
             })
             .collect();
 
-        PagerFrontend::create_node(schema, pager_interface, None, keys, children, rows).unwrap()
+        PagerProxy::create_node(schema, pager_interface, None, keys, children, rows).unwrap()
     }
 
     #[test]
     fn test_get_keys_and_rows() {
         let pager_interface = PagerCore::init_from_file("./default.db.bin").unwrap();
         let node = create_and_insert_mock_btree_node(2, pager_interface.clone());
-        let (keys, data) = PagerFrontend::get_keys(&node).unwrap();
+        let (keys, data) = PagerProxy::get_keys(&node).unwrap();
         assert_eq!(keys.len(), 2);
         assert_eq!(data.len(), 2);
     }
@@ -65,8 +65,8 @@ mod tests {
         let node = create_and_insert_mock_btree_node(2, pager_interface.clone());
         let new_keys: Vec<Key> = vec![vec![3u8; 5], vec![4u8; 5]];
         let new_data: Vec<Row> = vec![vec![0u8; 256], vec![1u8; 256]];
-        PagerFrontend::set_keys(&node, new_keys.clone(), new_data.clone()).unwrap();
-        let (keys, data) = PagerFrontend::get_keys(&node).unwrap();
+        PagerProxy::set_keys(&node, new_keys.clone(), new_data.clone()).unwrap();
+        let (keys, data) = PagerProxy::get_keys(&node).unwrap();
         assert_eq!(keys, new_keys);
         assert_eq!(data, new_data);
     }
@@ -76,7 +76,7 @@ mod tests {
         let pager_interface = PagerCore::init_from_file("./default.db.bin").unwrap();
         let node = create_and_insert_mock_btree_node(2, pager_interface.clone());
 
-        let (key, data) = PagerFrontend::get_key(1, &node).unwrap();
+        let (key, data) = PagerProxy::get_key(1, &node).unwrap();
         assert_eq!(key, vec![1u8; 5]);
         assert_eq!(data[0..9], b"Mock Name"[..]);
     }
@@ -87,8 +87,8 @@ mod tests {
         let node = create_and_insert_mock_btree_node(2, pager_interface.clone());
         let new_key: Key = vec![5u8; 5];
         let new_data: Row = vec![2u8; 256];
-        PagerFrontend::set_key(1, &node, new_key.clone(), new_data.clone()).unwrap();
-        let (key, data) = PagerFrontend::get_key(1, &node).unwrap();
+        PagerProxy::set_key(1, &node, new_key.clone(), new_data.clone()).unwrap();
+        let (key, data) = PagerProxy::get_key(1, &node).unwrap();
         assert_eq!(key, new_key);
         assert_eq!(data, new_data);
     }
@@ -97,7 +97,7 @@ mod tests {
     fn test_get_key() {
         let pager_interface = PagerCore::init_from_file("./default.db.bin").unwrap();
         let node = create_and_insert_mock_btree_node(2, pager_interface.clone());
-        let key = PagerFrontend::get_key(1, &node).unwrap();
+        let key = PagerProxy::get_key(1, &node).unwrap();
         assert_eq!(key.0, vec![1u8; 5]);
     }
 
@@ -105,7 +105,7 @@ mod tests {
     fn test_get_keys() {
         let pager_interface = PagerCore::init_from_file("./default.db.bin").unwrap();
         let node = create_and_insert_mock_btree_node(2, pager_interface.clone());
-        let keys = PagerFrontend::get_keys(&node).unwrap();
+        let keys = PagerProxy::get_keys(&node).unwrap();
         assert_eq!(keys.0.len(), 2);
     }
 
@@ -121,8 +121,8 @@ mod tests {
                 row
             })
             .collect();
-        PagerFrontend::set_keys(&node, new_keys.clone(), new_rows).unwrap();
-        let keys = PagerFrontend::get_keys(&node).unwrap();
+        PagerProxy::set_keys(&node, new_keys.clone(), new_rows).unwrap();
+        let keys = PagerProxy::get_keys(&node).unwrap();
         assert_eq!(keys.0, new_keys);
     }
 
@@ -130,7 +130,7 @@ mod tests {
     fn test_get_children() {
         let pager_interface = PagerCore::init_from_file("./default.db.bin").unwrap();
         let node = create_and_insert_mock_btree_node(2, pager_interface.clone());
-        let children = PagerFrontend::get_children(&node).unwrap();
+        let children = PagerProxy::get_children(&node).unwrap();
         assert_eq!(children.len(), 0);
     }
 
@@ -142,8 +142,8 @@ mod tests {
             create_and_insert_mock_btree_node(1, pager_interface.clone()),
             create_and_insert_mock_btree_node(1, pager_interface.clone()),
         ];
-        PagerFrontend::set_children(&node, child_nodes.clone()).unwrap();
-        let children = PagerFrontend::get_children(&node).unwrap();
+        PagerProxy::set_children(&node, child_nodes.clone()).unwrap();
+        let children = PagerProxy::get_children(&node).unwrap();
         assert_eq!(children.len(), child_nodes.len());
     }
 
@@ -152,7 +152,7 @@ mod tests {
         let pager_interface = PagerCore::init_from_file("./default.db.bin").unwrap();
         let node = create_and_insert_mock_btree_node(2, pager_interface.clone());
         pager_interface.access_page_read(&node, |data| Ok(()));
-        let is_leaf = PagerFrontend::is_leaf(&node).unwrap();
+        let is_leaf = PagerProxy::is_leaf(&node).unwrap();
         assert!(is_leaf);
     }
 
@@ -160,7 +160,7 @@ mod tests {
     fn test_get_keys_count() {
         let pager_interface = PagerCore::init_from_file("./default.db.bin").unwrap();
         let node = create_and_insert_mock_btree_node(2, pager_interface.clone());
-        let count = PagerFrontend::get_keys_count(&node).unwrap();
+        let count = PagerProxy::get_keys_count(&node).unwrap();
         assert_eq!(count, 2);
     }
 
@@ -168,14 +168,14 @@ mod tests {
     fn test_get_children_count() {
         let pager_interface = PagerCore::init_from_file("./default.db.bin").unwrap();
         let node = create_and_insert_mock_btree_node(2, pager_interface.clone());
-        let count = PagerFrontend::get_children_count(&node).unwrap();
+        let count = PagerProxy::get_children_count(&node).unwrap();
         assert_eq!(count, 0);
         let child_nodes = vec![
             create_and_insert_mock_btree_node(1, pager_interface.clone()),
             create_and_insert_mock_btree_node(1, pager_interface.clone()),
         ];
-        PagerFrontend::set_children(&node, child_nodes.clone()).unwrap();
-        let count = PagerFrontend::get_children_count(&node).unwrap();
+        PagerProxy::set_children(&node, child_nodes.clone()).unwrap();
+        let count = PagerProxy::get_children_count(&node).unwrap();
         assert_eq!(count, 2);
     }
 
@@ -187,8 +187,8 @@ mod tests {
             create_and_insert_mock_btree_node(1, pager_interface.clone()),
             create_and_insert_mock_btree_node(1, pager_interface.clone()),
         ];
-        PagerFrontend::set_children(&node, child_nodes.clone()).unwrap();
-        let child = PagerFrontend::get_child(0, &node).unwrap();
+        PagerProxy::set_children(&node, child_nodes.clone()).unwrap();
+        let child = PagerProxy::get_child(0, &node).unwrap();
         //assert_eq!(child.page_position, 261);
     }
 }

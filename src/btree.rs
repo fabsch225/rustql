@@ -1,6 +1,6 @@
 use crate::executor::{Executor, TableSchema};
 use crate::pager::{Key, PagerAccessor, Position, Row};
-use crate::pager_frontend::PagerFrontend;
+use crate::pager_proxy::PagerProxy;
 use crate::serializer::Serializer;
 use crate::status::Status;
 use std::env::current_exe;
@@ -36,35 +36,35 @@ impl BTreeNode {
     }
     //TODO error handling! i.e. return -> Result<bool, Status>
     pub(crate) fn is_leaf(&self) -> bool {
-        PagerFrontend::is_leaf(&self).unwrap()
+        PagerProxy::is_leaf(&self).unwrap()
     }
 
     pub(crate) fn get_keys_count(&self) -> Result<usize, Status> {
-        PagerFrontend::get_keys_count(&self)
+        PagerProxy::get_keys_count(&self)
     }
 
     fn get_children_count(&self) -> Result<usize, Status> {
-        PagerFrontend::get_children_count(&self)
+        PagerProxy::get_children_count(&self)
     }
 
     fn get_keys_from(&self, index: usize) -> Result<(Vec<Key>, Vec<Row>), Status> {
-        PagerFrontend::get_keys(&self).map(|v| (v.0[index..].to_vec(), v.1[index..].to_vec()))
+        PagerProxy::get_keys(&self).map(|v| (v.0[index..].to_vec(), v.1[index..].to_vec()))
     }
 
     pub(crate) fn get_key(&self, index: usize) -> Result<(Key, Row), Status> {
-        PagerFrontend::get_key(index, &self)
+        PagerProxy::get_key(index, &self)
     }
 
     pub(crate) fn set_key(&self, index: usize, key: Key, row: Row) -> Result<(), Status> {
-        PagerFrontend::set_key(index, self, key, row)
+        PagerProxy::set_key(index, self, key, row)
     }
 
     fn set_keys(&self, keys: Vec<Key>, rows: Vec<Row>) -> Result<(), Status> {
-        PagerFrontend::set_keys(self, keys, rows)
+        PagerProxy::set_keys(self, keys, rows)
     }
 
     pub(crate) fn get_keys(&self) -> Result<(Vec<Key>, Vec<Row>), Status> {
-        PagerFrontend::get_keys(self)
+        PagerProxy::get_keys(self)
     }
 
     /// Removes a Key. The Children are JUST shifted to the left
@@ -73,7 +73,7 @@ impl BTreeNode {
         let mut keys_and_rows = self.get_keys()?.clone();
         let removed_key = keys_and_rows.0.remove(index);
         let removed_row = keys_and_rows.1.remove(index);
-        PagerFrontend::set_keys(self, keys_and_rows.0, keys_and_rows.1)?;
+        PagerProxy::set_keys(self, keys_and_rows.0, keys_and_rows.1)?;
         Ok((removed_key, removed_row))
     }
 
@@ -81,7 +81,7 @@ impl BTreeNode {
         let mut keys_and_rows = self.get_keys()?.clone();
         if let Some(index) = keys_and_rows.0.iter().position(|x| *x == prev_key) {
             keys_and_rows.0[index] = new_key;
-            PagerFrontend::set_keys(self, keys_and_rows.0, keys_and_rows.1)
+            PagerProxy::set_keys(self, keys_and_rows.0, keys_and_rows.1)
         } else {
             Err(Status::InternalExceptionKeyNotFound)
         }
@@ -91,82 +91,82 @@ impl BTreeNode {
         let mut keys_and_rows = self.get_keys()?;
         keys_and_rows.0.push(key);
         keys_and_rows.1.push(row);
-        PagerFrontend::set_keys(self, keys_and_rows.0, keys_and_rows.1)
+        PagerProxy::set_keys(self, keys_and_rows.0, keys_and_rows.1)
     }
 
     fn extend_keys(&self, keys: Vec<Key>, rows: Vec<Row>) -> Result<(), Status> {
         let mut keys_and_rows = self.get_keys()?.clone();
         keys_and_rows.0.extend(keys);
         keys_and_rows.1.extend(rows);
-        PagerFrontend::set_keys(self, keys_and_rows.0, keys_and_rows.1)
+        PagerProxy::set_keys(self, keys_and_rows.0, keys_and_rows.1)
     }
 
     fn truncate_keys(&self, index: usize) -> Result<(), Status> {
         let mut keys_and_rows = self.get_keys()?.clone();
         keys_and_rows.0.truncate(index);
         keys_and_rows.1.truncate(index);
-        PagerFrontend::set_keys(self, keys_and_rows.0, keys_and_rows.1)
+        PagerProxy::set_keys(self, keys_and_rows.0, keys_and_rows.1)
     }
 
     fn set_children(&self, children: Vec<BTreeNode>) -> Result<(), Status> {
-        PagerFrontend::set_children(self, children)
+        PagerProxy::set_children(self, children)
     }
 
     pub fn get_children(&self) -> Result<Vec<BTreeNode>, Status> {
-        PagerFrontend::get_children(self)
+        PagerProxy::get_children(self)
     }
 
     fn get_children_from(&self, index: usize) -> Result<Vec<BTreeNode>, Status> {
-        let children = PagerFrontend::get_children(self)?;
+        let children = PagerProxy::get_children(self)?;
         Ok(children[index..].to_vec())
     }
 
     pub(crate) fn get_child(&self, index: usize) -> Result<BTreeNode, Status> {
-        PagerFrontend::get_child(index, self)
+        PagerProxy::get_child(index, self)
     }
 
     fn set_child(&self, index: usize, child: BTreeNode) -> Result<(), Status> {
-        let mut children = PagerFrontend::get_children(self)?;
+        let mut children = PagerProxy::get_children(self)?;
         children[index] = child;
-        PagerFrontend::set_children(self, children)
+        PagerProxy::set_children(self, children)
     }
 
     fn remove_child(&self, index: usize) -> Result<BTreeNode, Status> {
-        let mut children = PagerFrontend::get_children(self)?;
+        let mut children = PagerProxy::get_children(self)?;
         let removed_child = children.remove(index);
-        PagerFrontend::set_children(self, children)?;
+        PagerProxy::set_children(self, children)?;
         Ok(removed_child)
     }
 
     fn push_child(&self, child: BTreeNode) -> Result<(), Status> {
-        let mut children = PagerFrontend::get_children(self)?;
+        let mut children = PagerProxy::get_children(self)?;
         children.push(child);
-        PagerFrontend::set_children(self, children)
+        PagerProxy::set_children(self, children)
     }
 
     #[deprecated]
     fn truncate_children(&self, index: usize) -> Result<(), Status> {
-        let mut children = PagerFrontend::get_children(self)?;
+        let mut children = PagerProxy::get_children(self)?;
         children.truncate(index);
-        PagerFrontend::set_children(self, children)
+        PagerProxy::set_children(self, children)
     }
 
     fn extend_children(&self, children: Vec<BTreeNode>) -> Result<(), Status> {
-        let mut current_children = PagerFrontend::get_children(self)?;
+        let mut current_children = PagerProxy::get_children(self)?;
         current_children.extend(children);
-        PagerFrontend::set_children(self, current_children)
+        PagerProxy::set_children(self, current_children)
     }
 
     //mind the naming, it is wrong (index_from / index_to)
     fn extend_over_children(&self, index_from: usize, index_to: usize) -> Result<(), Status> {
-        let mut children = PagerFrontend::get_children(self)?;
+        let mut children = PagerProxy::get_children(self)?;
         let new_children = children[index_from].get_children()?.clone();
         children[index_to].extend_children(new_children)
         //PagerFrontend::set_children(self, children)
     }
 
     fn extend_over_keys(&self, index_from: usize, index_to: usize) -> Result<(), Status> {
-        let mut children = PagerFrontend::get_children(self)?;
+        let mut children = PagerProxy::get_children(self)?;
         let new_keys_and_rows = children[index_from].get_keys()?.clone();
         children[index_to].extend_keys(new_keys_and_rows.0, new_keys_and_rows.1)
         //PagerFrontend::set_children(self, children)
@@ -177,13 +177,13 @@ impl BTreeNode {
         //TODO inline the insert function
         keys_and_rows.0.insert(index, key);
         keys_and_rows.1.insert(index, row);
-        PagerFrontend::set_keys(self, keys_and_rows.0, keys_and_rows.1)
+        PagerProxy::set_keys(self, keys_and_rows.0, keys_and_rows.1)
     }
 
     fn insert_child(&self, index: usize, child: BTreeNode) -> Result<(), Status> {
-        let mut children = PagerFrontend::get_children(self)?;
+        let mut children = PagerProxy::get_children(self)?;
         children.insert(index, child);
-        PagerFrontend::set_children(self, children)
+        PagerProxy::set_children(self, children)
     }
 }
 
@@ -201,7 +201,7 @@ impl Btree {
         pager_accessor: PagerAccessor,
         table_schema: TableSchema,
     ) -> Result<Self, Status> {
-        let root = Some(PagerFrontend::get_node(
+        let root = Some(PagerProxy::get_node(
             pager_accessor.clone(),
             table_schema.clone(),
             table_schema.root.clone(),
@@ -221,7 +221,7 @@ impl Btree {
     pub fn insert(&mut self, k: Key, v: Row) -> Result<(), Status> {
         if let Some(ref root) = self.root {
             if root.get_keys_count()? == (2 * self.t) - 1 {
-                let mut new_root = PagerFrontend::create_node(
+                let mut new_root = PagerProxy::create_node(
                     self.table_schema.clone(),
                     self.pager_accessor.clone(),
                     None,
@@ -232,7 +232,7 @@ impl Btree {
                 self.split_child(&new_root, 0, self.t, true).unwrap();
                 self.insert_non_full(&new_root, k, v, self.t)?;
 
-                PagerFrontend::switch_nodes(
+                PagerProxy::switch_nodes(
                     &self.table_schema,
                     self.pager_accessor.clone(),
                     &root,
@@ -290,7 +290,7 @@ impl Btree {
     fn split_child(&self, x: &BTreeNode, i: usize, t: usize, is_root: bool) -> Result<(), Status> {
         let mut y = x.get_child(i)?.clone();
         let keys_and_rows = y.get_keys_from(t)?;
-        let mut z = PagerFrontend::create_node(
+        let mut z = PagerProxy::create_node(
             //TODO: should this be here? the BTree should call BTreeNode methods !?
             self.table_schema.clone(),
             y.pager_accessor.clone(),
@@ -320,7 +320,7 @@ impl Btree {
         if let Some(ref root) = self.root {
             new_root = self.delete_from(root, k, self.t)?;
             if new_root.is_some() {
-                PagerFrontend::switch_nodes(
+                PagerProxy::switch_nodes(
                     &self.table_schema,
                     self.pager_accessor.clone(),
                     &root,

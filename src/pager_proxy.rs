@@ -4,9 +4,9 @@ use crate::pager::{Key, PagerAccessor, Position, Row, NODE_METADATA_SIZE, PAGE_S
 use crate::serializer::Serializer;
 use crate::status::Status;
 
-pub struct PagerFrontend {}
+pub struct PagerProxy {}
 
-impl PagerFrontend {
+impl PagerProxy {
     pub fn clear_table_root(
         table_schema: &TableSchema,
         pager_interface: PagerAccessor,
@@ -117,7 +117,7 @@ impl PagerFrontend {
         let node_2_position = node2.position.clone();
         //we assume neither of the nodes had itself as a child on input
         //mind that now the nodes are switched:
-        let mut node1_children = PagerFrontend::get_children(node1)?;
+        let mut node1_children = PagerProxy::get_children(node1)?;
         let mut change_to_node1_children = false;
         for i in 0..node1_children.len() {
             if node1_children[i].position == node_1_position {
@@ -127,9 +127,9 @@ impl PagerFrontend {
             }
         }
         if change_to_node1_children {
-            PagerFrontend::set_children(node1, node1_children.clone())?;
+            PagerProxy::set_children(node1, node1_children.clone())?;
         }
-        let mut node2_children = PagerFrontend::get_children(node2)?;
+        let mut node2_children = PagerProxy::get_children(node2)?;
         let mut change_to_node2_children = false;
         for i in 0..node2_children.len() {
             if node2_children[i].position == node_2_position {
@@ -139,7 +139,7 @@ impl PagerFrontend {
             }
         }
         if change_to_node2_children {
-            PagerFrontend::set_children(node2, node2_children)?;
+            PagerProxy::set_children(node2, node2_children)?;
         }
 
         Ok(())

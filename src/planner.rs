@@ -43,34 +43,26 @@ pub struct CompiledInsertQuery {
 /// A Node in the Query Execution Plan Tree
 #[derive(Debug)]
 pub enum PlanNode {
-    /// Reading from a specific table (Scan)
     SeqScan {
         table_id: usize,
         table_name: String,
         operation: SqlConditionOpCode,
         conditions: Vec<(SqlStatementComparisonOperator, Vec<u8>)>,
     },
-    /// Filtering rows based on conditions
     Filter {
         source: Box<PlanNode>,
-        /// Conditions aligned with the source schema
         conditions: Vec<(SqlStatementComparisonOperator, Vec<u8>)>,
     },
-    /// Projecting specific columns (SELECT a, b ...)
     Project {
         source: Box<PlanNode>,
-        /// (Table Alias, Field Definition)
         fields: Vec<(String, Field)>,
     },
-    /// Joining two sources
     Join {
         left: Box<PlanNode>,
         right: Box<PlanNode>,
         join_type: JoinType,
-        /// (LeftTable.Col, RightTable.Col)
         conditions: Vec<(String, String)>,
     },
-    /// Set Operations (UNION, INTERSECT, etc.)
     SetOperation {
         op: ParsedSetOperator,
         left: Box<PlanNode>,

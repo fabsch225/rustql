@@ -2,7 +2,7 @@ use crate::btree::{Btree};
 use crate::pager::{
     Key, PagerAccessor, PagerCore, Position, Row, TableName, Type, PAGE_SIZE, PAGE_SIZE_WITH_META,
 };
-use crate::pager_frontend::PagerFrontend;
+use crate::pager_proxy::PagerProxy;
 use crate::parser::{JoinType, ParsedSetOperator, Parser};
 use crate::planner::SqlStatementComparisonOperator::{
     Equal, Greater, GreaterOrEqual, Lesser, LesserOrEqual,
@@ -489,7 +489,7 @@ impl Executor {
                     return Err(QueryResult::err(Status::ExceptionTableAlreadyExists));
                 }
 
-                let root_page = PagerFrontend::create_empty_node_on_new_page(
+                let root_page = PagerProxy::create_empty_node_on_new_page(
                     &q.schema,
                     self.pager_accessor.clone(),
                 )

@@ -3,6 +3,9 @@ use std::io;
 use std::io::Write;
 
 /// # NEXT STEPS
+/// - Refactor DataFrames
+///     - reuse Tableschema Struct, implement comparison methods there
+///     - implement Joins and Setoperations There -> Break up the Executor Struct
 /// - varchar
 /// - implement a lookup table in the schema (instead of search the table_index for a name)
 /// - implement methods for memory saving
@@ -11,11 +14,11 @@ use std::io::Write;
 ///     3. set a max cache size
 ///     4. VACUUM
 /// # Gameplan:
-/// - create an Iterator-Pattern on the BTree, add a cursor, implement this in the executor, preferably before joins etc
+/// - [x] create an Iterator-Pattern on the BTree, add a cursor, implement this in the executor, preferably before joins etc
 /// - autosaving, autocleanup, auto-vacuum (?)
-/// - constraints (unique, nullable)
-/// - create a more ambitious executer -> "real" compilation + virtual-machine -- this would enable subqueries etc
-/// - joins + constraints: primary key, foreign key,
+/// - constraints (unique, nullable), primary key, foreign key,
+/// - [x] create a more ambitious executer -> "real" compilation + virtual-machine -- this would enable subqueries etc
+/// - [x] joins, setops
 /// - indices
 /// - views i.e. virtual tables / virtual b-trees (is this necessary for joins also?)
 ///
@@ -31,7 +34,7 @@ use std::io::Write;
 /// - IO in/out
 /// - Parser -> Planner -> Executor
 /// - B-Tree
-/// - PagerFrontend <-> PagerAccessor <-> PagerCore
+/// - PagerProxy <-> PagerAccessor <-> PagerCore
 /// - File on Disk
 
 const BTREE_NODE_SIZE: usize = 3; //this means a maximum of 5 keys per node
