@@ -6,6 +6,7 @@ use std::io::Write;
 /// - Refactor DataFrames
 ///     - reuse Tableschema Struct, implement comparison methods there
 ///     - implement Joins and Setoperations There -> Break up the Executor Struct
+/// - Fix the Parser -> tests::test_join_subquery_with_union
 /// - varchar
 /// - implement a lookup table in the schema (instead of search the table_index for a name)
 /// - implement methods for memory saving

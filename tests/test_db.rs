@@ -37,13 +37,13 @@ mod tests {
         executor.exec("INSERT INTO test (id, name) VALUES (2, 'Bob')".to_string());
         let result = executor.exec("SELECT * FROM test".to_string());
         assert!(result.success);
-        assert_eq!(result.result.data.len(), 2);
+        assert_eq!(result.result.clone().get_data().unwrap().len(), 2);
         assert_eq!(
-            result.result.data[0][0..10],
+            result.result.clone().get_data().unwrap()[0][0..10],
             vec![0, 0, 0, 0, 1u8, b'A', b'l', b'i', b'c', b'e']
         );
         assert_eq!(
-            result.result.data[1][0..8],
+            result.result.get_data().unwrap()[1][0..8],
             vec![0, 0, 0, 0, 2u8, b'B', b'o', b'b']
         );
     }
@@ -57,9 +57,9 @@ mod tests {
         let result = executor.exec("SELECT * FROM test WHERE id <= 1".to_string());
         assert!(result.success);
         println!("{}", result);
-        assert_eq!(result.result.data.len(), 1);
+        assert_eq!(result.result.clone().get_data().unwrap().len(), 1);
         assert_eq!(
-            result.result.data[0][0..10],
+            result.result.get_data().unwrap()[0][0..10],
             vec![0, 0, 0, 0, 1, b'A', b'l', b'i', b'c', b'e']
         );
     }
@@ -73,8 +73,8 @@ mod tests {
         let delete_result = executor.exec("DELETE FROM test WHERE id = 1".to_string());
         assert!(delete_result.success);
         let result = executor.exec("SELECT name FROM test".to_string());
-        assert_eq!(result.result.data.len(), 1);
-        assert_eq!(result.result.data[0][0..3], vec![b'B', b'o', b'b']);
+        assert_eq!(result.result.clone().get_data().unwrap().len(), 1);
+        assert_eq!(result.result.get_data().unwrap()[0][0..3], vec![b'B', b'o', b'b']);
     }
 
     #[test]
@@ -103,7 +103,7 @@ mod tests {
         let result = executor.exec("SELECT * FROM test".to_string());
         println!("{}", result);
         assert!(result.success);
-        assert_eq!(result.result.data.len(), 0);
+        assert_eq!(result.result.get_data().unwrap().len(), 0);
     }
 
     #[test]
@@ -118,8 +118,8 @@ mod tests {
         }
         let result = executor.exec("SELECT * FROM test".to_string());
         assert!(result.success);
-        assert_eq!(result.result.data.len(), 100);
-        for (i, row) in result.result.data.iter().enumerate() {
+        assert_eq!(result.result.clone().get_data().unwrap().len(), 100);
+        for (i, row) in result.result.get_data().unwrap().iter().enumerate() {
             let expected_name = format!("User{}", i + 1).as_bytes().to_vec();
             assert_eq!(row[0..5], [0u8, 0, 0, 0, (i + 1) as u8]);
             assert_eq!(row[5..10], expected_name[0..5]);
@@ -140,11 +140,11 @@ mod tests {
             }
             let result = executor.exec(format!("SELECT * FROM test WHERE id <= {}", len));
             assert!(result.success);
-            assert_eq!(result.result.data.len(), len);
+            assert_eq!(result.result.get_data().unwrap().len(), len);
             //println!("{}", result);
             let result = executor.exec(format!("SELECT * FROM test WHERE id <= {}", len / 2));
             assert!(result.success);
-            assert_eq!(result.result.data.len(), len / 2);
+            assert_eq!(result.result.get_data().unwrap().len(), len / 2);
             //println!("{}", result);
             //println!("---");
             //executor.debug(Some("test"));
@@ -155,8 +155,8 @@ mod tests {
             assert!(result.success);
             //println!("{}", result);
             //println!("---");
-            assert_eq!(result.result.data.len(), len / 2);
-            for (i, row) in result.result.data.iter().enumerate() {
+            assert_eq!(result.result.clone().get_data().unwrap().len(), len / 2);
+            for (i, row) in result.result.get_data().unwrap().iter().enumerate() {
                 let expected_id = i + len / 2 + 2;
                 //assert_eq!(Serializer::bytes_to_int(row[0..5].try_into().unwrap()), expected_id as i32);
             }
@@ -173,7 +173,7 @@ mod tests {
             }
 
             let result = executor.exec("SELECT * FROM test".to_string());
-            assert_eq!(result.result.data.len(), len);
+            assert_eq!(result.result.get_data().unwrap().len(), len);
             if !executor.check_integrity().is_ok() {
                 executor.debug(Some("test"));
             }
@@ -227,7 +227,7 @@ mod tests {
                 }
                 let result = executor.exec("SELECT * FROM test".to_string());
                 println!("{}", result);
-                assert_eq!(result.result.data.len(), size);
+                assert_eq!(result.result.get_data().unwrap().len(), size);
 
                 let mut count_deleted = 0;
                 for i in 1..=size {
@@ -247,9 +247,9 @@ mod tests {
                 println!(
                     "After deleting multiples of {}: {} entries left",
                     modulo,
-                    result.result.data.len()
+                    result.result.clone().get_data().unwrap().len()
                 );
-                assert_eq!(result.result.data.len(), size - count_deleted);
+                assert_eq!(result.result.get_data().unwrap().len(), size - count_deleted);
                 assert!(executor.check_integrity().is_ok())
             }
         }
@@ -288,10 +288,10 @@ mod tests {
         let result = executor.exec("SELECT * FROM test".to_string());
         println!("{}", result);
         assert!(result.success);
-        assert_eq!(result.result.data.len(), 10);
+        assert_eq!(result.result.clone().get_data().unwrap().len(), 10);
 
         // Check the integrity of the data
-        for (i, row) in result.result.data.iter().enumerate() {
+        for (i, row) in result.result.get_data().unwrap().iter().enumerate() {
             let expected_id = if i < 5 { i + 6 } else { i + 6 };
             let expected_name = if i < 5 {
                 format!("User{}", expected_id)
@@ -337,7 +337,7 @@ mod tests {
         let result = executor.exec("SELECT * FROM test".to_string());
         println!("{}", result);
         assert!(result.success);
-        assert_eq!(result.result.data.len(), 25);
+        assert_eq!(result.result.get_data().unwrap().len(), 25);
         assert!(executor.check_integrity().is_ok());
     }
 
@@ -354,7 +354,7 @@ mod tests {
                 println!("mod {}", modulo);
                 executor.exec("DELETE FROM test".to_string());
                 let result = executor.exec("SELECT * FROM test".to_string());
-                assert_eq!(result.result.data.len(), 0);
+                assert_eq!(result.result.get_data().unwrap().len(), 0);
                 //executor.exec("CREATE TABLE test (id Integer, other Integer)".to_string());
 
                 for i in 1..=size {
@@ -364,7 +364,7 @@ mod tests {
                     ));
                 }
                 let result = executor.exec("SELECT * FROM test".to_string());
-                assert_eq!(result.result.data.len(), size);
+                assert_eq!(result.result.get_data().unwrap().len(), size);
 
                 let mut count_deleted = 0;
                 for i in 1..=size {
@@ -377,7 +377,7 @@ mod tests {
                 }
                 let result = executor.exec("SELECT * FROM test".to_string());
                 //println!("{}", result);
-                assert_eq!(result.result.data.len(), size - count_deleted);
+                assert_eq!(result.result.get_data().unwrap().len(), size - count_deleted);
                 assert!(executor.check_integrity().is_ok());
                 for i in 1..=size {
                     if i % modulo == 0 {
@@ -391,7 +391,7 @@ mod tests {
                 }
 
                 let result = executor.exec("SELECT * FROM test".to_string());
-                assert_eq!(result.result.data.len(), size);
+                assert_eq!(result.result.get_data().unwrap().len(), size);
                 assert!(executor.check_integrity().is_ok());
             }
         }

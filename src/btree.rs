@@ -1,12 +1,10 @@
-use crate::executor::{Executor, TableSchema};
 use crate::pager::{Key, PagerAccessor, Position, Row};
 use crate::pager_proxy::PagerProxy;
 use crate::serializer::Serializer;
 use crate::status::Status;
-use std::env::current_exe;
 use std::fmt::Display;
 use std::fmt::{Debug, Formatter};
-
+use crate::schema::TableSchema;
 
 #[derive(Clone, Debug)]
 pub struct BTreeNode {

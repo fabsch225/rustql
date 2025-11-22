@@ -3,6 +3,7 @@ use std::cmp::PartialEq;
 use std::fmt::{Debug, Formatter};
 
 #[derive(PartialEq, Debug)]
+#[derive(Clone)]
 pub enum Status {
     //status codes to be sent to the end user
     Error,
@@ -42,4 +43,5 @@ pub enum Status {
     InternalExceptionFileOpenFailed,
     ExceptionTableAlreadyExists,
     InternalExceptionDBCreationFailed,
+    DataFrameJoinError,
 }

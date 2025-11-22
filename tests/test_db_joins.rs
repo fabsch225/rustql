@@ -18,7 +18,7 @@ mod tests {
             println!("{}", result);
         }
         assert!(result.success);
-        assert_eq!(result.result.data.len(), expected, "Row count mismatch");
+        assert_eq!(result.result.get_data().unwrap().len(), expected, "Row count mismatch");
     }
 
     #[test]

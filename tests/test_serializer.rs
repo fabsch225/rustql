@@ -2,8 +2,8 @@
 
 #[cfg(test)]
 mod tests {
-    use rustql::executor::{Field, TableSchema};
     use rustql::pager::*;
+    use rustql::schema::{Field, TableSchema};
     use rustql::serializer::Serializer;
 
     fn get_schema() -> TableSchema {
@@ -14,11 +14,11 @@ mod tests {
             key_position: 0,
             fields: vec![
                 Field {
-                    name: "Id".to_string(),
+                    identifier: "Id".to_string(),
                     field_type: Type::Integer,
                 },
                 Field {
-                    name: "Num".to_string(),
+                    identifier: "Num".to_string(),
                     field_type: Type::Integer,
                 },
             ],

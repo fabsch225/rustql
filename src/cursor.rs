@@ -2,7 +2,7 @@ use crate::btree::{BTreeNode, Btree};
 use crate::pager::{Key, Row};
 use crate::status::Status;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct BTreeCursor {
     pub btree: Btree,
     stack: Vec<(BTreeNode, usize)>,

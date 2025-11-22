@@ -2,7 +2,6 @@ mod tests {
     use rustql::{
         btree::{Btree},
         pager::{PagerCore, PagerAccessor, Key, Row, Position, Type},
-        executor::{TableSchema, Field}
     };
     use rand::{seq::SliceRandom, Rng};
     use rustql::cursor::BTreeCursor;

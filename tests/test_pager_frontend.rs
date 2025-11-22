@@ -4,9 +4,9 @@ use rustql::serializer::Serializer;
 #[cfg(test)]
 mod tests {
     use rustql::btree::BTreeNode;
-    use rustql::executor::{Field, TableSchema};
     use rustql::pager::{Key, PageData, PagerAccessor, PagerCore, Position, Row, Type};
     use rustql::pager_proxy::PagerProxy;
+    use rustql::schema::{Field, TableSchema};
     use rustql::serializer::Serializer;
 
     fn get_schema() -> TableSchema {
@@ -17,11 +17,11 @@ mod tests {
             key_position: 0,
             fields: vec![
                 Field {
-                    name: "Id".to_string(),
+                    identifier: "Id".to_string(),
                     field_type: Type::Integer,
                 },
                 Field {
-                    name: "Name".to_string(),
+                    identifier: "Name".to_string(),
                     field_type: Type::String,
                 },
             ],

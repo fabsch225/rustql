@@ -1,5 +1,5 @@
 use crate::btree::BTreeNode;
-use crate::executor::TableSchema;
+use crate::schema::TableSchema;
 use crate::pager::{Key, PagerAccessor, Position, Row, NODE_METADATA_SIZE, PAGE_SIZE};
 use crate::serializer::Serializer;
 use crate::status::Status;

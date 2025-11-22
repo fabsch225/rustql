@@ -1,4 +1,4 @@
-use crate::executor::{Field, QueryResult, Schema, TableSchema};
+use crate::executor::{Field, QueryResult};
 use crate::pager::{Key, Position, Row, TableName, Type};
 use crate::parser::{
     JoinType, ParsedJoinCondition, ParsedQuery, ParsedQueryTreeNode, ParsedSetOperator,
@@ -6,6 +6,7 @@ use crate::parser::{
 };
 use crate::serializer::Serializer;
 use std::str::FromStr;
+use crate::schema::{Schema, TableSchema};
 
 /// ## Responsibilities
 /// - verifying queries (do they match the Query)
@@ -93,6 +94,10 @@ impl PlanNode {
             }
         }
     }
+
+    pub fn get_header(&self, global_schema: &Schema) -> Vec<Field> {
+        self.get_schema(global_schema).iter().map(|t|{t.1.clone()}).collect()
+    }
 }
 
 #[derive(Debug)]
@@ -135,7 +140,7 @@ impl Planner {
                 let table_schema = &schema.tables[table_id];
 
                 if insert_query.fields.len() == 0 {
-                    insert_query.fields = table_schema.fields.clone().into_iter().map(|f|{f.name}).collect();;
+                    insert_query.fields = table_schema.fields.clone().into_iter().map(|f|{f.identifier }).collect();;
                 }
 
                 if insert_query.fields.len() != insert_query.values.len() {
@@ -152,7 +157,7 @@ impl Planner {
                     let user_val_index = insert_query
                         .fields
                         .iter()
-                        .position(|f| f == &schema_field.name);
+                        .position(|f| f == &schema_field.identifier);
 
                     match user_val_index {
                         Some(idx) => {
@@ -163,7 +168,7 @@ impl Planner {
                         None => {
                             return Err(QueryResult::user_input_wrong(format!(
                                 "Missing value for field '{}'",
-                                schema_field.name
+                                schema_field.identifier
                             )));
                         }
                     }
@@ -197,7 +202,7 @@ impl Planner {
                     let field_type = Type::from_str(type_str)
                         .map_err(|_| QueryResult::user_input_wrong("wrong type".to_string()))?;
                     fields.push(Field {
-                        name: name.clone(),
+                        identifier: name.clone(),
                         field_type,
                     });
                 }
@@ -377,8 +382,8 @@ impl Planner {
                     let join_conditions = if cond.join_type == JoinType::Natural {
                         let mut natural_conds = Vec::new();
                         for (_, l_field) in &left_schema {
-                            if right_schema.iter().any(|(_, r_field)| r_field.name == l_field.name) {
-                                natural_conds.push((l_field.name.clone(), l_field.name.clone()));
+                            if right_schema.iter().any(|(_, r_field)| r_field.identifier == l_field.identifier) {
+                                natural_conds.push((l_field.identifier.clone(), l_field.identifier.clone()));
                             }
                         }
                         natural_conds
@@ -393,9 +398,9 @@ impl Planner {
                                     }
                                     let (tbl, col) = (parts[0], parts[1]);
 
-                                    if l_sch.iter().any(|(t, f)| t == tbl && f.name == col) {
+                                    if l_sch.iter().any(|(t, f)| t == tbl && f.identifier == col) {
                                         return Ok(('L', col.to_string()));
-                                    } else if r_sch.iter().any(|(t, f)| t == tbl && f.name == col) {
+                                    } else if r_sch.iter().any(|(t, f)| t == tbl && f.identifier == col) {
                                         return Ok(('R', col.to_string()));
                                     } else {
                                         return Err(QueryResult::user_input_wrong(format!(
@@ -404,8 +409,8 @@ impl Planner {
                                     }
                                 } else {
                                     // Optimized lookup: find first match in Left, then Right
-                                    let in_left = l_sch.iter().any(|(_, f)| f.name == token);
-                                    let in_right = r_sch.iter().any(|(_, f)| f.name == token);
+                                    let in_left = l_sch.iter().any(|(_, f)| f.identifier == token);
+                                    let in_right = r_sch.iter().any(|(_, f)| f.identifier == token);
 
                                     if in_left && in_right {
                                         return Err(QueryResult::user_input_wrong(format!("Ambiguous column '{}' in join condition", token)));
@@ -468,7 +473,7 @@ impl Planner {
             let t_req = parts[0];
             let c_req = parts[1];
 
-            let found = available_fields.iter().find(|(t, f)| t == t_req && f.name == c_req);
+            let found = available_fields.iter().find(|(t, f)| t == t_req && f.identifier == c_req);
             match found {
                 Some(pair) => Ok(pair.clone()),
                 None => Err(QueryResult::user_input_wrong(format!(
@@ -479,7 +484,7 @@ impl Planner {
             // Ambiguous request: column
             let matches: Vec<_> = available_fields
                 .iter()
-                .filter(|(_, f)| f.name == request)
+                .filter(|(_, f)| f.identifier == request)
                 .collect();
 
             if matches.is_empty() {
@@ -512,9 +517,9 @@ impl Planner {
             let user_condition = source.iter().find(|(col_name, _, _)| {
                 // col_name could be "id" or "users.id"
                 if col_name.contains('.') {
-                    col_name == &format!("{}.{}", table_alias, field.name)
+                    col_name == &format!("{}.{}", table_alias, field.identifier)
                 } else {
-                    col_name == &field.name
+                    col_name == &field.identifier
                 }
             });
 

@@ -3,7 +3,6 @@
 
 use crate::btree::BTreeNode;
 use crate::crypto::generate_random_hash;
-use crate::executor::TableSchema;
 use crate::serializer::Serializer;
 use crate::status::Status;
 use crate::status::Status::{

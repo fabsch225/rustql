@@ -10,3 +10,5 @@ pub mod planner;
 pub mod serializer;
 pub mod status;
 pub mod cursor;
+pub mod dataframe;
+pub mod schema;
