@@ -2,7 +2,6 @@ use std::fmt;
 use std::fmt::{Display, Formatter};
 use crate::btree::Btree;
 use crate::cursor::BTreeCursor;
-use crate::executor::{Executor};
 use crate::pager::{Row, Type};
 use crate::planner::{SqlConditionOpCode, SqlStatementComparisonOperator};
 use crate::planner::SqlStatementComparisonOperator::{Equal, Greater, GreaterOrEqual};
@@ -77,10 +76,10 @@ impl DataFrame
         let right_rows = other.clone().get_data()?;
 
         for l_row in left_rows {
-            let l_fields = Executor::split_row_into_fields(&l_row, &left_header)?;
+            let l_fields = Serializer::split_row_into_fields(&l_row, &left_header)?;
 
             for r_row in right_rows.iter() {
-                let r_fields = Executor::split_row_into_fields(&r_row, &right_header)?;
+                let r_fields = Serializer::split_row_into_fields(&r_row, &right_header)?;
 
                 let mut match_found = true;
 
@@ -222,10 +221,9 @@ impl RowSource for BTreeScanSource {
                 continue;
             }
 
-            //ToDo Mind the LAYERS!!!
-            let full_row = Executor::reconstruct_row(&key, &row_body, &self.schema)?;
+            let full_row = Serializer::reconstruct_row(&key, &row_body, &self.schema)?;
 
-            if Executor::check_condition_on_bytes(&full_row, &self.conditions, &self.schema.fields) {
+            if Serializer::check_condition_on_bytes(&full_row, &self.conditions, &self.schema.fields) {
                 self.cursor.advance()?;
                 return Ok(Some(full_row));
             }

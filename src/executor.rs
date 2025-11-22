@@ -327,7 +327,7 @@ impl Executor {
                 let mut filtered_data = Vec::new();
 
                 for row in source_df.get_data()? {
-                    if Self::check_condition_on_bytes(&row, conditions, &plan.get_header(&self.schema)) {
+                    if Serializer::check_condition_on_bytes(&row, conditions, &plan.get_header(&self.schema)) {
                         //ToDo potentially Expensive!
                         filtered_data.push(row.clone());
                     }
@@ -353,7 +353,7 @@ impl Executor {
                 for row in source_df.get_data()? {
                     let mut new_row_bytes = Vec::new();
 
-                    let split_fields = Self::split_row_into_fields(&row, &header)?;
+                    let split_fields = Serializer::split_row_into_fields(&row, &header)?;
 
                     for &idx in &mapping_indices {
                         new_row_bytes.extend_from_slice(&split_fields[idx]);
@@ -400,26 +400,6 @@ impl Executor {
         }
     }
 
-    /// Reconstructs a single continuous byte vector from the BTree's split Key and Row.
-    pub(crate) fn reconstruct_row(key: &Key, row: &Row, schema: &TableSchema) -> Result<Vec<u8>, Status> {
-        let mut full_row = Vec::new();
-        let mut row_cursor = 0;
-
-        for (i, field) in schema.fields.iter().enumerate() {
-            if i == schema.key_position {
-                full_row.extend_from_slice(key);
-            } else {
-                let size = Serializer::get_size_of_type(&field.field_type)?;
-                if row_cursor + size > row.len() {
-                    return Err(Status::InternalExceptionIntegrityCheckFailed);
-                }
-                full_row.extend_from_slice(&row[row_cursor..row_cursor+size]);
-                row_cursor += size;
-            }
-        }
-        Ok(full_row)
-    }
-
     fn get_row_source(&self, plan: &PlanNode) -> Result<DataFrame, Status> {
         match plan {
             PlanNode::SeqScan { table_id, operation, conditions, .. } => {
@@ -436,8 +416,8 @@ impl Executor {
         }
     }
 
-    fn create_scan_source<'a>(
-        &'a self,
+    fn create_scan_source(
+        &self,
         table_id: usize,
         operation: SqlConditionOpCode,
         conditions: Vec<(SqlStatementComparisonOperator, Vec<u8>)>,
@@ -450,63 +430,6 @@ impl Executor {
         )?;
 
         Ok(BTreeScanSource::new(btree, schema, operation, conditions))
-    }
-
-    pub(crate) fn split_row_into_fields<'a>(row: &'a [u8], header: &[Field]) -> Result<Vec<&'a [u8]>, Status> {
-        let mut slices = Vec::new();
-        let mut pos = 0;
-        for field in header {
-            let size = Serializer::get_size_of_type(&field.field_type)?;
-            if pos + size > row.len() {
-                return Err(Status::InternalExceptionIntegrityCheckFailed);
-            }
-            slices.push(&row[pos..pos+size]);
-            pos += size;
-        }
-        Ok(slices)
-    }
-
-    /// Checks conditions against a byte row using the field definitions provided
-    pub(crate) fn check_condition_on_bytes(
-        row: &[u8],
-        conditions: &Vec<(SqlStatementComparisonOperator, Vec<u8>)>,
-        header: &Vec<Field>,
-    ) -> bool {
-        let mut position = 0;
-
-        for (i, field) in header.iter().enumerate() {
-            if i >= conditions.len() { break; }
-
-            let (op, ref target_val) = conditions[i];
-            let size = Serializer::get_size_of_type(&field.field_type).unwrap_or(0);
-
-            if op == SqlStatementComparisonOperator::None {
-                position += size;
-                continue;
-            }
-
-            if position + size > row.len() { return false; } // Should not happen
-            let field_val = &row[position..position + size];
-
-            let cmp_result = Serializer::compare_with_type(
-                &field_val.to_vec(),
-                target_val,
-                &field.field_type
-            ).unwrap_or(std::cmp::Ordering::Equal);
-
-            let matched = match cmp_result {
-                std::cmp::Ordering::Equal => matches!(op, Equal | LesserOrEqual | GreaterOrEqual),
-                std::cmp::Ordering::Less => matches!(op, Lesser | LesserOrEqual),
-                std::cmp::Ordering::Greater => matches!(op, Greater | GreaterOrEqual),
-            };
-
-            if !matched {
-                return false;
-            }
-
-            position += size;
-        }
-        true
     }
 
     pub fn check_integrity(&self) -> Result<(), Status> {

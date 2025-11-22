@@ -1,10 +1,12 @@
 //also look at pager.rs for comments
 
+use crate::executor::Field;
 use crate::pager::{
     FieldMeta, Flag, Key, KeyMeta, NodeFlag, PageContainer, PageData, PageFlag, Position, Row,
     Type, BOOLEAN_SIZE, DATE_SIZE, INTEGER_SIZE, NODE_METADATA_SIZE, NULL_SIZE, PAGE_SIZE,
     POSITION_SIZE, STRING_SIZE,
 };
+use crate::planner::SqlStatementComparisonOperator;
 use crate::schema::TableSchema;
 use crate::status::Status;
 use crate::status::Status::{
@@ -17,10 +19,87 @@ use crate::status::Status::{
 /// - Execute operations on the pages
 /// - Convert RustSQl Datatypes to Strings / Rust-Datatypes
 /// - Manage flags with Getters / Setters
+/// - Compare Rows
 
 pub struct Serializer {}
 
 impl Serializer {
+    pub(crate) fn split_row_into_fields<'a>(row: &'a [u8], header: &[Field]) -> Result<Vec<&'a [u8]>, Status> {
+        let mut slices = Vec::new();
+        let mut pos = 0;
+        for field in header {
+            let size = Serializer::get_size_of_type(&field.field_type)?;
+            if pos + size > row.len() {
+                return Err(Status::InternalExceptionIntegrityCheckFailed);
+            }
+            slices.push(&row[pos..pos+size]);
+            pos += size;
+        }
+        Ok(slices)
+    }
+
+    pub(crate) fn check_condition_on_bytes(
+        row: &[u8],
+        conditions: &Vec<(SqlStatementComparisonOperator, Vec<u8>)>,
+        header: &Vec<Field>,
+    ) -> bool {
+        let mut position = 0;
+
+        for (i, field) in header.iter().enumerate() {
+            if i >= conditions.len() { break; }
+
+            let (op, ref target_val) = conditions[i];
+            let size = Serializer::get_size_of_type(&field.field_type).unwrap_or(0);
+
+            if op == SqlStatementComparisonOperator::None {
+                position += size;
+                continue;
+            }
+
+            if position + size > row.len() { return false; } // Should not happen
+            let field_val = &row[position..position + size];
+
+            let cmp_result = Serializer::compare_with_type(
+                &field_val.to_vec(),
+                target_val,
+                &field.field_type
+            ).unwrap_or(std::cmp::Ordering::Equal);
+
+            let matched = match cmp_result {
+                std::cmp::Ordering::Equal => matches!(op, SqlStatementComparisonOperator::Equal | SqlStatementComparisonOperator::LesserOrEqual | SqlStatementComparisonOperator::GreaterOrEqual),
+                std::cmp::Ordering::Less => matches!(op, SqlStatementComparisonOperator::Lesser | SqlStatementComparisonOperator::LesserOrEqual),
+                std::cmp::Ordering::Greater => matches!(op, SqlStatementComparisonOperator::Greater | SqlStatementComparisonOperator::GreaterOrEqual),
+            };
+
+            if !matched {
+                return false;
+            }
+
+            position += size;
+        }
+        true
+    }
+
+    pub(crate) fn reconstruct_row(key: &Key, row: &Row, schema: &TableSchema) -> Result<Vec<u8>, Status> {
+        let mut full_row = Vec::new();
+        let mut row_cursor = 0;
+
+        for (i, field) in schema.fields.iter().enumerate() {
+            if i == schema.key_position {
+                full_row.extend_from_slice(key);
+            } else {
+                let size = Serializer::get_size_of_type(&field.field_type)?;
+                if row_cursor + size > row.len() {
+                    return Err(Status::InternalExceptionIntegrityCheckFailed);
+                }
+                full_row.extend_from_slice(&row[row_cursor..row_cursor+size]);
+                row_cursor += size;
+            }
+        }
+        Ok(full_row)
+    }
+
+
     pub(crate) fn get_size_of_type(ty: &Type) -> Result<usize, Status> {
         match ty {
             Type::String => Ok(STRING_SIZE),
