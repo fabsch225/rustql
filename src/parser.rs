@@ -1,3 +1,6 @@
+use std::cmp::PartialEq;
+use crate::planner::PlanNode::Join;
+
 #[derive(Debug)]
 pub enum ParsedQueryTreeNode {
     SetOperation(ParsedSetOperation),
@@ -12,16 +15,31 @@ pub struct ParsedSetOperation {
 
 #[derive(Debug)]
 pub enum ParsedSource {
-    Join(Box<ParsedInnerJoin>),
+    Join(Box<ParsedJoin>),
     Table(String),
     SubQuery(Box<ParsedQueryTreeNode>),
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum JoinType {
+    Left,
+    Right,
+    Full,
+    Inner,
+    Natural
+}
+
 #[derive(Debug)]
-pub struct ParsedInnerJoin {
-    pub left: Box<ParsedSource>,
-    pub right: Box<ParsedSource>,
-    pub condition: (String, String, String),
+pub struct ParsedJoinCondition {
+    pub left: String,
+    pub right: String,
+    pub join_type: JoinType,
+}
+
+#[derive(Debug)]
+pub struct ParsedJoin {
+    pub sources: Vec<ParsedSource>,
+    pub conditions: Vec<ParsedJoinCondition> //len(conditions) is len(sources) - 1
 }
 
 #[derive(Debug)]
@@ -167,6 +185,10 @@ impl Parser {
             "CREATE" => self.parse_create_table(),
             "DROP" => self.parse_drop_table(),
             "SELECT" => Ok(ParsedQuery::Select(self.parse_select()?)),
+            "(" => {
+                self.expect_token("SELECT")?;
+                Ok(ParsedQuery::Select(self.parse_select()?))
+            },
             "INSERT" => self.parse_insert(),
             "DELETE" => self.parse_delete(),
             _ => Err(format!("Unknown statement type: {}", statement_type)),
@@ -274,8 +296,11 @@ impl Parser {
             conditions,
         };
 
-        if let Some(token) = self.lexer.next_token() {
-            println!("{}", token);
+        if let Some(token) = self.peek_token() {
+            if token == ")" {
+                self.lexer.next_token();
+                return Ok(ParsedQueryTreeNode::SingleQuery(select_query))
+            }
             if let Some(operation) = match token.to_uppercase().as_str() {
                 "UNION" => Some(ParsedSetOperator::Union),
                 "INTERSECT" => Some(ParsedSetOperator::Intersect),
@@ -284,9 +309,13 @@ impl Parser {
                 "ALL" => Some(ParsedSetOperator::All),
                 "MINUS" => Some(ParsedSetOperator::Minus),
                 _ => {
-                    return Err(format!("Unexpected token: {}", token));
+                    return Ok(ParsedQueryTreeNode::SingleQuery(select_query))
                 }
             } {
+                self.lexer.next_token();
+                if let Some(token) = self.peek_token() && token == "(" {
+                    self.lexer.next_token();
+                }
                 self.expect_token("SELECT")?;
                 let right = self.parse_select()?;
 
@@ -295,7 +324,7 @@ impl Parser {
                     operands: vec![ParsedQueryTreeNode::SingleQuery(select_query), right],
                 }))
             } else {
-                Err(format!("Unexpected token: {}", token))
+                Ok(ParsedQueryTreeNode::SingleQuery(select_query))
             }
         } else {
             Ok(ParsedQueryTreeNode::SingleQuery(select_query))
@@ -312,23 +341,26 @@ impl Parser {
         if table_name == "(" {
             return Err("Expected table name".to_string());
         }
-
-        self.expect_token("(")?;
+        let mut has_explicit_fields = false;
         let mut fields = Vec::new();
-        loop {
-            let field_name = self
-                .lexer
-                .next_token()
-                .ok_or_else(|| "Expected field name".to_string())?;
-            if field_name == ")" {
-                return Err("Expected field name".to_string());
-            }
-            fields.push(field_name);
+        if let Some(token) = self.peek_token() && token == "(" {
+            has_explicit_fields = true;
+            self.expect_token("(")?;
+            loop {
+                let field_name = self
+                    .lexer
+                    .next_token()
+                    .ok_or_else(|| "Expected field name".to_string())?;
+                if field_name == ")" {
+                    return Err("Expected field name".to_string());
+                }
+                fields.push(field_name);
 
-            match self.lexer.next_token().as_deref() {
-                Some(",") => continue,
-                Some(")") => break,
-                _ => return Err("Expected ',' or ')' after field name".to_string()),
+                match self.lexer.next_token().as_deref() {
+                    Some(",") => continue,
+                    Some(")") => break,
+                    _ => return Err("Expected ',' or ')' after field name".to_string()),
+                }
             }
         }
 
@@ -352,7 +384,7 @@ impl Parser {
             }
         }
 
-        if fields.len() != values.len() {
+        if has_explicit_fields && fields.len() != values.len() {
             return Err(format!(
                 "Mismatched fields and values count: {} fields, {} values",
                 fields.len(),
@@ -407,6 +439,7 @@ impl Parser {
 
                     match self.lexer.next_token().as_deref() {
                         Some("AND") => continue,
+                        Some(")") => break,
                         None => break,
                         _ => return Err("Expected 'AND' or end of conditions".to_string()),
                     }
@@ -415,72 +448,72 @@ impl Parser {
         }
         Ok(())
     }
-
     fn parse_source(&mut self) -> Result<ParsedSource, String> {
-        let mut has_brackets = false;
-        let mut token = self
-            .lexer
-            .next_token()
-            .ok_or_else(|| "Expected table name, subquery, or join".to_string())?;
+        let mut sources = vec![self.parse_single_source()?];
+        let mut conditions = vec![];
+        let mut just_join = false;
+        loop {
+            let join_type = match self.peek_token().as_deref() {
+                Some("INNER") => { self.expect_token("INNER")?; Some(JoinType::Inner) }
+                Some("JOIN") => {
+                    self.expect_token("JOIN")?;
+                    just_join = true;
+                    Some(JoinType::Inner)
+                }
+                Some("LEFT")  => { self.expect_token("LEFT")?;  Some(JoinType::Left) }
+                Some("RIGHT") => { self.expect_token("RIGHT")?; Some(JoinType::Right) }
+                Some("FULL")  => { self.expect_token("FULL")?; Some(JoinType::Full) }
+                Some("NATURAL")  => { self.expect_token("NATURAL")?; Some(JoinType::Natural) }
+                _ => break,
+            };
+            if !just_join {
+            self.expect_token("JOIN")?;
+            }
+            let right_source = self.parse_single_source()?;
+            sources.push(right_source);
+            if join_type.clone().unwrap() != JoinType::Natural {
+                self.expect_token("ON")?;
+                let left = self.lexer.next_token().ok_or("Expected left field")?;
+                self.expect_token("=")?;
+                let right = self.lexer.next_token().ok_or("Expected right field")?;
 
-        if token == "(" {
-            has_brackets = true;
-            token = self
-                .lexer
-                .next_token()
-                .ok_or_else(|| "Expected content after opening bracket".to_string())?;
+                conditions.push(ParsedJoinCondition {
+                    left,
+                    right,
+                    join_type: join_type.unwrap_or(JoinType::Inner),
+                });
+            } else {
+                conditions.push(ParsedJoinCondition {
+                    left: "".to_string(),
+                    right: "".to_string(),
+                    join_type: JoinType::Natural,
+                });
+            }
         }
 
-        let source = match token.to_uppercase().as_str() {
-            "SELECT" => {
-                if !has_brackets {
-                    return Err("Subquery must be enclosed in brackets".to_string());
-                }
-                let subquery = self.parse_select()?;
-                self.expect_token(")")?;
-                ParsedSource::SubQuery(Box::new(subquery))
-            }
-            _ => {
-                let source = ParsedSource::Table(token);
-                if self.peek_token() == Some("INNER".parse().unwrap()) {
-                    self.expect_token("INNER")?;
-                    self.expect_token("JOIN")?;
-                    let left = source;
-                    let right = self.parse_source()?;
-                    self.expect_token("ON")?;
-                    let left_field = self
-                        .lexer
-                        .next_token()
-                        .ok_or_else(|| "Expected left field in join condition".to_string())?;
-                    let operator = self
-                        .lexer
-                        .next_token()
-                        .ok_or_else(|| "Expected operator in join condition".to_string())?;
-                    let right_field = self
-                        .lexer
-                        .next_token()
-                        .ok_or_else(|| "Expected right field in join condition".to_string())?;
-
-                    if has_brackets {
-                        self.expect_token(")")?;
-                    }
-
-                    ParsedSource::Join(Box::new(ParsedInnerJoin {
-                        left: Box::new(left),
-                        right: Box::new(right),
-                        condition: (left_field, operator, right_field),
-                    }))
-                } else {
-                    if has_brackets {
-                        self.expect_token(")")?;
-                    }
-                    source
-                }
-            }
-        };
-
-        Ok(source)
+        if sources.len() == 1 {
+            Ok(sources.remove(0))
+        } else {
+            Ok(ParsedSource::Join(Box::new(ParsedJoin {
+                sources,
+                conditions,
+            })))
+        }
     }
+
+    fn parse_single_source(&mut self) -> Result<ParsedSource, String> {
+        let token = self.lexer.next_token().ok_or("Expected source")?;
+
+        if token == "(" {
+            self.expect_token("SELECT")?;
+            let sub = self.parse_select()?;
+            //parse_select consumes the ")"
+            return Ok(ParsedSource::SubQuery(Box::new(sub)));
+        }
+
+        Ok(ParsedSource::Table(token))
+    }
+
     fn expect_token(&mut self, expected: &str) -> Result<(), String> {
         let token = self
             .lexer

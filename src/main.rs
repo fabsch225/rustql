@@ -72,3 +72,6 @@ fn main() {
         }
     }
 }
+
+//SELECT * FROM Namen INNER JOIN Orders ON Namen.Id = Orders.Id
+//SELECT * FROM Namen INNER JOIN (SELECT Dest, Id FROM Orders) ON Namen.Id = Orders.Id

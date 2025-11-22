@@ -7,275 +7,6 @@ use std::env::current_exe;
 use std::fmt::Display;
 use std::fmt::{Debug, Formatter};
 
-#[derive(Debug)]
-pub struct BTreeCursor {
-    pub btree: Btree,
-    stack: Vec<(BTreeNode, usize)>,
-}
-
-impl BTreeCursor {
-    pub fn new(btree: Btree) -> Self {
-        BTreeCursor {
-            btree,
-            stack: vec![],
-        }
-    }
-
-    fn push_rightmost(&mut self, node: &BTreeNode) -> Result<(), Status> {
-        let mut current = node.clone();
-        loop {
-            let count = current.get_keys_count()?;
-            if current.is_leaf() {
-                self.stack.push((current.clone(), count - 1));
-                break;
-            } else {
-                self.stack.push((current.clone(), count));
-                //let x = current.get_children()?[count].clone();
-                //println!("{:?}", x);
-                current = current.get_child(count)?;
-            }
-        }
-        Ok(())
-    }
-    fn push_leftmost(&mut self, node: &BTreeNode) -> Result<(), Status> {
-        let mut current = node.clone();
-        loop {
-            // Start at index 0 for every node entered
-            self.stack.push((current.clone(), 0));
-            if current.is_leaf() {
-                break;
-            } else {
-                current = current.get_child(0)?;
-            }
-        }
-        Ok(())
-    }
-
-    pub fn is_valid(&self) -> bool {
-        !self.stack.is_empty()
-    }
-
-    /// Returns the current (Key, Row) if valid, otherwise Ok(None).
-    pub fn current(&self) -> Result<Option<(Key, Row)>, Status> {
-        if !self.is_valid() {
-            return Ok(None);
-        }
-
-        let (ref node, idx) = &self.stack[self.stack.len() - 1];
-        let keys_count = node.get_keys_count()?;
-        if node.is_leaf() {
-            if *idx < keys_count {
-                let (k, r) = node.get_key(*idx)?;
-                Ok(Some((k, r)))
-            } else {
-                Ok(None)
-            }
-        } else {
-            if *idx < keys_count {
-                let (k, r) = node.get_key(*idx)?;
-                Ok(Some((k, r)))
-            } else {
-                Ok(None)
-            }
-        }
-    }
-
-    pub fn perform_action_on_current<Action>(&self, exec: &Action) -> Result<(), Status>
-    where
-        Action: Fn(&mut Key, &mut Row) -> Result<bool, Status> + Copy,
-    {
-        let (ref node, idx) = &self.stack[self.stack.len() - 1];
-        //println!("{:?}", node);
-        //println!("{:?}", node.get_keys()?);
-        let mut key_and_row = node.get_key(*idx)?;
-        //TODO -- shouldnt mutate key here. Updating Keys is special: i think delete + reinsert :)
-        let modified = exec(&mut key_and_row.0, &mut key_and_row.1)?;
-        if modified {
-            node.set_key(*idx, key_and_row.0, key_and_row.1)?
-        }
-        Ok(())
-    }
-
-    pub fn move_to_start(&mut self) -> Result<(), Status> {
-        self.stack.clear();
-        if let Some(root) = self.btree.root.clone() {
-            if root.get_keys_count()? > 0 {
-                self.push_leftmost(&root)?;
-            }
-        }
-        Ok(())
-    }
-
-    pub fn move_to_end(&mut self) -> Result<(), Status> {
-        self.stack.clear();
-        if let Some(root) = self.btree.root.clone() {
-            if root.get_keys_count()? > 0 {
-                self.push_rightmost(&root)?;
-            }
-        }
-        Ok(())
-    }
-
-    pub fn advance(&mut self) -> Result<(), Status> {
-        if self.stack.is_empty() {
-            return Ok(());
-        }
-        {
-            let last = self.stack.last_mut().unwrap();
-            let node = &last.0;
-            let idx = last.1;
-
-            if node.is_leaf() {
-                last.1 = idx + 1;
-            } else {
-                last.1 = idx + 1;
-                let right_child = node.get_child(idx + 1)?;
-                self.push_leftmost(&right_child)?;
-                return Ok(());
-            }
-        }
-        while let Some((node, idx)) = self.stack.last() {
-            let keys_count = node.get_keys_count()?;
-            if *idx < keys_count {
-                return Ok(());
-            } else {
-                self.stack.pop();
-            }
-        }
-        Ok(())
-    }
-
-    pub fn decrease(&mut self) -> Result<(), Status> {
-        if self.stack.is_empty() {
-            return Ok(());
-        }
-
-        {
-            let last = self.stack.last_mut().unwrap();
-            let node = &last.0;
-            let idx = last.1;
-
-            if node.is_leaf() {
-                if idx == 0 {
-                    last.1 = usize::MAX;
-                } else {
-                    last.1 = idx - 1;
-                }
-            } else {
-                let left_child = node.get_child(idx)?;
-                self.push_rightmost(&left_child)?;
-                return Ok(());
-            }
-        }
-
-        loop {
-            if self.stack.is_empty() {
-                return Ok(());
-            }
-            let (node, idx) = self.stack.last().unwrap();
-            if *idx != usize::MAX {
-                return Ok(());
-            } else {
-                self.stack.pop();
-                if let Some(parent) = self.stack.last_mut() {
-                    if parent.1 == 0 {
-                        parent.1 = usize::MAX;
-                    } else {
-                        parent.1 = parent.1 - 1;
-                    }
-                } else {
-                    return Ok(());
-                }
-            }
-        }
-    }
-
-    pub fn go_to(&mut self, k: &Key) -> Result<(), Status> {
-        self.stack.clear();
-
-        let root = match &self.btree.root {
-            Some(r) => r,
-            None => return Ok(()),
-        };
-
-        if root.get_keys_count()? == 0 {
-            return Ok(());
-        }
-
-        let mut current = root.clone();
-
-        loop {
-            let (keys, _) = current.get_keys()?;
-            let mut i = 0usize;
-            while i < keys.len() && &keys[i] < k {
-                i += 1;
-            }
-
-            if i < keys.len() && &keys[i] == k {
-                self.stack.push((current, i));
-                return Ok(());
-            }
-
-            if current.is_leaf() {
-                self.stack.clear();
-                return Ok(());
-            }
-
-            self.stack.push((current.clone(), i));
-            current = current.get_child(i)?;
-        }
-    }
-
-    pub fn go_to_less_than_equal(&mut self, k: &Key) -> Result<(), Status> {
-        self.stack.clear();
-
-        let root = match &self.btree.root {
-            Some(r) => r,
-            None => return Ok(()),
-        };
-
-        if root.get_keys_count()? == 0 {
-            return Ok(());
-        }
-
-        let mut current = root.clone();
-        let mut found = false;
-
-        loop {
-            let (keys, _) = current.get_keys()?;
-            let mut i = 0usize;
-            while i < keys.len() && &keys[i] < k {
-                i += 1;
-            }
-
-            self.stack.push((current.clone(), i));
-
-            if i < keys.len() && &keys[i] == k {
-                found = true;
-                break;
-            }
-            if current.is_leaf() {
-                break;
-            }
-
-            current = current.get_child(i)?;
-        }
-
-        if !found {
-            if let Some((_, i)) = self.stack.last_mut() {
-                if *i > 0 {
-                    *i = *i - 1;
-                } else {
-                    self.stack.clear();
-                }
-            } else {
-               self.stack.clear();
-            }
-        }
-
-        Ok(())
-    }
-}
 
 #[derive(Clone, Debug)]
 pub struct BTreeNode {
@@ -304,11 +35,11 @@ impl BTreeNode {
         }
     }
     //TODO error handling! i.e. return -> Result<bool, Status>
-    fn is_leaf(&self) -> bool {
+    pub(crate) fn is_leaf(&self) -> bool {
         PagerFrontend::is_leaf(&self).unwrap()
     }
 
-    fn get_keys_count(&self) -> Result<usize, Status> {
+    pub(crate) fn get_keys_count(&self) -> Result<usize, Status> {
         PagerFrontend::get_keys_count(&self)
     }
 
@@ -320,11 +51,11 @@ impl BTreeNode {
         PagerFrontend::get_keys(&self).map(|v| (v.0[index..].to_vec(), v.1[index..].to_vec()))
     }
 
-    fn get_key(&self, index: usize) -> Result<(Key, Row), Status> {
+    pub(crate) fn get_key(&self, index: usize) -> Result<(Key, Row), Status> {
         PagerFrontend::get_key(index, &self)
     }
 
-    fn set_key(&self, index: usize, key: Key, row: Row) -> Result<(), Status> {
+    pub(crate) fn set_key(&self, index: usize, key: Key, row: Row) -> Result<(), Status> {
         PagerFrontend::set_key(index, self, key, row)
     }
 
@@ -332,7 +63,7 @@ impl BTreeNode {
         PagerFrontend::set_keys(self, keys, rows)
     }
 
-    fn get_keys(&self) -> Result<(Vec<Key>, Vec<Row>), Status> {
+    pub(crate) fn get_keys(&self) -> Result<(Vec<Key>, Vec<Row>), Status> {
         PagerFrontend::get_keys(self)
     }
 
@@ -390,7 +121,7 @@ impl BTreeNode {
         Ok(children[index..].to_vec())
     }
 
-    fn get_child(&self, index: usize) -> Result<BTreeNode, Status> {
+    pub(crate) fn get_child(&self, index: usize) -> Result<BTreeNode, Status> {
         PagerFrontend::get_child(index, self)
     }
 
@@ -754,212 +485,6 @@ impl Btree {
             child.push_child(sc)?;
         }
 
-        Ok(())
-    }
-    
-    pub fn tomb_cleanup(&mut self) -> Result<(), Status> {
-        if let Some(ref root) = self.root {
-            self.cleanup_node(root, self.t)?;
-
-            if root.get_keys_count()? == 0 {
-                if !root.is_leaf() {
-                    let new_root = root.get_child(0)?.clone();
-                    PagerFrontend::set_table_root(
-                        &self.table_schema,
-                        self.pager_accessor.clone(),
-                        &new_root,
-                    )?;
-                    self.root = Some(new_root);
-                } else {
-                    PagerFrontend::clear_table_root(
-                        &self.table_schema,
-                        self.pager_accessor.clone(),
-                    )?;
-                }
-            }
-        }
-        Ok(())
-    }
-
-    fn cleanup_node(&self, node: &BTreeNode, t: usize) -> Result<(), Status> {
-        let mut i = 0;
-        while i < node.get_keys_count()? {
-            let key_and_row = node.get_key(i)?;
-            //ToDo This should be a node Method
-            if Serializer::is_tomb(&key_and_row.0, &self.table_schema)? {
-                if node.is_leaf() {
-                    let ch = node.get_children()?;
-                    node.remove_key(i)?;
-                    node.set_children(ch)?
-                } else {
-                    self.cleanup_internal_node(node, i, t)?;
-                }
-            } else {
-                i += 1;
-            }
-        }
-        if !node.is_leaf() {
-            for j in 0..node.get_children_count()? {
-                self.cleanup_node(&node.get_child(j)?, t)?;
-            }
-        }
-
-        Ok(())
-    }
-
-    fn cleanup_internal_node(&self, node: &BTreeNode, i: usize, t: usize) -> Result<(), Status> {
-        let left_child = node.get_child(i)?.clone();
-        let right_child = node.get_child(i + 1)?.clone();
-        if left_child.get_keys_count()? >= t {
-            let pred_key_and_row = self.get_predecessor(&left_child)?;
-            node.set_key(i, pred_key_and_row.0.clone(), pred_key_and_row.1)?;
-            self.delete_from(&left_child, pred_key_and_row.0, t)?;
-        } else if right_child.get_keys_count()? >= t {
-            let succ_key_and_row = self.get_successor(&right_child)?;
-            node.set_key(i, succ_key_and_row.0.clone(), succ_key_and_row.1)?;
-            self.delete_from(&right_child, succ_key_and_row.0, t)?;
-        } else {
-            self.merge(node, i, t)?;
-        }
-        Ok(())
-    }
-
-    pub fn scan<Action>(&self, exec: &Action) -> Result<(), Status>
-    where
-        Action: Fn(&mut Key, &mut Row) -> Result<bool, Status> + Copy,
-    {
-        if let Some(ref root) = self.root {
-            return self.in_order_traversal(root, exec);
-        }
-        Ok(())
-    }
-
-    fn in_order_traversal<Action>(&self, node: &BTreeNode, exec: &Action) -> Result<(), Status>
-    where
-        Action: Fn(&mut Key, &mut Row) -> Result<bool, Status> + Copy,
-    {
-        let key_count = node.get_keys_count()?;
-        for i in 0..key_count {
-            if !node.is_leaf() {
-                let child = node.get_child(i)?;
-                self.in_order_traversal(&child, exec)?;
-            }
-            let mut key_and_row = node.get_key(i)?;
-            //TODO -- shouldnt mutate key here. Updating Keys is special: i think delete + reinsert :)
-            let modified = exec(&mut key_and_row.0, &mut key_and_row.1)?;
-            if modified {
-                node.set_key(i, key_and_row.0, key_and_row.1)?
-            }
-        }
-        if !node.is_leaf() {
-            let child = node.get_child(key_count)?;
-            self.in_order_traversal(&child, exec)?;
-        }
-        Ok(())
-    }
-
-    pub fn find<Action>(&self, key: Key, exec: &Action) -> Result<(), Status>
-    where
-        Action: Fn(&mut Key, &mut Row) -> Result<bool, Status> + Copy,
-    {
-        if let Some(ref root) = self.root {
-            self.find_in_node(root, key, exec)?
-        }
-        Ok(())
-    }
-
-    fn find_in_node<Action>(&self, node: &BTreeNode, key: Key, exec: &Action) -> Result<(), Status>
-    where
-        Action: Fn(&mut Key, &mut Row) -> Result<bool, Status> + Copy,
-    {
-        let mut i = 0;
-        let key_count = node.get_keys_count()?;
-
-        while i < key_count
-            && self.compare(&key, &node.get_key(i)?.0)? == std::cmp::Ordering::Greater
-        {
-            i += 1;
-        }
-
-        if i < key_count && self.compare(&key, &node.get_key(i)?.0)? == std::cmp::Ordering::Equal {
-            let mut key_and_row = node.get_key(i)?;
-            let modified = exec(&mut key_and_row.0, &mut key_and_row.1)?;
-            if modified {
-                node.set_key(i, key_and_row.0, key_and_row.1)?
-            }
-            return Ok(());
-        }
-
-        if node.is_leaf() {
-            return Err(Status::InternalExceptionKeyNotFound);
-        }
-
-        self.find_in_node(&node.get_child(i)?, key, exec)
-    }
-
-    pub fn find_range<Action>(
-        &self,
-        a: Key,
-        b: Key,
-        include_a: bool,
-        include_b: bool,
-        exec: &Action,
-    ) -> Result<(), Status>
-    where
-        Action: Fn(&mut Key, &mut Row) -> Result<bool, Status> + Copy,
-    {
-        if let Some(ref root) = self.root {
-            self.find_range_in_node(root, a, b, include_a, include_b, exec)?;
-        }
-        Ok(())
-    }
-
-    fn find_range_in_node<Action>(
-        &self,
-        node: &BTreeNode,
-        a: Key,
-        b: Key,
-        include_a: bool,
-        include_b: bool,
-        exec: &Action,
-    ) -> Result<(), Status>
-    where
-        Action: Fn(&mut Key, &mut Row) -> Result<bool, Status> + Copy,
-    {
-        let key_count = node.get_keys_count()?;
-        for i in 0..key_count {
-            let key_and_row = node.get_key(i)?;
-            if self.compare(&key_and_row.0, &a)? == std::cmp::Ordering::Less {
-                continue;
-            }
-            if !node.is_leaf() {
-                let child = node.get_child(i)?;
-                self.find_range_in_node(&child, a.clone(), b.clone(), include_a, include_b, exec)?;
-            }
-            let in_lower_bound = if include_a {
-                self.compare(&key_and_row.0, &a)? != std::cmp::Ordering::Less
-            } else {
-                self.compare(&key_and_row.0, &a)? == std::cmp::Ordering::Greater
-            };
-            let in_upper_bound = if include_b {
-                self.compare(&key_and_row.0, &b)? != std::cmp::Ordering::Greater
-            } else {
-                self.compare(&key_and_row.0, &b)? == std::cmp::Ordering::Less
-            };
-            if in_lower_bound && in_upper_bound {
-                let mut key_and_row = node.get_key(i)?;
-                let modified = exec(&mut key_and_row.0, &mut key_and_row.1)?;
-                if modified {
-                    node.set_key(i, key_and_row.0, key_and_row.1)?
-                }
-            } else if self.compare(&key_and_row.0, &b)? == std::cmp::Ordering::Greater {
-                break;
-            }
-        }
-        if !node.is_leaf() {
-            let child = node.get_child(key_count)?;
-            self.find_range_in_node(&child, a, b, include_a, include_b, exec)?;
-        }
         Ok(())
     }
 }

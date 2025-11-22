@@ -56,6 +56,7 @@ mod tests {
         executor.exec("INSERT INTO test (id, name) VALUES (2, 'Bob')".to_string());
         let result = executor.exec("SELECT * FROM test WHERE id <= 1".to_string());
         assert!(result.success);
+        println!("{}", result);
         assert_eq!(result.result.data.len(), 1);
         assert_eq!(
             result.result.data[0][0..10],

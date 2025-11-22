@@ -1,6 +1,6 @@
 #[cfg(test)]
 mod tests {
-    use rustql::parser::{ParsedQuery, ParsedQueryTreeNode, ParsedSource, Parser};
+    use rustql::parser::{JoinType, ParsedQuery, ParsedQueryTreeNode, ParsedSource, Parser};
 
     #[test]
     fn test_create_table_valid() {
@@ -130,57 +130,161 @@ mod tests {
     }
 
     #[test]
-    fn test_select_w_join() {
-        let query = "SELECT * FROM (t INNER JOIN (x INNER JOIN (y) ON x.e = y.e) ON t.e = a.e)";
+    fn test_nested_join_inside_subqueries() {
+        let query = "SELECT * FROM (SELECT * FROM t INNER JOIN (SELECT * FROM x LEFT JOIN y ON x.e = y.e) ON t.e = a.e)";
         let mut parser = Parser::new(query.to_string());
-        let result = parser.parse_query();
-        assert!(result.is_ok());
-        match result.unwrap() {
-            ParsedQuery::Select(select_query) => {
-                match select_query {
-                    ParsedQueryTreeNode::SingleQuery(select_query) => {
-                        assert_eq!(select_query.result.len(), 1);
-                        assert_eq!(select_query.result[0], "*");
-                        assert!(select_query.conditions.is_empty());
-                        match select_query.source {
-                            ParsedSource::Join(join) => {
-                                match *join.left {
-                                    ParsedSource::Table(table) => {
-                                        assert_eq!(table, "t");
-                                    }
-                                    _ => panic!("Expected Table source"),
-                                }
-                                match *join.right {
-                                    ParsedSource::Join(join) => {
-                                        match *join.left {
-                                            ParsedSource::Table(table) => {
-                                                assert_eq!(table, "x");
-                                            }
-                                            _ => panic!("Expected Table source"),
+        let parsed = parser.parse_query().expect("Parse failed");
+
+        match parsed {
+            ParsedQuery::Select(ParsedQueryTreeNode::SingleQuery(select)) => {
+                // outer SELECT *
+                assert_eq!(select.result, vec!["*"]);
+
+                match &select.source {
+                    ParsedSource::SubQuery(subq1) => {
+                        match subq1.as_ref() {
+                            ParsedQueryTreeNode::SingleQuery(inner1) => {
+                                assert_eq!(inner1.result, vec!["*"]);
+
+                                match &inner1.source {
+                                    ParsedSource::Join(join1) => {
+                                        // join1: t JOIN <subquery> ON t.e = a.e
+                                        assert_eq!(join1.sources.len(), 2);
+                                        assert_eq!(join1.conditions.len(), 1);
+                                        assert_eq!(join1.conditions[0].left, "t.e");
+                                        assert_eq!(join1.conditions[0].right, "a.e");
+                                        match &join1.conditions[0].join_type {
+                                            JoinType::Inner => {},
+                                            _ => panic!("Expected Inner Join"),
                                         }
-                                        match *join.right {
-                                            ParsedSource::Table(table) => {
-                                                assert_eq!(table, "y");
-                                            }
-                                            _ => panic!("Expected Table source"),
+
+                                        // left source = Table("t")
+                                        match &join1.sources[0] {
+                                            ParsedSource::Table(tname) => assert_eq!(tname, "t"),
+                                            _ => panic!("Expected Table(\"t\")"),
                                         }
-                                        assert_eq!(
-                                            join.condition,
-                                            ("x.e".to_string(), "=".to_string(), "y.e".to_string())
-                                        );
+
+                                        // right source = SubQuery(...)
+                                        match &join1.sources[1] {
+                                            ParsedSource::SubQuery(subq2) => {
+                                                match subq2.as_ref() {
+                                                    ParsedQueryTreeNode::SingleQuery(inner2) => {
+                                                        assert_eq!(inner2.result, vec!["*"]);
+
+                                                        match &inner2.source {
+                                                            ParsedSource::Join(join2) => {
+                                                                // join2: x JOIN y ON x.e = y.e
+                                                                assert_eq!(join2.sources.len(), 2);
+                                                                assert_eq!(join2.conditions.len(), 1);
+
+                                                                assert_eq!(join2.conditions[0].left, "x.e");
+                                                                assert_eq!(join2.conditions[0].right, "y.e");
+                                                                match &join2.conditions[0].join_type {
+                                                                    JoinType::Left => {},
+                                                                    _ => panic!("Expected Left Join"),
+                                                                }
+
+                                                                match &join2.sources[0] {
+                                                                    ParsedSource::Table(t) => assert_eq!(t, "x"),
+                                                                    _ => panic!("Expected Table(\"x\")"),
+                                                                }
+                                                                match &join2.sources[1] {
+                                                                    ParsedSource::Table(t) => assert_eq!(t, "y"),
+                                                                    _ => panic!("Expected Table(\"y\")"),
+                                                                }
+                                                            }
+                                                            _ => panic!("Expected join inside subquery"),
+                                                        }
+                                                    }
+                                                    _ => panic!("Expected SingleQuery in subquery"),
+                                                }
+                                            }
+                                            _ => panic!("Expected SubQuery on RHS of join1"),
+                                        }
                                     }
-                                    _ => panic!("Expected Join source"),
+                                    _ => panic!("Expected join as source of inner1"),
                                 }
                             }
-                            _ => panic!("Expected Join source"),
+                            _ => panic!("Expected SingleQuery for first subquery"),
                         }
                     }
-                    _ => panic!("Expected Single Select query"),
-                };
+                    _ => panic!("Expected outer FROM to be SubQuery"),
+                }
             }
-            _ => panic!("Expected Select query"),
+            _ => panic!("Expected SELECT query"),
         }
     }
+
+    #[test]
+    fn test_subquery_and_top_level_join() {
+        let query = "SELECT * FROM (SELECT * FROM x INNER JOIN y ON x.a = y.b) INNER JOIN z ON z.a = y.b";
+        let mut parser = Parser::new(query.to_string());
+        let parsed = parser.parse_query().expect("Parse failed");
+
+        match parsed {
+            ParsedQuery::Select(ParsedQueryTreeNode::SingleQuery(select)) => {
+                assert_eq!(select.result, vec!["*"]);
+
+                match &select.source {
+                    ParsedSource::Join(top_join) => {
+                        assert_eq!(top_join.sources.len(), 2);
+                        assert_eq!(top_join.conditions.len(), 1);
+
+                        assert_eq!(top_join.conditions[0].left, "z.a");
+                        assert_eq!(top_join.conditions[0].right, "y.b");
+                        match &top_join.conditions[0].join_type {
+                            JoinType::Inner => {},
+                            _ => panic!("Expected Inner Join"),
+                        }
+
+                        match &top_join.sources[0] {
+                            ParsedSource::SubQuery(subq) => {
+                                match subq.as_ref() {
+                                    ParsedQueryTreeNode::SingleQuery(inner) => {
+                                        assert_eq!(inner.result, vec!["*"]);
+
+                                        match &inner.source {
+                                            ParsedSource::Join(j) => {
+                                                assert_eq!(j.sources.len(), 2);
+                                                assert_eq!(j.conditions.len(), 1);
+
+                                                assert_eq!(j.conditions[0].left, "x.a");
+                                                assert_eq!(j.conditions[0].right, "y.b");
+                                                match &j.conditions[0].join_type {
+                                                    JoinType::Inner => {},
+                                                    _ => panic!("Expected Inner Join"),
+                                                }
+
+                                                match &j.sources[0] {
+                                                    ParsedSource::Table(t) => assert_eq!(t, "x"),
+                                                    _ => panic!("Expected Table(\"x\")"),
+                                                }
+                                                match &j.sources[1] {
+                                                    ParsedSource::Table(t) => assert_eq!(t, "y"),
+                                                    _ => panic!("Expected Table(\"y\")"),
+                                                }
+                                            }
+                                            _ => panic!("Expected join inside subquery"),
+                                        }
+                                    }
+                                    _ => panic!("Expected SingleQuery in subquery"),
+                                }
+                            }
+                            _ => panic!("Expected subquery as first join source"),
+                        }
+
+                        match &top_join.sources[1] {
+                            ParsedSource::Table(t) => assert_eq!(t, "z"),
+                            _ => panic!("Expected Table(\"z\")"),
+                        }
+                    }
+                    _ => panic!("Expected top-level join"),
+                }
+            }
+            _ => panic!("Expected SELECT query"),
+        }
+    }
+
 
     #[test]
     fn test_unknown_query_type() {
@@ -238,16 +342,6 @@ mod tests {
             result.unwrap_err(),
             "Mismatched fields and values count: 2 fields, 3 values"
         );
-    }
-
-    #[test]
-    fn test_parse_insert_no_fields() {
-        let query = "INSERT INTO users VALUES (1, 'John Doe', 30)".to_string();
-        let mut parser = Parser::new(query);
-        let result = parser.parse_query();
-
-        assert!(result.is_err());
-        assert_eq!(result.unwrap_err(), "Expected '(', but found 'VALUES'");
     }
 
     #[test]

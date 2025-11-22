@@ -9,3 +9,4 @@ pub mod parser;
 pub mod planner;
 pub mod serializer;
 pub mod status;
+pub mod cursor;
