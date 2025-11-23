@@ -38,6 +38,7 @@ impl DataFrame
             header: vec![Field {
                 field_type: Type::String,
                 name: "Message".to_string(),
+                table_name: "".to_string(),
             }],
             row_source: Source::Memory(MemorySource { data: vec![Serializer::parse_string(message).to_vec()], idx: 0})
         }
@@ -62,7 +63,7 @@ impl DataFrame
     pub fn join(
         &self,
         other: &DataFrame,
-        conditions: &[(String, String)]
+        conditions: &[(Field, Field)]
     ) -> Result<DataFrame, Status> {
         let left_header  = self.header.clone();
         let right_header = other.header.clone();
@@ -85,12 +86,12 @@ impl DataFrame
 
                 for (l_col, r_col) in conditions {
                     let l_idx = left_header.iter()
-                        .position(|f| f.name == *l_col)
+                        .position(|f| f.name == *l_col.name)
                         //.ok_or(Status::Message(format!("Column '{}' not in left DF", l_col)))?;
                         .ok_or(Status::DataFrameJoinError)?;
 
                     let r_idx = right_header.iter()
-                        .position(|f| f.name == *r_col)
+                        .position(|f| f.name == *r_col.name)
                         //.ok_or(Status::Message(format!("Column '{}' not in right DF", r_col)))?;
                         .ok_or(Status::DataFrameJoinError)?;
 
@@ -223,7 +224,7 @@ impl RowSource for BTreeScanSource {
 
             let full_row = Serializer::reconstruct_row(&key, &row_body, &self.schema)?;
 
-            if Serializer::check_condition_on_bytes(&full_row, &self.conditions, &self.schema.fields) {
+            if Serializer::check_condition_on_bytes(&full_row, &self.conditions, &self.schema.fields)? {
                 self.cursor.advance()?;
                 return Ok(Some(full_row));
             }

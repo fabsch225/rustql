@@ -16,10 +16,12 @@ mod tests {
                 Field {
                     name: "Id".to_string(),
                     field_type: Type::Integer,
+                    table_name: "".to_string(),
                 },
                 Field {
                     name: "Num".to_string(),
                     field_type: Type::Integer,
+                    table_name: "".to_string(),
                 },
             ],
             table_type: 0,

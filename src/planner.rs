@@ -62,7 +62,7 @@ pub enum PlanNode {
         join_type: JoinType,
         left_join_op: JoinOp,
         right_join_op: JoinOp,
-        conditions: Vec<(String, String)>,
+        conditions: Vec<(Field, Field)>,
     },
     SetOperation {
         op: ParsedSetOperator,
@@ -97,25 +97,7 @@ impl PlanNode {
 
     pub fn get_header(&self, global_schema: &Schema) -> Result<Vec<Field>, Status> {
         let schema = self.get_schema(global_schema)?;
-        let table_name = &schema.name;
-
-        let prefixed_fields: Vec<Field> = schema
-            .fields
-            .iter()
-            .map(|f| {
-                let id = if f.name.contains('.') {
-                    f.name.clone()
-                } else {
-                    format!("{}.{}", table_name, f.name)
-                };
-                Field {
-                    field_type: f.field_type.clone(),
-                    name: id,
-                }
-            })
-            .collect();
-
-        Ok(prefixed_fields)
+        Ok(schema.fields)
     }
 }
 
@@ -223,6 +205,7 @@ impl Planner {
                     fields.push(Field {
                         name: name.clone(),
                         field_type,
+                        table_name: create_table_query.table_name.clone(),
                     });
                 }
 
@@ -396,22 +379,40 @@ impl Planner {
                     let join_conditions = if cond.join_type == JoinType::Natural {
                         let mut natural_conds = Vec::new();
                         for l_field in &left_schema.fields {
-                            if right_schema.fields.iter().any(|r_field| r_field.name == l_field.name) {
-                                natural_conds.push((l_field.name.clone(), l_field.name.clone()));
+                            if let Some(r_field) = right_schema
+                                .fields
+                                .iter()
+                                .find(|rf| rf.name == l_field.name)
+                            {
+                                natural_conds.push((l_field.clone(), r_field.clone()));
                             }
                         }
                         natural_conds
                     } else {
                         let resolve = |token: &str, l_sch: &TableSchema, r_sch: &TableSchema|
-                                       -> Result<(char, String), QueryResult>
+                                       -> Result<(char, Field), QueryResult>
                             {
-                                if l_sch.get_column_and_field(token).is_some() {
-                                    return Ok(('L', token.to_string()));
-                                } else if r_sch.get_column_and_field(token).is_some() {
-                                    return Ok(('R', token.to_string()));
+                                let parts: Vec<&str> = token.split('.').collect();
+                                let mut field = Field {
+                                    field_type: Type::Null,
+                                    name: parts[0].to_string(),
+                                    table_name: "".to_string(),
+                                };
+                                if parts.len() == 2 {
+                                    field.name = parts[1].to_string();
+                                    field.table_name = parts[0].to_string();
                                 } else {
                                     return Err(QueryResult::user_input_wrong(format!(
-                                        "Column '{}' not found in join source" ,token
+                                        "Column '{:?}' is Invalid", token
+                                    )));
+                                }
+                                if l_sch.get_column_and_field(&field).is_some() {
+                                    return Ok(('L', field));
+                                } else if r_sch.get_column_and_field(&field).is_some() {
+                                    return Ok(('R', field));
+                                } else {
+                                    return Err(QueryResult::user_input_wrong(format!(
+                                        "Column '{:?}' not found in join source", field
                                     )));
                                 }
                             };
@@ -432,7 +433,7 @@ impl Planner {
                         vec![(left_field, right_field)]
                     };
                     let (left_op, right_op) = left_schema.get_join_ops(&right_schema, &join_conditions[0].0, &join_conditions[0].1)
-                        .map_err(|_|{QueryResult::user_input_wrong("".to_string())})?;
+                        .map_err(|_|{QueryResult::user_input_wrong("Cannot Get Join Operation".to_string())})?;
 
                     current_plan = PlanNode::Join {
                         left: Box::new(current_plan),
@@ -468,8 +469,8 @@ impl Planner {
 
         if matches.is_empty() {
             let parts: Vec<&str> = request.split('.').collect();
-            if parts.len() == 2 && parts[0] == schema.name {
-                let found = schema.fields.iter().find(|f| f.name == parts[1]);
+            if parts.len() == 2 {
+                let found = schema.fields.iter().find(|f| f.name == parts[1] && f.table_name == parts[0]);
                 return match found {
                     Some(pair) => Ok(pair.clone()),
                     None => Err(QueryResult::user_input_wrong(format!(
@@ -487,11 +488,8 @@ impl Planner {
                 matches.iter().collect::<Vec<_>>()
             )))
         } else {
-            let mut field = matches[0].clone();
-            if field.name.split_once('.').is_none() {
-                field.name = format!("{}.{}", schema.name, matches[0].name);
-            }
-            Ok(field)
+            //if field.name.split_once('.').is_none() {
+            Ok(matches[0].clone())
         }
     }
 
@@ -505,7 +503,11 @@ impl Planner {
 
         for field in &schema.fields {
             let user_condition = source.iter().find(|(col_name, _, _)| {
-                col_name == &field.name
+                if let Some((tbl, fld)) = col_name.split_once('.') {
+                    field.table_name == tbl && field.name == fld
+                } else {
+                    field.name == *col_name
+                }
             });
 
             match user_condition {

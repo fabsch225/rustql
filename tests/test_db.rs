@@ -73,6 +73,7 @@ mod tests {
         let delete_result = executor.exec("DELETE FROM test WHERE id = 1".to_string());
         assert!(delete_result.success);
         let result = executor.exec("SELECT name FROM test".to_string());
+        println!("{}", result);
         assert_eq!(result.result.clone().get_data().unwrap().len(), 1);
         assert_eq!(result.result.get_data().unwrap()[0][0..3], vec![b'B', b'o', b'b']);
     }

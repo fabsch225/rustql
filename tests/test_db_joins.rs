@@ -425,6 +425,7 @@ mod tests {
         );
 
         let result = exec.exec(full_query.into());
+        println!("{}", result);
         // ID=1 (100, 90) -> Fails inner filter (score > 90)
         // ID=2 (200, 95) -> Passes inner filter (score > 90). Passes outer filter (value > 150).
         assert_row_count(result, 1);

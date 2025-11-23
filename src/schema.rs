@@ -92,51 +92,26 @@ impl TableSchema {
     pub fn join(
         &self,
         other: &TableSchema,
-        left_key: &String,
-        right_key: &String,
+        left_key: &Field,
+        right_key: &Field,
     ) -> Result<TableSchema, Status> {
         self.get_join_positions_and_validate(other, left_key, right_key)?;
 
         let mut merged_fields = Vec::new();
 
-        let right_names: std::collections::HashSet<_> =
-            other.fields.iter().map(|f| f.name.as_str()).collect();
-
         for f in &self.fields {
-            let is_dup = right_names.contains(f.name.as_str());
-
-            let mut base = if f.name.contains('.') {
-                f.name.clone()
-            } else {
-                format!("{}.{}", self.name, f.name)
-            };
-
-            if is_dup && !base.contains('.') {
-                base = format!("{}.{}", self.name, f.name);
-            }
-
             merged_fields.push(Field {
                 field_type: f.field_type.clone(),
-                name: base
+                name: f.name.clone(),
+                table_name: f.table_name.clone()
             });
         }
 
         for f in &other.fields {
-            let is_dup = self.fields.iter().any(|lf| lf.name == f.name);
-
-            let mut base = if f.name.contains('.') {
-                f.name.clone()
-            } else {
-                format!("{}.{}", other.name, f.name)
-            };
-
-            if is_dup && !base.contains('.') {
-                base = format!("{}.{}", other.name, f.name);
-            }
-
             merged_fields.push(Field {
                 field_type: f.field_type.clone(),
-                name: base
+                name: f.name.clone(),
+                table_name: f.table_name.clone()
             });
         }
 
@@ -148,7 +123,7 @@ impl TableSchema {
             fields: merged_fields,
             table_type: 0,
             entry_count: self.entry_count,
-            name: self.name.clone(),
+            name: format!("{}_JOIN_{}", self.name.clone(), other.name.clone()),
         };
 
         Ok(new_table)
@@ -157,8 +132,8 @@ impl TableSchema {
     pub fn get_join_positions_and_validate(
         &self,
         other: &TableSchema,
-        left_key: &String,
-        right_key: &String,
+        left_key: &Field,
+        right_key: &Field,
     ) -> Result<(usize, usize), Status> {
         let (left_pos, left_field) = self.get_column_and_field(left_key).ok_or(
             Status::Error
@@ -178,9 +153,10 @@ impl TableSchema {
     pub fn get_join_ops(
         &self,
         other: &TableSchema,
-        left_key: &String,
-        right_key: &String,
+        left_key: &Field,
+        right_key: &Field,
     ) -> Result<(JoinOp, JoinOp), Status> {
+        println!("{:?} - {:?} - {:?} - {:?}", self, other, left_key, right_key);
         let (left_pos, right_pos) =
             self.get_join_positions_and_validate(other, left_key, right_key)?;
         let left_op = if self.has_key && self.key_position == left_pos {
@@ -215,6 +191,7 @@ impl TableSchema {
                     matched = Some(Field {
                         field_type: f.field_type.clone(),
                         name: f.name.clone(),
+                        table_name: f.table_name.clone()
                     });
                     break;
                 }
@@ -237,7 +214,22 @@ impl TableSchema {
         }
     }
 
-    pub fn get_column_and_field(&self, col: &str) -> Option<(usize, Field)> {
+    pub fn get_column_and_field(&self, key: &Field) -> Option<(usize, Field)> {
+        let mut matches = self
+            .fields
+            .iter()
+            .enumerate()
+            .filter(|(_, field)| {
+                field.name == key.name && (key.table_name.is_empty() || field.table_name == key.table_name)
+            });
 
+        let first = matches.next()?;
+
+        if matches.next().is_some() {
+            return None;
+        }
+
+        Some((first.0, first.1.clone()))
     }
+
 }

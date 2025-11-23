@@ -30,7 +30,7 @@ impl Serializer {
         for field in header {
             let size = Serializer::get_size_of_type(&field.field_type)?;
             if pos + size > row.len() {
-                return Err(Status::InternalExceptionIntegrityCheckFailed);
+                return Err(Status::InternalExceptionInvalidSchema);
             }
             slices.push(&row[pos..pos+size]);
             pos += size;
@@ -42,7 +42,7 @@ impl Serializer {
         row: &[u8],
         conditions: &Vec<(SqlStatementComparisonOperator, Vec<u8>)>,
         header: &Vec<Field>,
-    ) -> bool {
+    ) -> Result<bool, Status> {
         let mut position = 0;
 
         for (i, field) in header.iter().enumerate() {
@@ -56,14 +56,14 @@ impl Serializer {
                 continue;
             }
 
-            if position + size > row.len() { return false; } // Should not happen
+            if position + size > row.len() { return Err(Status::InternalExceptionInvalidRowLength); }
             let field_val = &row[position..position + size];
 
             let cmp_result = Serializer::compare_with_type(
                 &field_val.to_vec(),
                 target_val,
                 &field.field_type
-            ).unwrap_or(std::cmp::Ordering::Equal);
+            )?;
 
             let matched = match cmp_result {
                 std::cmp::Ordering::Equal => matches!(op, SqlStatementComparisonOperator::Equal | SqlStatementComparisonOperator::LesserOrEqual | SqlStatementComparisonOperator::GreaterOrEqual),
@@ -72,12 +72,12 @@ impl Serializer {
             };
 
             if !matched {
-                return false;
+                return Ok(false);
             }
 
             position += size;
         }
-        true
+        Ok(true)
     }
 
     pub(crate) fn reconstruct_row(key: &Key, row: &Row, schema: &TableSchema) -> Result<Vec<u8>, Status> {

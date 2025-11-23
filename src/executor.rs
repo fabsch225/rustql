@@ -327,7 +327,7 @@ impl Executor {
                 let mut filtered_data = Vec::new();
 
                 for row in source_df.get_data()? {
-                    if Serializer::check_condition_on_bytes(&row, conditions, &plan.get_header(&self.schema)?) {
+                    if Serializer::check_condition_on_bytes(&row, conditions, &plan.get_header(&self.schema)?)? {
                         //ToDo potentially Expensive!
                         filtered_data.push(row.clone());
                     }
@@ -343,7 +343,11 @@ impl Executor {
 
                 let mut mapping_indices = Vec::new();
                 for req_field in fields {
-                    if let Some(idx) = source_df.header.iter().position(|f| f.name == req_field.name) {
+                    if let Some(idx) = source_df.header.iter().position(|f|
+                        {
+                            f.name == req_field.name
+                        }
+                    ) {
                         mapping_indices.push(idx);
                     } else {
                         return Err(Status::InternalExceptionCompilerError); // Should have been caught by Planner
@@ -517,15 +521,18 @@ impl Executor {
                 fields: vec![
                     Field {
                         field_type: Type::String,
-                        name: "rustsql_master.name".to_string(),
+                        name: "name".to_string(),
+                        table_name: MASTER_TABLE_NAME.to_string(),
                     },
                     Field {
                         field_type: Type::String,
-                        name: "rustsql_master.sql".to_string(),
+                        name: "sql".to_string(),
+                        table_name: MASTER_TABLE_NAME.to_string(),
                     },
                     Field {
                         field_type: Type::Integer,
-                        name: "rustsql_master.rootpage".to_string(),
+                        name: "rootpage".to_string(),
+                        table_name: MASTER_TABLE_NAME.to_string(),
                     },
                 ],
             }
