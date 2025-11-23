@@ -18,7 +18,11 @@ mod tests {
             println!("{}", result);
         }
         assert!(result.success);
-        assert_eq!(result.result.get_data().unwrap().len(), expected, "Row count mismatch");
+        assert_eq!(
+            result.result.fetch_data().unwrap().len(),
+            expected,
+            "Row count mismatch"
+        );
     }
 
     #[test]
@@ -35,12 +39,11 @@ mod tests {
         exec.exec("INSERT INTO orders (id, user_id, item) VALUES (101, 1, 'Pen')".into());
         exec.exec("INSERT INTO orders (id, user_id, item) VALUES (102, 2, 'Laptop')".into());
         exec.exec("INSERT INTO orders (id, user_id, item) VALUES (103, 3, 'Phone')".into()); // Orphan order
-        
+
         let query = "SELECT users.name, orders.item FROM users INNER JOIN orders ON users.id = orders.user_id";
         let result = exec.exec(query.into());
 
         assert_row_count(result, 3);
-
     }
 
     #[test]
@@ -63,7 +66,6 @@ mod tests {
 
         // Should contain Berlin-Germany, New York-USA, Munich-Germany
         assert_row_count(result, 3);
-
     }
 
     #[test]
@@ -86,7 +88,6 @@ mod tests {
 
         let result = exec.exec(query.into());
         assert_row_count(result, 1);
-
     }
 
     #[test]
@@ -123,7 +124,6 @@ mod tests {
         assert_row_count(result, 0);
     }
 
-
     #[test]
     fn test_join_with_filter() {
         let mut exec = setup_executor();
@@ -141,7 +141,6 @@ mod tests {
         let result = exec.exec(query.into());
 
         assert_row_count(result, 1); // Should only match id 2
-
     }
 
     #[test]
@@ -156,7 +155,6 @@ mod tests {
 
         let result = exec.exec("SELECT * FROM A INNER JOIN B ON A.id = B.id".into());
         assert_row_count(result, 0);
-
     }
 
     #[test]
@@ -171,7 +169,6 @@ mod tests {
         let query = "SELECT * FROM (SELECT * FROM data)";
         let result = exec.exec(query.into());
         assert_row_count(result, 3);
-
     }
 
     #[test]
@@ -182,7 +179,10 @@ mod tests {
         exec.exec("INSERT INTO numbers (n) VALUES (1)".into());
         exec.exec("INSERT INTO numbers (n) VALUES (2)".into());
         exec.exec("INSERT INTO numbers (n) VALUES (3)".into());
-        assert!(exec.exec("INSERT INTO numbers (n) VALUES (4)".into()).success);
+        assert!(
+            exec.exec("INSERT INTO numbers (n) VALUES (4)".into())
+                .success
+        );
 
         let query = "SELECT * FROM (SELECT * FROM numbers WHERE n > 2)";
         let result = exec.exec(query.into());
@@ -209,7 +209,6 @@ mod tests {
 
         let result = exec.exec(query.into());
         assert_row_count(result, 1); // Only id 1 matches 'keep'
-
     }
 
     #[test]
@@ -223,7 +222,6 @@ mod tests {
         let query = "SELECT * FROM (SELECT * FROM (SELECT * FROM t))";
         let result = exec.exec(query.into());
         assert_row_count(result, 1);
-
     }
 
     #[test]
@@ -243,7 +241,6 @@ mod tests {
 
         // 1 (from A) + 2 (from B) + 1 (from B) = 3 rows
         assert_row_count(result, 3);
-
     }
 
     #[test]
@@ -263,7 +260,6 @@ mod tests {
         let result = exec.exec(query.into());
 
         assert_row_count(result, 1);
-
     }
 
     #[test]
@@ -283,7 +279,6 @@ mod tests {
         let result = exec.exec(query.into());
 
         assert_row_count(result, 1);
-
     }
 
     #[test]
@@ -298,7 +293,6 @@ mod tests {
 
         // Should fail due to column count mismatch
         assert!(!result.success);
-
     }
 
     #[test]
@@ -316,7 +310,6 @@ mod tests {
         let result = exec.exec(query.into());
 
         assert_row_count(result, 3);
-
     }
 
     #[test]
@@ -324,8 +317,14 @@ mod tests {
         let mut exec = setup_executor();
 
         assert!(exec.exec("CREATE TABLE A (id Integer)".into()).success);
-        assert!(exec.exec("CREATE TABLE B (id Integer, score Integer)".into()).success);
-        assert!(exec.exec("CREATE TABLE C (id Integer, pass Boolean)".into()).success);
+        assert!(
+            exec.exec("CREATE TABLE B (id Integer, score Integer)".into())
+                .success
+        );
+        assert!(
+            exec.exec("CREATE TABLE C (id Integer, pass Boolean)".into())
+                .success
+        );
 
         assert!(exec.exec("INSERT INTO A VALUES (1)".into()).success);
         assert!(exec.exec("INSERT INTO A VALUES (2)".into()).success);
@@ -341,7 +340,6 @@ mod tests {
         let result = exec.exec(query.into());
         println!("{}", result);
         assert_row_count(result, 1);
-
     }
 
     #[test]
@@ -429,7 +427,6 @@ mod tests {
         // ID=1 (100, 90) -> Fails inner filter (score > 90)
         // ID=2 (200, 95) -> Passes inner filter (score > 90). Passes outer filter (value > 150).
         assert_row_count(result, 1);
-
     }
 
     #[test]

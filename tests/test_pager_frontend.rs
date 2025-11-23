@@ -29,7 +29,7 @@ mod tests {
             ],
             table_type: 0,
             entry_count: 0,
-            name: "".to_string()
+            name: "".to_string(),
         }
     }
 

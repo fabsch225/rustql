@@ -311,7 +311,7 @@ impl PagerCore {
                 } else {
                     eprintln!("Error is {}", e.to_string());
                     Err(Status::InternalExceptionFileOpenFailed)
-                }
+                };
             }
         };
 

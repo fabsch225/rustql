@@ -1,5 +1,5 @@
-use std::cmp::PartialEq;
 use crate::planner::PlanNode::Join;
+use std::cmp::PartialEq;
 
 #[derive(Debug)]
 pub enum ParsedQueryTreeNode {
@@ -26,14 +26,14 @@ pub enum JoinType {
     Right,
     Full,
     Inner,
-    Natural
+    Natural,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum JoinOp {
     Index,
     Scan,
-    Key
+    Key,
 }
 
 #[derive(Debug)]
@@ -46,7 +46,7 @@ pub struct ParsedJoinCondition {
 #[derive(Debug)]
 pub struct ParsedJoin {
     pub sources: Vec<ParsedSource>,
-    pub conditions: Vec<ParsedJoinCondition> //len(conditions) is len(sources) - 1
+    pub conditions: Vec<ParsedJoinCondition>, //len(conditions) is len(sources) - 1
 }
 
 #[derive(Debug)]
@@ -94,7 +94,7 @@ pub enum ParsedQuery {
     Delete(ParsedDeleteQuery),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum ParsedSetOperator {
     Union,
     Intersect,
@@ -195,7 +195,7 @@ impl Parser {
             "(" => {
                 self.expect_token("SELECT")?;
                 Ok(ParsedQuery::Select(self.parse_select()?))
-            },
+            }
             "INSERT" => self.parse_insert(),
             "DELETE" => self.parse_delete(),
             _ => Err(format!("Unknown statement type: {}", statement_type)),
@@ -306,7 +306,7 @@ impl Parser {
         if let Some(token) = self.peek_token() {
             if token == ")" {
                 self.lexer.next_token();
-                return Ok(ParsedQueryTreeNode::SingleQuery(select_query))
+                return Ok(ParsedQueryTreeNode::SingleQuery(select_query));
             }
             if let Some(operation) = match token.to_uppercase().as_str() {
                 "UNION" => Some(ParsedSetOperator::Union),
@@ -315,12 +315,12 @@ impl Parser {
                 "TIMES" => Some(ParsedSetOperator::Times),
                 "ALL" => Some(ParsedSetOperator::All),
                 "MINUS" => Some(ParsedSetOperator::Minus),
-                _ => {
-                    return Ok(ParsedQueryTreeNode::SingleQuery(select_query))
-                }
+                _ => return Ok(ParsedQueryTreeNode::SingleQuery(select_query)),
             } {
                 self.lexer.next_token();
-                if let Some(token) = self.peek_token() && token == "(" {
+                if let Some(token) = self.peek_token()
+                    && token == "("
+                {
                     self.lexer.next_token();
                 }
                 self.expect_token("SELECT")?;
@@ -350,7 +350,9 @@ impl Parser {
         }
         let mut has_explicit_fields = false;
         let mut fields = Vec::new();
-        if let Some(token) = self.peek_token() && token == "(" {
+        if let Some(token) = self.peek_token()
+            && token == "("
+        {
             has_explicit_fields = true;
             self.expect_token("(")?;
             loop {
@@ -461,20 +463,35 @@ impl Parser {
         let mut just_join = false;
         loop {
             let join_type = match self.peek_token().as_deref() {
-                Some("INNER") => { self.expect_token("INNER")?; Some(JoinType::Inner) }
+                Some("INNER") => {
+                    self.expect_token("INNER")?;
+                    Some(JoinType::Inner)
+                }
                 Some("JOIN") => {
                     self.expect_token("JOIN")?;
                     just_join = true;
                     Some(JoinType::Inner)
                 }
-                Some("LEFT")  => { self.expect_token("LEFT")?;  Some(JoinType::Left) }
-                Some("RIGHT") => { self.expect_token("RIGHT")?; Some(JoinType::Right) }
-                Some("FULL")  => { self.expect_token("FULL")?; Some(JoinType::Full) }
-                Some("NATURAL")  => { self.expect_token("NATURAL")?; Some(JoinType::Natural) }
+                Some("LEFT") => {
+                    self.expect_token("LEFT")?;
+                    Some(JoinType::Left)
+                }
+                Some("RIGHT") => {
+                    self.expect_token("RIGHT")?;
+                    Some(JoinType::Right)
+                }
+                Some("FULL") => {
+                    self.expect_token("FULL")?;
+                    Some(JoinType::Full)
+                }
+                Some("NATURAL") => {
+                    self.expect_token("NATURAL")?;
+                    Some(JoinType::Natural)
+                }
                 _ => break,
             };
             if !just_join {
-            self.expect_token("JOIN")?;
+                self.expect_token("JOIN")?;
             }
             let right_source = self.parse_single_source()?;
             sources.push(right_source);

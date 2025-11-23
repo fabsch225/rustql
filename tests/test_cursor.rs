@@ -1,23 +1,25 @@
 mod tests {
-    use rustql::{
-        btree::{Btree},
-        pager::{PagerCore, PagerAccessor, Key, Row, Position, Type},
-    };
-    use rand::{seq::SliceRandom, Rng};
+    use rand::{Rng, seq::SliceRandom};
     use rustql::cursor::BTreeCursor;
     use rustql::executor::Executor;
     use rustql::pager::{FieldMeta, KeyMeta};
     use rustql::serializer::Serializer;
+    use rustql::{
+        btree::Btree,
+        pager::{Key, PagerAccessor, PagerCore, Position, Row, Type},
+    };
 
     fn make_int_key(k: i32) -> Vec<u8> {
         let mut v = Serializer::parse_int(&*k.to_string()).expect("").to_vec();
-        Serializer::set_flag_at_position(&mut v, KeyMeta::Tomb as u8, false, &Type::Integer).expect("");
+        Serializer::set_flag_at_position(&mut v, KeyMeta::Tomb as u8, false, &Type::Integer)
+            .expect("");
         v
     }
 
     fn make_row(k: i32) -> Vec<u8> {
         let mut v = Serializer::parse_int(&*k.to_string()).expect("").to_vec();
-        Serializer::set_flag_at_position(&mut v, FieldMeta::Null as u8, false, &Type::Integer).expect("");
+        Serializer::set_flag_at_position(&mut v, FieldMeta::Null as u8, false, &Type::Integer)
+            .expect("");
         v
     }
 
@@ -35,13 +37,20 @@ mod tests {
         let mut executor = Executor::init("./default.db.bin", 3);
         let result = executor.exec("CREATE TABLE test (id Integer, other Integer)".to_string());
         assert!(result.success);
-        let idx = executor.schema.table_index.index.iter().position(|p|{p == "test".as_bytes()}).unwrap();
+        let idx = executor
+            .schema
+            .table_index
+            .index
+            .iter()
+            .position(|p| p == "test".as_bytes())
+            .unwrap();
         let schema = executor.schema.tables[idx].clone();
         Btree::init(
             executor.btree_node_width,
             executor.pager_accessor.clone(),
             schema.clone(),
-        ).unwrap()
+        )
+        .unwrap()
     }
 
     fn collect_cursor_values_in_order(tree: &Btree) -> Vec<(i32, i32)> {
@@ -59,13 +68,13 @@ mod tests {
     #[test]
     fn test_01_basic_insert() {
         let mut t = make_tree();
-        let keys = vec![10,20,5,6,12,30,7,17];
+        let keys = vec![10, 20, 5, 6, 12, 30, 7, 17];
         for k in &keys {
             t.insert(make_int_key(*k), make_row(*k)).unwrap();
         }
         println!("{}", t);
         let vals = collect_cursor_values_in_order(&t);
-        let mut expected: Vec<(i32,i32)> = keys.iter().map(|k| (*k,*k)).collect();
+        let mut expected: Vec<(i32, i32)> = keys.iter().map(|k| (*k, *k)).collect();
         expected.sort_by_key(|x| x.0);
         assert_eq!(vals, expected);
     }
@@ -82,7 +91,7 @@ mod tests {
             t.insert(make_int_key(*k), make_row(*k)).unwrap();
         }
         let vals = collect_cursor_values_in_order(&t);
-        let expected: Vec<(i32,i32)> = unique.iter().map(|k| (*k,*k)).collect();
+        let expected: Vec<(i32, i32)> = unique.iter().map(|k| (*k, *k)).collect();
         assert_eq!(vals.len(), expected.len());
         assert_eq!(vals, expected);
     }
@@ -96,7 +105,7 @@ mod tests {
             t.insert(make_int_key(*k), make_row(*k)).unwrap();
         }
         let to_delete = &keys[0..250];
-        let mut remaining: Vec<(i32,i32)> = keys[250..].iter().map(|k| (*k,*k)).collect();
+        let mut remaining: Vec<(i32, i32)> = keys[250..].iter().map(|k| (*k, *k)).collect();
         remaining.sort_by_key(|x| x.0);
         for k in to_delete {
             t.delete(make_int_key(*k)).unwrap();
@@ -120,18 +129,23 @@ mod tests {
     #[test]
     fn test_05_bidirectional_traversal() {
         let mut t = make_tree();
-        let keys = vec![10,20,5,15,25,30];
-        for k in &keys { t.insert(make_int_key(*k), make_row(*k)).unwrap(); }
-        let mut expected: Vec<(i32,i32)> = keys.iter().map(|k| (*k,*k)).collect();
+        let keys = vec![10, 20, 5, 15, 25, 30];
+        for k in &keys {
+            t.insert(make_int_key(*k), make_row(*k)).unwrap();
+        }
+        let mut expected: Vec<(i32, i32)> = keys.iter().map(|k| (*k, *k)).collect();
         expected.sort_by_key(|x| x.0);
         let mut c = BTreeCursor::new(t.clone());
         c.move_to_end().unwrap();
-        let (k,r)=c.current().unwrap().unwrap();
-        assert_eq!((extract_int_from_key(&k),extract_int_from_row(&r)), expected.last().unwrap().clone());
+        let (k, r) = c.current().unwrap().unwrap();
+        assert_eq!(
+            (extract_int_from_key(&k), extract_int_from_row(&r)),
+            expected.last().unwrap().clone()
+        );
         let mut rev = vec![];
         while c.is_valid() {
-            let (k,r)=c.current().unwrap().unwrap();
-            rev.push((extract_int_from_key(&k),extract_int_from_row(&r)));
+            let (k, r) = c.current().unwrap().unwrap();
+            rev.push((extract_int_from_key(&k), extract_int_from_row(&r)));
             c.decrease().unwrap();
         }
         assert_eq!(collect_cursor_values_in_order(&t), expected);
@@ -141,7 +155,9 @@ mod tests {
     #[test]
     fn test_06_zigzag_movement() {
         let mut t = make_tree();
-        for k in 1..=5 { t.insert(make_int_key(k), make_row(k)).unwrap(); }
+        for k in 1..=5 {
+            t.insert(make_int_key(k), make_row(k)).unwrap();
+        }
         let mut c = BTreeCursor::new(t.clone());
         c.move_to_start().unwrap();
         assert_eq!(extract_int_from_key(&c.current().unwrap().unwrap().0), 1);
@@ -162,32 +178,38 @@ mod tests {
         let mut t = make_tree();
         let mut keys: Vec<i32> = (0..200).collect();
         keys.shuffle(&mut rand::thread_rng());
-        for k in &keys { t.insert(make_int_key(*k), make_row(*k)).unwrap(); }
-        let expected: Vec<(i32,i32)> = {
-            let mut v: Vec<(i32,i32)> = keys.iter().map(|k| (*k,*k)).collect();
-            v.sort_by_key(|x|x.0);
+        for k in &keys {
+            t.insert(make_int_key(*k), make_row(*k)).unwrap();
+        }
+        let expected: Vec<(i32, i32)> = {
+            let mut v: Vec<(i32, i32)> = keys.iter().map(|k| (*k, *k)).collect();
+            v.sort_by_key(|x| x.0);
             v
         };
         let mut c = BTreeCursor::new(t.clone());
         c.move_to_start().unwrap();
         let mut idx = 0usize;
         for _ in 0..1000 {
-            let dir = if rand::random::<bool>() {1} else {-1};
+            let dir = if rand::random::<bool>() { 1 } else { -1 };
             let steps = rand::thread_rng().gen_range(1..=5);
             if dir == 1 {
                 let possible = 199 - idx;
                 let real = steps.min(possible);
-                for _ in 0..real { c.advance().unwrap(); }
+                for _ in 0..real {
+                    c.advance().unwrap();
+                }
                 idx += real;
             } else {
                 let real = steps.min(idx);
-                for _ in 0..real { c.decrease().unwrap(); }
+                for _ in 0..real {
+                    c.decrease().unwrap();
+                }
                 idx -= real;
             }
             if idx < 200 {
                 assert!(c.is_valid());
-                let (k,r)=c.current().unwrap().unwrap();
-                let p=(extract_int_from_key(&k),extract_int_from_row(&r));
+                let (k, r) = c.current().unwrap().unwrap();
+                let p = (extract_int_from_key(&k), extract_int_from_row(&r));
                 assert_eq!(p, expected[idx]);
             }
         }
@@ -196,21 +218,23 @@ mod tests {
     #[test]
     fn test_08_boundary_zigzag() {
         let mut t = make_tree();
-        for k in 0..5 { t.insert(make_int_key(k), make_row(k)).unwrap(); }
+        for k in 0..5 {
+            t.insert(make_int_key(k), make_row(k)).unwrap();
+        }
         let mut c = BTreeCursor::new(t.clone());
         c.move_to_start().unwrap();
         c.advance().unwrap();
         c.decrease().unwrap();
-        assert_eq!(extract_int_from_key(&c.current().unwrap().unwrap().0),0);
+        assert_eq!(extract_int_from_key(&c.current().unwrap().unwrap().0), 0);
         c.decrease().unwrap();
         assert!(!c.is_valid());
         c.move_to_start().unwrap();
-        assert_eq!(extract_int_from_key(&c.current().unwrap().unwrap().0),0);
+        assert_eq!(extract_int_from_key(&c.current().unwrap().unwrap().0), 0);
         c.move_to_end().unwrap();
-        assert_eq!(extract_int_from_key(&c.current().unwrap().unwrap().0),4);
+        assert_eq!(extract_int_from_key(&c.current().unwrap().unwrap().0), 4);
         c.decrease().unwrap();
         c.advance().unwrap();
-        assert_eq!(extract_int_from_key(&c.current().unwrap().unwrap().0),4);
+        assert_eq!(extract_int_from_key(&c.current().unwrap().unwrap().0), 4);
         c.advance().unwrap();
         assert!(!c.is_valid());
     }
@@ -218,33 +242,37 @@ mod tests {
     #[test]
     fn test_09_go_to_less_than_equal_found() {
         let mut t = make_tree();
-        let keys = vec![10,20,5,15,25,30];
-        for k in &keys { t.insert(make_int_key(*k), make_row(*k)).unwrap(); }
+        let keys = vec![10, 20, 5, 15, 25, 30];
+        for k in &keys {
+            t.insert(make_int_key(*k), make_row(*k)).unwrap();
+        }
         let mut c = BTreeCursor::new(t.clone());
         c.go_to_less_than_equal(&make_int_key(5)).unwrap();
         assert!(c.is_valid());
-        assert_eq!(extract_int_from_key(&c.current().unwrap().unwrap().0),5);
+        assert_eq!(extract_int_from_key(&c.current().unwrap().unwrap().0), 5);
         c.go_to_less_than_equal(&make_int_key(20)).unwrap();
         assert!(c.is_valid());
-        assert_eq!(extract_int_from_key(&c.current().unwrap().unwrap().0),20);
+        assert_eq!(extract_int_from_key(&c.current().unwrap().unwrap().0), 20);
         c.go_to_less_than_equal(&make_int_key(30)).unwrap();
         assert!(c.is_valid());
-        assert_eq!(extract_int_from_key(&c.current().unwrap().unwrap().0),30);
+        assert_eq!(extract_int_from_key(&c.current().unwrap().unwrap().0), 30);
     }
 
     #[test]
     fn test_10_go_to_less_than_equal_not_found_predecessor() {
         let mut t = make_tree();
-        for k in [10,20,30] { t.insert(make_int_key(k), make_row(k)).unwrap(); }
+        for k in [10, 20, 30] {
+            t.insert(make_int_key(k), make_row(k)).unwrap();
+        }
         let mut c = BTreeCursor::new(t.clone());
         c.go_to_less_than_equal(&make_int_key(15)).unwrap();
         assert!(c.is_valid());
-        assert_eq!(extract_int_from_key(&c.current().unwrap().unwrap().0),10);
+        assert_eq!(extract_int_from_key(&c.current().unwrap().unwrap().0), 10);
         c.advance().unwrap();
-        assert_eq!(extract_int_from_key(&c.current().unwrap().unwrap().0),20);
+        assert_eq!(extract_int_from_key(&c.current().unwrap().unwrap().0), 20);
         c.go_to_less_than_equal(&make_int_key(35)).unwrap();
         assert!(c.is_valid());
-        assert_eq!(extract_int_from_key(&c.current().unwrap().unwrap().0),30);
+        assert_eq!(extract_int_from_key(&c.current().unwrap().unwrap().0), 30);
         c.advance().unwrap();
         assert!(!c.is_valid());
     }
@@ -252,33 +280,39 @@ mod tests {
     #[test]
     fn test_11_go_to_less_than_equal_not_found_invalid() {
         let mut t = make_tree();
-        for k in [10,20,30] { t.insert(make_int_key(k), make_row(k)).unwrap(); }
+        for k in [10, 20, 30] {
+            t.insert(make_int_key(k), make_row(k)).unwrap();
+        }
         let mut c = BTreeCursor::new(t.clone());
         c.go_to_less_than_equal(&make_int_key(5)).unwrap();
         assert!(!c.is_valid());
         c.move_to_start().unwrap();
-        assert_eq!(extract_int_from_key(&c.current().unwrap().unwrap().0),10);
+        assert_eq!(extract_int_from_key(&c.current().unwrap().unwrap().0), 10);
     }
 
     #[test]
     fn test_12_go_to_found() {
         let mut t = make_tree();
-        let keys = vec![10,20,5,15,25,30];
-        for k in keys { t.insert(make_int_key(k), make_row(k)).unwrap(); }
+        let keys = vec![10, 20, 5, 15, 25, 30];
+        for k in keys {
+            t.insert(make_int_key(k), make_row(k)).unwrap();
+        }
         let mut c = BTreeCursor::new(t.clone());
         c.go_to(&make_int_key(5)).unwrap();
         assert!(c.is_valid());
-        assert_eq!(extract_int_from_key(&c.current().unwrap().unwrap().0),5);
+        assert_eq!(extract_int_from_key(&c.current().unwrap().unwrap().0), 5);
         c.go_to(&make_int_key(20)).unwrap();
-        assert_eq!(extract_int_from_key(&c.current().unwrap().unwrap().0),20);
+        assert_eq!(extract_int_from_key(&c.current().unwrap().unwrap().0), 20);
         c.go_to(&make_int_key(30)).unwrap();
-        assert_eq!(extract_int_from_key(&c.current().unwrap().unwrap().0),30);
+        assert_eq!(extract_int_from_key(&c.current().unwrap().unwrap().0), 30);
     }
 
     #[test]
     fn test_13_go_to_not_found_invalid() {
         let mut t = make_tree();
-        for k in [10,20,30] { t.insert(make_int_key(k), make_row(k)).unwrap(); }
+        for k in [10, 20, 30] {
+            t.insert(make_int_key(k), make_row(k)).unwrap();
+        }
         let mut c = BTreeCursor::new(t.clone());
         c.go_to(&make_int_key(15)).unwrap();
         assert!(!c.is_valid());
@@ -288,10 +322,10 @@ mod tests {
         assert!(!c.is_valid());
         c.go_to_less_than_equal(&make_int_key(10)).unwrap();
         assert!(c.is_valid());
-        assert_eq!(extract_int_from_key(&c.current().unwrap().unwrap().0),10);
+        assert_eq!(extract_int_from_key(&c.current().unwrap().unwrap().0), 10);
         c.go_to(&make_int_key(20)).unwrap();
         assert!(c.is_valid());
-        assert_eq!(extract_int_from_key(&c.current().unwrap().unwrap().0),20);
+        assert_eq!(extract_int_from_key(&c.current().unwrap().unwrap().0), 20);
     }
 
     #[test]
@@ -299,8 +333,10 @@ mod tests {
         let mut t = make_tree();
         let mut keys: Vec<i32> = (1000..2500).collect();
         keys.shuffle(&mut rand::thread_rng());
-        for k in &keys { t.insert(make_int_key(*k), make_row(*k)).unwrap(); }
-        let mut expected: Vec<(i32,i32)> = keys.iter().map(|k| (*k,*k)).collect();
+        for k in &keys {
+            t.insert(make_int_key(*k), make_row(*k)).unwrap();
+        }
+        let mut expected: Vec<(i32, i32)> = keys.iter().map(|k| (*k, *k)).collect();
         expected.sort_by_key(|x| x.0);
         let mut c = BTreeCursor::new(t.clone());
         for _ in 0..500 {
@@ -308,26 +344,37 @@ mod tests {
             let idx = expected.iter().position(|p| p.0 == target).unwrap();
             c.go_to(&make_int_key(target)).unwrap();
             assert!(c.is_valid());
-            assert_eq!(extract_int_from_key(&c.current().unwrap().unwrap().0), target);
+            assert_eq!(
+                extract_int_from_key(&c.current().unwrap().unwrap().0),
+                target
+            );
             let dec = rand::thread_rng().gen_range(1..=5);
             let real = dec.min(idx);
-            for _ in 0..real { c.decrease().unwrap(); }
+            for _ in 0..real {
+                c.decrease().unwrap();
+            }
             let after_dec = idx - real;
             if after_dec < expected.len() {
                 assert!(c.is_valid());
-                let (k,r)=c.current().unwrap().unwrap();
-                assert_eq!((extract_int_from_key(&k),extract_int_from_row(&r)),
-                           expected[after_dec]);
+                let (k, r) = c.current().unwrap().unwrap();
+                assert_eq!(
+                    (extract_int_from_key(&k), extract_int_from_row(&r)),
+                    expected[after_dec]
+                );
             }
             let mut cur = after_dec;
             let adv = 10;
             let real_adv = adv.min(expected.len() - 1 - cur);
-            for _ in 0..real_adv { c.advance().unwrap(); }
+            for _ in 0..real_adv {
+                c.advance().unwrap();
+            }
             cur += real_adv;
             if cur < expected.len() {
-                let (k,r)=c.current().unwrap().unwrap();
-                assert_eq!((extract_int_from_key(&k),extract_int_from_row(&r)),
-                           expected[cur]);
+                let (k, r) = c.current().unwrap().unwrap();
+                assert_eq!(
+                    (extract_int_from_key(&k), extract_int_from_row(&r)),
+                    expected[cur]
+                );
             } else {
                 c.advance().unwrap();
                 assert!(!c.is_valid());

@@ -44,13 +44,19 @@ pub const TOMB_THRESHOLD: usize = 10; //10 percent
 fn main() {
     let mut executor = Executor::init("./default.db.bin", BTREE_NODE_SIZE);
     println!("running RustSQL shell...");
-    /*
-    for i in 0..30 {
-        executor.exec(format!("CREATE TABLE users{} (id Integer, name String))", i));
-    }
+
+    executor.exec(format!(
+        "CREATE TABLE Users (id Integer, name String, place String))"
+    ));
+
     for i in 0..50 {
-        executor.exec(format!("INSERT INTO users{} (id, name) VALUES ({}, 'Fabian')", i % 4, i));
-    }*/
+        executor.exec(format!(
+            "INSERT INTO Users (id, name, place) VALUES ({}, 'User {}', 'Place {}')",
+            i,
+            i,
+            i % 4
+        ));
+    }
     loop {
         io::stdout().flush().unwrap();
 

@@ -103,7 +103,7 @@ impl TableSchema {
             merged_fields.push(Field {
                 field_type: f.field_type.clone(),
                 name: f.name.clone(),
-                table_name: f.table_name.clone()
+                table_name: f.table_name.clone(),
             });
         }
 
@@ -111,7 +111,7 @@ impl TableSchema {
             merged_fields.push(Field {
                 field_type: f.field_type.clone(),
                 name: f.name.clone(),
-                table_name: f.table_name.clone()
+                table_name: f.table_name.clone(),
             });
         }
 
@@ -135,13 +135,10 @@ impl TableSchema {
         left_key: &Field,
         right_key: &Field,
     ) -> Result<(usize, usize), Status> {
-        let (left_pos, left_field) = self.get_column_and_field(left_key).ok_or(
-            Status::Error
-        )?;
+        let (left_pos, left_field) = self.get_column_and_field(left_key).ok_or(Status::Error)?;
 
-        let (right_pos, right_field) = other.get_column_and_field(right_key).ok_or(
-            Status::Error
-        )?;
+        let (right_pos, right_field) =
+            other.get_column_and_field(right_key).ok_or(Status::Error)?;
 
         if left_field.field_type != right_field.field_type {
             return Err(Status::Error);
@@ -156,7 +153,10 @@ impl TableSchema {
         left_key: &Field,
         right_key: &Field,
     ) -> Result<(JoinOp, JoinOp), Status> {
-        println!("{:?} - {:?} - {:?} - {:?}", self, other, left_key, right_key);
+        println!(
+            "{:?} - {:?} - {:?} - {:?}",
+            self, other, left_key, right_key
+        );
         let (left_pos, right_pos) =
             self.get_join_positions_and_validate(other, left_key, right_key)?;
         let left_op = if self.has_key && self.key_position == left_pos {
@@ -191,7 +191,7 @@ impl TableSchema {
                     matched = Some(Field {
                         field_type: f.field_type.clone(),
                         name: f.name.clone(),
-                        table_name: f.table_name.clone()
+                        table_name: f.table_name.clone(),
                     });
                     break;
                 }
@@ -215,13 +215,10 @@ impl TableSchema {
     }
 
     pub fn get_column_and_field(&self, key: &Field) -> Option<(usize, Field)> {
-        let mut matches = self
-            .fields
-            .iter()
-            .enumerate()
-            .filter(|(_, field)| {
-                field.name == key.name && (key.table_name.is_empty() || field.table_name == key.table_name)
-            });
+        let mut matches = self.fields.iter().enumerate().filter(|(_, field)| {
+            field.name == key.name
+                && (key.table_name.is_empty() || field.table_name == key.table_name)
+        });
 
         let first = matches.next()?;
 
@@ -231,5 +228,4 @@ impl TableSchema {
 
         Some((first.0, first.1.clone()))
     }
-
 }

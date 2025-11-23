@@ -2,8 +2,7 @@ use crate::btree::Btree;
 use std::cmp::PartialEq;
 use std::fmt::{Debug, Formatter};
 
-#[derive(PartialEq, Debug)]
-#[derive(Clone)]
+#[derive(PartialEq, Debug, Clone)]
 pub enum Status {
     //status codes to be sent to the end user
     Error,
@@ -44,4 +43,6 @@ pub enum Status {
     ExceptionTableAlreadyExists,
     InternalExceptionDBCreationFailed,
     DataFrameJoinError,
+    NotImplemented,
+    CursorError,
 }

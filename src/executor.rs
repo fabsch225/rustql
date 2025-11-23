@@ -1,26 +1,31 @@
-use crate::btree::{Btree};
+use crate::btree::Btree;
+use crate::cursor::BTreeCursor;
+use crate::dataframe::{
+    BTreeScanSource, DataFrame, JoinStrategy, MemorySource, RowSource, SetOpStrategy, Source,
+};
 use crate::pager::{
-    Key, PagerAccessor, PagerCore, Position, Row, TableName, Type, PAGE_SIZE, PAGE_SIZE_WITH_META,
+    Key, PAGE_SIZE, PAGE_SIZE_WITH_META, PagerAccessor, PagerCore, Position, Row, TableName, Type,
 };
 use crate::pager_proxy::PagerProxy;
+use crate::parser::JoinType::Natural;
 use crate::parser::{JoinType, ParsedSetOperator, Parser};
 use crate::planner::SqlStatementComparisonOperator::{
     Equal, Greater, GreaterOrEqual, Lesser, LesserOrEqual,
 };
-use crate::planner::{CompiledCreateTableQuery, CompiledDeleteQuery, CompiledInsertQuery, CompiledQuery, CompiledSelectQuery, PlanNode, Planner, SqlConditionOpCode, SqlStatementComparisonOperator};
+use crate::planner::{
+    CompiledCreateTableQuery, CompiledDeleteQuery, CompiledInsertQuery, CompiledQuery,
+    CompiledSelectQuery, PlanNode, Planner, SqlConditionOpCode, SqlStatementComparisonOperator,
+};
+pub(crate) use crate::schema::{Field, Schema, TableIndex, TableSchema};
 use crate::serializer::Serializer;
 use crate::status::Status;
 use crate::status::Status::ExceptionQueryMisformed;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fmt;
-use std::fmt::{format, Display, Formatter};
+use std::fmt::{Display, Formatter, format};
 use std::fs::OpenOptions;
 use std::io::{ErrorKind, Write};
-use crate::cursor::BTreeCursor;
-use crate::dataframe::{BTreeScanSource, DataFrame, MemorySource, RowSource, Source};
-pub(crate) use crate::schema::{Field, Schema, TableIndex, TableSchema};
-
 
 const MASTER_TABLE_NAME: &str = "rustsql_master";
 
@@ -123,10 +128,10 @@ impl Executor {
             pager_accessor: pager_accessor.clone(),
             query_cache: HashMap::new(),
             schema: Schema {
-                table_index: TableIndex { index: vec![TableName::from(MASTER_TABLE_NAME.to_string())] },
-                tables: vec![
-                    Self::make_master_table_schema()
-                ],
+                table_index: TableIndex {
+                    index: vec![TableName::from(MASTER_TABLE_NAME.to_string())],
+                },
+                tables: vec![Self::make_master_table_schema()],
             },
             btree_node_width: t,
         };
@@ -251,7 +256,9 @@ impl Executor {
                 todo!()
             }
             CompiledQuery::Select(q) => {
-                let result_df = self.execute_plan(&q.plan).map_err(|s| QueryResult::err(s))?;
+                let result_df = self
+                    .exec_planned_tree(&q.plan)
+                    .map_err(|s| QueryResult::err(s))?;
                 Ok(QueryResult::return_data(result_df))
             }
             CompiledQuery::Insert(q) => {
@@ -268,25 +275,31 @@ impl Executor {
                 Ok(QueryResult::went_fine())
             }
             CompiledQuery::Delete(q) => {
-                let mut source = self.create_scan_source(q.table_id, q.operation, q.conditions.clone())
+                let mut source = self
+                    .create_scan_source(q.table_id, q.operation, q.conditions.clone())
                     .map_err(|s| QueryResult::err(s))?;
 
                 let schema = &self.schema.tables[q.table_id];
                 let key_offset = {
                     let mut offset = 0;
                     for i in 0..schema.key_position {
-                        offset += Serializer::get_size_of_type(&schema.fields[i].field_type).map_err(QueryResult::err)?;
+                        offset += Serializer::get_size_of_type(&schema.fields[i].field_type)
+                            .map_err(QueryResult::err)?;
                     }
                     offset
                 };
-                let key_len = Serializer::get_size_of_type(&schema.fields[schema.key_position].field_type).map_err(QueryResult::err)?;
+                let key_len =
+                    Serializer::get_size_of_type(&schema.fields[schema.key_position].field_type)
+                        .map_err(QueryResult::err)?;
 
                 let mut keys_to_delete = Vec::new();
 
                 source.reset().map_err(QueryResult::err)?;
                 while let Some(row) = source.next().map_err(QueryResult::err)? {
                     if row.len() < key_offset + key_len {
-                        return Err(QueryResult::err(Status::InternalExceptionIntegrityCheckFailed));
+                        return Err(QueryResult::err(
+                            Status::InternalExceptionIntegrityCheckFailed,
+                        ));
                     }
                     let key = row[key_offset..key_offset + key_len].to_vec();
                     keys_to_delete.push(key);
@@ -297,7 +310,7 @@ impl Executor {
                     self.pager_accessor.clone(),
                     schema.clone(),
                 )
-                    .map_err(|s| QueryResult::err(s))?;
+                .map_err(|s| QueryResult::err(s))?;
 
                 for key in keys_to_delete {
                     btree.delete(key).map_err(|s| QueryResult::err(s))?;
@@ -307,117 +320,105 @@ impl Executor {
         }
     }
 
-    /// Recursive execution engine for the Query Plan Tree
-    fn execute_plan(&self, plan: &PlanNode) -> Result<DataFrame, Status> {
+    fn exec_planned_tree(&self, plan: &PlanNode) -> Result<DataFrame, Status> {
         match plan {
-            PlanNode::SeqScan { table_id, table_name, operation, conditions } => {
-                let mut source = self.create_scan_source(*table_id, operation.clone(), conditions.clone())?;
-                let mut result_data = Vec::new();
-
-                source.reset()?;
-                while let Some(row) = source.next()? {
-                    result_data.push(row);
-                }
-                let x = DataFrame::from_memory(table_name.clone(), plan.get_header(&self.schema)?, result_data);
-                Ok(x)
+            PlanNode::SeqScan {
+                table_id,
+                table_name,
+                operation,
+                conditions,
+            } => {
+                let schema = self.schema.tables[*table_id].clone();
+                let btree = Btree::init(
+                    self.btree_node_width,
+                    self.pager_accessor.clone(),
+                    schema.clone(),
+                )?;
+                Ok(DataFrame::from_table(
+                    table_name.clone(),
+                    plan.get_header(&self.schema)?,
+                    btree,
+                    operation.clone(),
+                    conditions.clone(),
+                ))
             }
 
             PlanNode::Filter { source, conditions } => {
-                let source_df = self.execute_plan(source)?;
-                let mut filtered_data = Vec::new();
-
-                for row in source_df.get_data()? {
-                    if Serializer::check_condition_on_bytes(&row, conditions, &plan.get_header(&self.schema)?)? {
-                        //ToDo potentially Expensive!
-                        filtered_data.push(row.clone());
-                    }
-                }
-
-                Ok(DataFrame::from_memory("".to_string(), plan.get_header(&self.schema)?, filtered_data))
+                let source_df = self.exec_planned_tree(source)?;
+                Ok(source_df.filter(conditions.clone()))
             }
 
             PlanNode::Project { source, fields } => {
-                let source_df = self.execute_plan(source)?;
-                let mut project_data = Vec::new();
-                let result_header: Vec<Field> = fields.clone();
-
+                let source_df = self.exec_planned_tree(source)?;
+                //ToDo compute these in the Planner
                 let mut mapping_indices = Vec::new();
                 for req_field in fields {
-                    if let Some(idx) = source_df.header.iter().position(|f|
-                        {
-                            f.name == req_field.name
-                        }
-                    ) {
+                    if let Some(idx) = source_df
+                        .header
+                        .iter()
+                        .position(|f| f.name == req_field.name)
+                    {
                         mapping_indices.push(idx);
                     } else {
-                        return Err(Status::InternalExceptionCompilerError); // Should have been caught by Planner
+                        return Err(Status::InternalExceptionCompilerError);
                     }
                 }
-                let header = source_df.header.clone();
-                for row in source_df.get_data()? {
-                    let mut new_row_bytes = Vec::new();
 
-                    let split_fields = Serializer::split_row_into_fields(&row, &header)?;
-
-                    for &idx in &mapping_indices {
-                        new_row_bytes.extend_from_slice(&split_fields[idx]);
-                    }
-                    project_data.push(new_row_bytes);
-                }
-
-                Ok(DataFrame::from_memory("".to_string(), result_header, project_data))
+                Ok(source_df.project(fields.clone(), mapping_indices))
             }
 
-            PlanNode::Join {left, right, conditions, ..} => {
-                let x = plan.get_schema(&self.schema);
+            PlanNode::Join {
+                left,
+                right,
+                conditions,
+                join_type,
+                ..
+            } => {
+                debug_assert!(*join_type == JoinType::Inner || *join_type == Natural);
+                debug_assert_eq!(conditions.len(), 1);
                 let mut left_source = self.get_row_source(left)?;
-                let mut right_source = self.get_row_source(right)?;
-
-                Ok(left_source.join(&right_source, conditions)?)
+                let right_source = self.get_row_source(right)?;
+                let left_col = conditions[0].0.clone();
+                let right_col = conditions[0].1.clone();
+                let l_idx = left_source
+                    .header
+                    .iter()
+                    .position(|f| f.name == left_col.name && f.table_name == left_col.table_name)
+                    .ok_or(Status::DataFrameJoinError)?;
+                let r_idx = right_source
+                    .header
+                    .iter()
+                    .position(|f| f.name == right_col.name && f.table_name == right_col.table_name)
+                    .ok_or(Status::DataFrameJoinError)?;
+                Ok(left_source.join(right_source, l_idx, r_idx, JoinStrategy::Hash)?)
             }
 
             PlanNode::SetOperation { op, left, right } => {
-                let left_df = self.execute_plan(left)?;
-                let right_df = self.execute_plan(right)?;
-                let left_header = left_df.header.clone();
-                let mut result_data = left_df.get_data()?;
-                let right_data = right_df.get_data()?;
-                match op {
-                    ParsedSetOperator::Union => {
-                        // ToDo Remove Duplucates
-                        result_data.extend(right_data);
-                    }
-                    ParsedSetOperator::Intersect => {
-                        // ToDo this is O(N*M)
-                        result_data.retain(|l_row| right_data.contains(l_row));
-                    }
-                    ParsedSetOperator::Except | ParsedSetOperator::Minus => {
-                        result_data.retain(|l_row| !right_data.contains(l_row));
-                    }
-                    _ => {
-                        // ToDo others
-                        result_data.extend(right_data);
-                    }
-                }
+                let left_df = self.exec_planned_tree(left)?;
+                let right_df = self.exec_planned_tree(right)?;
 
-                Ok(DataFrame::from_memory("".to_string(), left_header, result_data))
+                Ok(left_df.set_operation(right_df, op.clone(), SetOpStrategy::HashedMemory)?)
             }
         }
     }
 
     fn get_row_source(&self, plan: &PlanNode) -> Result<DataFrame, Status> {
         match plan {
-            PlanNode::SeqScan { table_id, operation, conditions, .. } => {
-                let scan_source = self.create_scan_source(*table_id, operation.clone(), conditions.clone())?;
+            PlanNode::SeqScan {
+                table_id,
+                operation,
+                conditions,
+                ..
+            } => {
+                let scan_source =
+                    self.create_scan_source(*table_id, operation.clone(), conditions.clone())?;
                 Ok(DataFrame {
                     header: plan.get_header(&self.schema)?,
                     identifier: plan.get_schema(&self.schema)?.name,
-                    row_source: Source::BTree(scan_source)
+                    row_source: Source::BTree(scan_source),
                 })
             }
-            _ => {
-                self.execute_plan(plan)
-            }
+            _ => self.exec_planned_tree(plan),
         }
     }
 
@@ -471,7 +472,6 @@ impl Executor {
 
         Ok(())
     }
-
 
     pub fn create_database(file_name: &str) -> Result<(), Status> {
         let mut db = [0u8; 2 + PAGE_SIZE_WITH_META];
@@ -535,11 +535,13 @@ impl Executor {
                         table_name: MASTER_TABLE_NAME.to_string(),
                     },
                 ],
-            }
+            },
         };
 
-        let result = self.execute_plan(&select_query.plan).expect("Failed Initialisation");
-        let data = result.get_data().expect("Failed Initialisation");
+        let result = self
+            .exec_planned_tree(&select_query.plan)
+            .expect("Failed Initialisation");
+        let data = result.fetch_data().expect("Failed Initialisation");
         data.iter().for_each(|entry| {
             let name = Serializer::get_field_on_row(entry, 0, &master_table_schema)
                 .expect("Failed to get field: Name");
@@ -584,7 +586,7 @@ impl Executor {
             Ok(CompiledQuery::CreateTable(mut create)) => {
                 create.schema.root = Position::new(1, 0);
                 create.schema
-            },
+            }
             _ => {
                 panic!("wtf")
             }

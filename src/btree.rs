@@ -1,10 +1,10 @@
 use crate::pager::{Key, PagerAccessor, Position, Row};
 use crate::pager_proxy::PagerProxy;
+use crate::schema::TableSchema;
 use crate::serializer::Serializer;
 use crate::status::Status;
 use std::fmt::Display;
 use std::fmt::{Debug, Formatter};
-use crate::schema::TableSchema;
 
 #[derive(Clone, Debug)]
 pub struct BTreeNode {
@@ -245,13 +245,7 @@ impl Btree {
         Ok(())
     }
 
-    fn insert_non_full(
-        &self,
-        x: &BTreeNode,
-        key: Key,
-        row: Row,
-        t: usize,
-    ) -> Result<(), Status> {
+    fn insert_non_full(&self, x: &BTreeNode, key: Key, row: Row, t: usize) -> Result<(), Status> {
         let mut i = x.get_keys_count()? as isize - 1;
         if x.is_leaf() {
             x.push_key(

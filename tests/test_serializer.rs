@@ -26,7 +26,7 @@ mod tests {
             ],
             table_type: 0,
             entry_count: 0,
-            name: "".to_string()
+            name: "".to_string(),
         }
     }
 
@@ -182,7 +182,10 @@ mod tests {
         let keys_b_altered = Serializer::read_keys_as_vec(&page_b, &pos_b, &schema).unwrap();
         assert_eq!(keys_a[0], vec![4u8; schema.get_key_length().unwrap()]);
         assert_eq!(keys_b[0], vec![0u8; schema.get_key_length().unwrap()]);
-        assert_eq!(keys_b_altered[0], vec![0u8; schema.get_key_length().unwrap()]);
+        assert_eq!(
+            keys_b_altered[0],
+            vec![0u8; schema.get_key_length().unwrap()]
+        );
     }
     #[test]
     fn test_switch_nodes_large_page() {
@@ -212,8 +215,14 @@ mod tests {
     #[test]
     fn test_init_page_data_w_children() {
         let schema = get_schema();
-        let keys = vec![vec![1u8; schema.get_key_length().unwrap()], vec![2u8; schema.get_key_length().unwrap()]];
-        let rows = vec![vec![9u8; schema.get_row_length().unwrap()], vec![8u8; schema.get_row_length().unwrap()]];
+        let keys = vec![
+            vec![1u8; schema.get_key_length().unwrap()],
+            vec![2u8; schema.get_key_length().unwrap()],
+        ];
+        let rows = vec![
+            vec![9u8; schema.get_row_length().unwrap()],
+            vec![8u8; schema.get_row_length().unwrap()],
+        ];
         let children = vec![Position::new(2, 2); 3];
         let page = Serializer::init_page_data_with_children(keys, children, rows, &schema).unwrap();
         assert_eq!(page[0], 2); // Number of keys
@@ -236,8 +245,14 @@ mod tests {
     #[test]
     fn test_init_page_data() {
         let schema = get_schema();
-        let keys = vec![vec![1u8; schema.get_key_length().unwrap()], vec![2u8; schema.get_key_length().unwrap()]];
-        let rows = vec![vec![9u8; schema.get_row_length().unwrap()], vec![8u8; schema.get_row_length().unwrap()]];
+        let keys = vec![
+            vec![1u8; schema.get_key_length().unwrap()],
+            vec![2u8; schema.get_key_length().unwrap()],
+        ];
+        let rows = vec![
+            vec![9u8; schema.get_row_length().unwrap()],
+            vec![8u8; schema.get_row_length().unwrap()],
+        ];
         let children = vec![Position::new(2, 2); 3];
         let page = Serializer::init_page_data_with_children(keys, children, rows, &schema).unwrap();
         assert_eq!(page[0], 2); // Number of keys
@@ -256,8 +271,14 @@ mod tests {
     #[test]
     fn test_write_keys_vec_resize_increase() {
         let schema = get_schema();
-        let keys = vec![vec![1u8; schema.get_key_length().unwrap()], vec![2u8; schema.get_key_length().unwrap()]];
-        let rows = vec![vec![9u8; schema.get_row_length().unwrap()], vec![8u8; schema.get_row_length().unwrap()]];
+        let keys = vec![
+            vec![1u8; schema.get_key_length().unwrap()],
+            vec![2u8; schema.get_key_length().unwrap()],
+        ];
+        let rows = vec![
+            vec![9u8; schema.get_row_length().unwrap()],
+            vec![8u8; schema.get_row_length().unwrap()],
+        ];
         let children = vec![Position::new(2, 2); 3];
         let mut page =
             Serializer::init_page_data_with_children(keys, children, rows, &schema).unwrap();

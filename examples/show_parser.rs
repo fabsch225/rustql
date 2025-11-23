@@ -1,8 +1,8 @@
+use rustql::executor::{Executor, QueryResult};
 use rustql::parser::*;
+use rustql::planner::{CompiledQuery, Planner};
 use std::io;
 use std::io::Write;
-use rustql::executor::{Executor, QueryResult};
-use rustql::planner::{CompiledQuery, Planner};
 
 fn main() {
     let mut executor = Executor::init("./default.db.bin", 3);
@@ -33,9 +33,9 @@ fn main() {
                             Ok(compiled_query) => {
                                 println!("{:?}", compiled_query);
                             }
-                            Err(e) => println!("Error compiling query: {}", e)
+                            Err(e) => println!("Error compiling query: {}", e),
                         }
-                    },
+                    }
                     Err(e) => println!("Error parsing query: {:?}", e),
                 }
             }

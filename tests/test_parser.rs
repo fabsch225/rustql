@@ -154,7 +154,7 @@ mod tests {
                                         assert_eq!(join1.conditions[0].left, "t.e");
                                         assert_eq!(join1.conditions[0].right, "a.e");
                                         match &join1.conditions[0].join_type {
-                                            JoinType::Inner => {},
+                                            JoinType::Inner => {}
                                             _ => panic!("Expected Inner Join"),
                                         }
 
@@ -175,25 +175,47 @@ mod tests {
                                                             ParsedSource::Join(join2) => {
                                                                 // join2: x JOIN y ON x.e = y.e
                                                                 assert_eq!(join2.sources.len(), 2);
-                                                                assert_eq!(join2.conditions.len(), 1);
+                                                                assert_eq!(
+                                                                    join2.conditions.len(),
+                                                                    1
+                                                                );
 
-                                                                assert_eq!(join2.conditions[0].left, "x.e");
-                                                                assert_eq!(join2.conditions[0].right, "y.e");
-                                                                match &join2.conditions[0].join_type {
-                                                                    JoinType::Left => {},
-                                                                    _ => panic!("Expected Left Join"),
+                                                                assert_eq!(
+                                                                    join2.conditions[0].left,
+                                                                    "x.e"
+                                                                );
+                                                                assert_eq!(
+                                                                    join2.conditions[0].right,
+                                                                    "y.e"
+                                                                );
+                                                                match &join2.conditions[0].join_type
+                                                                {
+                                                                    JoinType::Left => {}
+                                                                    _ => {
+                                                                        panic!("Expected Left Join")
+                                                                    }
                                                                 }
 
                                                                 match &join2.sources[0] {
-                                                                    ParsedSource::Table(t) => assert_eq!(t, "x"),
-                                                                    _ => panic!("Expected Table(\"x\")"),
+                                                                    ParsedSource::Table(t) => {
+                                                                        assert_eq!(t, "x")
+                                                                    }
+                                                                    _ => panic!(
+                                                                        "Expected Table(\"x\")"
+                                                                    ),
                                                                 }
                                                                 match &join2.sources[1] {
-                                                                    ParsedSource::Table(t) => assert_eq!(t, "y"),
-                                                                    _ => panic!("Expected Table(\"y\")"),
+                                                                    ParsedSource::Table(t) => {
+                                                                        assert_eq!(t, "y")
+                                                                    }
+                                                                    _ => panic!(
+                                                                        "Expected Table(\"y\")"
+                                                                    ),
                                                                 }
                                                             }
-                                                            _ => panic!("Expected join inside subquery"),
+                                                            _ => panic!(
+                                                                "Expected join inside subquery"
+                                                            ),
                                                         }
                                                     }
                                                     _ => panic!("Expected SingleQuery in subquery"),
@@ -217,7 +239,8 @@ mod tests {
 
     #[test]
     fn test_subquery_and_top_level_join() {
-        let query = "SELECT * FROM (SELECT * FROM x INNER JOIN y ON x.a = y.b) INNER JOIN z ON z.a = y.b";
+        let query =
+            "SELECT * FROM (SELECT * FROM x INNER JOIN y ON x.a = y.b) INNER JOIN z ON z.a = y.b";
         let mut parser = Parser::new(query.to_string());
         let parsed = parser.parse_query().expect("Parse failed");
 
@@ -233,43 +256,41 @@ mod tests {
                         assert_eq!(top_join.conditions[0].left, "z.a");
                         assert_eq!(top_join.conditions[0].right, "y.b");
                         match &top_join.conditions[0].join_type {
-                            JoinType::Inner => {},
+                            JoinType::Inner => {}
                             _ => panic!("Expected Inner Join"),
                         }
 
                         match &top_join.sources[0] {
-                            ParsedSource::SubQuery(subq) => {
-                                match subq.as_ref() {
-                                    ParsedQueryTreeNode::SingleQuery(inner) => {
-                                        assert_eq!(inner.result, vec!["*"]);
+                            ParsedSource::SubQuery(subq) => match subq.as_ref() {
+                                ParsedQueryTreeNode::SingleQuery(inner) => {
+                                    assert_eq!(inner.result, vec!["*"]);
 
-                                        match &inner.source {
-                                            ParsedSource::Join(j) => {
-                                                assert_eq!(j.sources.len(), 2);
-                                                assert_eq!(j.conditions.len(), 1);
+                                    match &inner.source {
+                                        ParsedSource::Join(j) => {
+                                            assert_eq!(j.sources.len(), 2);
+                                            assert_eq!(j.conditions.len(), 1);
 
-                                                assert_eq!(j.conditions[0].left, "x.a");
-                                                assert_eq!(j.conditions[0].right, "y.b");
-                                                match &j.conditions[0].join_type {
-                                                    JoinType::Inner => {},
-                                                    _ => panic!("Expected Inner Join"),
-                                                }
-
-                                                match &j.sources[0] {
-                                                    ParsedSource::Table(t) => assert_eq!(t, "x"),
-                                                    _ => panic!("Expected Table(\"x\")"),
-                                                }
-                                                match &j.sources[1] {
-                                                    ParsedSource::Table(t) => assert_eq!(t, "y"),
-                                                    _ => panic!("Expected Table(\"y\")"),
-                                                }
+                                            assert_eq!(j.conditions[0].left, "x.a");
+                                            assert_eq!(j.conditions[0].right, "y.b");
+                                            match &j.conditions[0].join_type {
+                                                JoinType::Inner => {}
+                                                _ => panic!("Expected Inner Join"),
                                             }
-                                            _ => panic!("Expected join inside subquery"),
+
+                                            match &j.sources[0] {
+                                                ParsedSource::Table(t) => assert_eq!(t, "x"),
+                                                _ => panic!("Expected Table(\"x\")"),
+                                            }
+                                            match &j.sources[1] {
+                                                ParsedSource::Table(t) => assert_eq!(t, "y"),
+                                                _ => panic!("Expected Table(\"y\")"),
+                                            }
                                         }
+                                        _ => panic!("Expected join inside subquery"),
                                     }
-                                    _ => panic!("Expected SingleQuery in subquery"),
                                 }
-                            }
+                                _ => panic!("Expected SingleQuery in subquery"),
+                            },
                             _ => panic!("Expected subquery as first join source"),
                         }
 
@@ -284,7 +305,6 @@ mod tests {
             _ => panic!("Expected SELECT query"),
         }
     }
-
 
     #[test]
     fn test_unknown_query_type() {

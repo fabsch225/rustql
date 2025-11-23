@@ -1,10 +1,13 @@
 use crate::executor::{Field, QueryResult};
 use crate::pager::{Key, Position, Row, TableName, Type};
-use crate::parser::{JoinOp, JoinType, ParsedJoinCondition, ParsedQuery, ParsedQueryTreeNode, ParsedSetOperator, ParsedSource};
-use crate::serializer::Serializer;
-use std::str::FromStr;
+use crate::parser::{
+    JoinOp, JoinType, ParsedJoinCondition, ParsedQuery, ParsedQueryTreeNode, ParsedSetOperator,
+    ParsedSource,
+};
 use crate::schema::{Schema, TableSchema};
+use crate::serializer::Serializer;
 use crate::status::Status;
+use std::str::FromStr;
 
 /// ## Responsibilities
 /// - verifying queries (do they match the Query)
@@ -75,23 +78,32 @@ impl PlanNode {
     /// get the output schema of a node for parent resolution
     pub fn get_schema(&self, global_schema: &Schema) -> Result<TableSchema, Status> {
         match self {
-            PlanNode::SeqScan { table_id, table_name, .. } => {
-                Ok(global_schema.tables[*table_id].clone())
-            }
+            PlanNode::SeqScan {
+                table_id,
+                table_name,
+                ..
+            } => Ok(global_schema.tables[*table_id].clone()),
             PlanNode::Project { fields, source, .. } => {
                 Ok(source.get_schema(global_schema)?.project(fields))
-            },
-            PlanNode::Join { left, right, conditions, ..} => {
+            }
+            PlanNode::Join {
+                left,
+                right,
+                conditions,
+                ..
+            } => {
                 let right_schema = right.get_schema(global_schema)?;
-                left.get_schema(global_schema)?.join(&right_schema, &conditions[0].0, &conditions[0].1)
+                left.get_schema(global_schema)?.join(
+                    &right_schema,
+                    &conditions[0].0,
+                    &conditions[0].1,
+                )
             }
             PlanNode::SetOperation { left, .. } => {
                 // ToDo Check This
                 left.get_schema(global_schema)
-            },
-            PlanNode::Filter { source, .. } => {
-                source.get_schema(global_schema)
             }
+            PlanNode::Filter { source, .. } => source.get_schema(global_schema),
         }
     }
 
@@ -141,7 +153,12 @@ impl Planner {
                 let table_schema = &schema.tables[table_id];
 
                 if insert_query.fields.len() == 0 {
-                    insert_query.fields = table_schema.fields.clone().into_iter().map(|f|{f.name }).collect();;
+                    insert_query.fields = table_schema
+                        .fields
+                        .clone()
+                        .into_iter()
+                        .map(|f| f.name)
+                        .collect();
                 }
 
                 if insert_query.fields.len() != insert_query.values.len() {
@@ -176,7 +193,9 @@ impl Planner {
                 }
 
                 if ordered_data.is_empty() {
-                    return Err(QueryResult::user_input_wrong("Cannot insert empty row".into()));
+                    return Err(QueryResult::user_input_wrong(
+                        "Cannot insert empty row".into(),
+                    ));
                 }
 
                 let key = ordered_data[0].clone();
@@ -223,7 +242,7 @@ impl Planner {
                     fields,
                     entry_count: 0,
                     table_type: 0,
-                    name: create_table_query.table_name.clone()
+                    name: create_table_query.table_name.clone(),
                 };
 
                 Ok(CompiledQuery::CreateTable(CompiledCreateTableQuery {
@@ -243,10 +262,8 @@ impl Planner {
                 let table_id = Self::find_table_id(schema, &delete_query.table_name)?;
                 let table_schema = &schema.tables[table_id];
 
-                let (operation, conditions) = Self::compile_conditions(
-                    delete_query.conditions,
-                    &table_schema,
-                )?;
+                let (operation, conditions) =
+                    Self::compile_conditions(delete_query.conditions, &table_schema)?;
 
                 Ok(CompiledQuery::Delete(CompiledDeleteQuery {
                     table_id,
@@ -261,16 +278,21 @@ impl Planner {
         match node {
             ParsedQueryTreeNode::SingleQuery(select_query) => {
                 let source_plan = Self::plan_source(schema, select_query.source)?;
-                let source_schema = source_plan.get_schema(schema).map_err(|_|{QueryResult::user_input_wrong("".to_string())})?;
-                let (derived_op, compiled_conditions) = Self::compile_conditions(
-                    select_query.conditions,
-                    &source_schema,
-                )?;
+                let source_schema = source_plan
+                    .get_schema(schema)
+                    .map_err(|_| QueryResult::user_input_wrong("".to_string()))?;
+                let (derived_op, compiled_conditions) =
+                    Self::compile_conditions(select_query.conditions, &source_schema)?;
 
                 // Optimization: Pushdown vs Filter Node
                 // If the source is a SeqScan, we can inject the conditions directly (efficient scan).
                 // Otherwise (Join, Subquery), we wrap the plan in a Filter node.
-                let filtered_plan = if let PlanNode::SeqScan { table_id, table_name, .. } = source_plan {
+                let filtered_plan = if let PlanNode::SeqScan {
+                    table_id,
+                    table_name,
+                    ..
+                } = source_plan
+                {
                     PlanNode::SeqScan {
                         table_id,
                         table_name,
@@ -278,7 +300,9 @@ impl Planner {
                         conditions: compiled_conditions,
                     }
                 } else {
-                    let has_conditions = compiled_conditions.iter().any(|(op, _)| *op != SqlStatementComparisonOperator::None);
+                    let has_conditions = compiled_conditions
+                        .iter()
+                        .any(|(op, _)| *op != SqlStatementComparisonOperator::None);
                     if has_conditions {
                         PlanNode::Filter {
                             source: Box::new(source_plan),
@@ -303,7 +327,6 @@ impl Planner {
                     source: Box::new(filtered_plan),
                     fields: projected_fields,
                 })
-
             }
             ParsedQueryTreeNode::SetOperation(set_op) => {
                 if set_op.operands.is_empty() {
@@ -317,12 +340,16 @@ impl Planner {
                 for next_operand in iter {
                     let next_plan = Self::plan_tree_node(schema, next_operand)?;
 
-                    let left_schema = current_plan.get_schema(schema).map_err(|_|{QueryResult::user_input_wrong("".to_string())})?;
-                    let right_schema = next_plan.get_schema(schema).map_err(|_|{QueryResult::user_input_wrong("".to_string())})?;
+                    let left_schema = current_plan
+                        .get_schema(schema)
+                        .map_err(|_| QueryResult::user_input_wrong("".to_string()))?;
+                    let right_schema = next_plan
+                        .get_schema(schema)
+                        .map_err(|_| QueryResult::user_input_wrong("".to_string()))?;
 
                     if left_schema.fields.len() != right_schema.fields.len() {
                         return Err(QueryResult::user_input_wrong(
-                            "Set operation operands have different column counts".into()
+                            "Set operation operands have different column counts".into(),
                         ));
                     }
                     //ToDo Check all Fields
@@ -355,41 +382,48 @@ impl Planner {
                     table_id,
                     table_name: table_name.clone(),
                     operation: SqlConditionOpCode::SelectFTS,
-                    conditions: vec![]
+                    conditions: vec![],
                 })
             }
-            ParsedSource::SubQuery(sub_node) => {
-                Self::plan_tree_node(schema, *sub_node)
-            }
+            ParsedSource::SubQuery(sub_node) => Self::plan_tree_node(schema, *sub_node),
             ParsedSource::Join(join_box) => {
                 let parsed_join = *join_box;
                 let mut sources = parsed_join.sources.into_iter();
-                let first_source = sources.next().ok_or(QueryResult::msg("Join with no sources"))?;
+                let first_source = sources
+                    .next()
+                    .ok_or(QueryResult::msg("Join with no sources"))?;
 
                 let mut current_plan = Self::plan_source(schema, first_source)?;
                 let mut conditions_iter = parsed_join.conditions.into_iter();
 
                 for next_source in sources {
                     let next_plan = Self::plan_source(schema, next_source)?;
-                    let cond = conditions_iter.next().ok_or(QueryResult::msg("Missing join condition"))?;
+                    let cond = conditions_iter
+                        .next()
+                        .ok_or(QueryResult::msg("Missing join condition"))?;
 
-                    let left_schema = current_plan.get_schema(schema).map_err(|_|{QueryResult::user_input_wrong("".to_string())})?;
-                    let right_schema = next_plan.get_schema(schema).map_err(|_|{QueryResult::user_input_wrong("".to_string())})?;
+                    let left_schema = current_plan
+                        .get_schema(schema)
+                        .map_err(|_| QueryResult::user_input_wrong("".to_string()))?;
+                    let right_schema = next_plan
+                        .get_schema(schema)
+                        .map_err(|_| QueryResult::user_input_wrong("".to_string()))?;
 
-                    let join_conditions = if cond.join_type == JoinType::Natural {
-                        let mut natural_conds = Vec::new();
-                        for l_field in &left_schema.fields {
-                            if let Some(r_field) = right_schema
-                                .fields
-                                .iter()
-                                .find(|rf| rf.name == l_field.name)
-                            {
-                                natural_conds.push((l_field.clone(), r_field.clone()));
+                    let join_conditions =
+                        if cond.join_type == JoinType::Natural {
+                            let mut natural_conds = Vec::new();
+                            for l_field in &left_schema.fields {
+                                if let Some(r_field) = right_schema
+                                    .fields
+                                    .iter()
+                                    .find(|rf| rf.name == l_field.name)
+                                {
+                                    natural_conds.push((l_field.clone(), r_field.clone()));
+                                }
                             }
-                        }
-                        natural_conds
-                    } else {
-                        let resolve = |token: &str, l_sch: &TableSchema, r_sch: &TableSchema|
+                            natural_conds
+                        } else {
+                            let resolve = |token: &str, l_sch: &TableSchema, r_sch: &TableSchema|
                                        -> Result<(char, Field), QueryResult>
                             {
                                 let parts: Vec<&str> = token.split('.').collect();
@@ -417,23 +451,27 @@ impl Planner {
                                 }
                             };
 
-                        let left_res = resolve(&cond.left, &left_schema, &right_schema)?;
-                        let right_res = resolve(&cond.right, &left_schema, &right_schema)?;
+                            let left_res = resolve(&cond.left, &left_schema, &right_schema)?;
+                            let right_res = resolve(&cond.right, &left_schema, &right_schema)?;
 
-                        let (left_field, right_field) = match (left_res.0, right_res.0) {
-                            ('L', 'R') => (left_res.1, right_res.1),
-                            ('R', 'L') => (right_res.1, left_res.1),
-                            ('L', 'L') | ('R', 'R') => {
-                                return Err(QueryResult::user_input_wrong(
-                                    "Join condition must reference one column from each side".into(),
-                                ));
-                            }
-                            _ => unreachable!(),
+                            let (left_field, right_field) = match (left_res.0, right_res.0) {
+                                ('L', 'R') => (left_res.1, right_res.1),
+                                ('R', 'L') => (right_res.1, left_res.1),
+                                ('L', 'L') | ('R', 'R') => {
+                                    return Err(QueryResult::user_input_wrong(
+                                        "Join condition must reference one column from each side"
+                                            .into(),
+                                    ));
+                                }
+                                _ => unreachable!(),
+                            };
+                            vec![(left_field, right_field)]
                         };
-                        vec![(left_field, right_field)]
-                    };
-                    let (left_op, right_op) = left_schema.get_join_ops(&right_schema, &join_conditions[0].0, &join_conditions[0].1)
-                        .map_err(|_|{QueryResult::user_input_wrong("Cannot Get Join Operation".to_string())})?;
+                    let (left_op, right_op) = left_schema
+                        .get_join_ops(&right_schema, &join_conditions[0].0, &join_conditions[0].1)
+                        .map_err(|_| {
+                            QueryResult::user_input_wrong("Cannot Get Join Operation".to_string())
+                        })?;
 
                     current_plan = PlanNode::Join {
                         left: Box::new(current_plan),
@@ -441,7 +479,7 @@ impl Planner {
                         join_type: cond.join_type,
                         conditions: join_conditions,
                         left_join_op: left_op,
-                        right_join_op: right_op
+                        right_join_op: right_op,
                     };
                 }
                 Ok(current_plan)
@@ -455,31 +493,32 @@ impl Planner {
             .index
             .iter()
             .position(|t| t == &TableName::from(table_name))
-            .ok_or_else(|| QueryResult::user_input_wrong(format!("Table '{}' not found", table_name)))
+            .ok_or_else(|| {
+                QueryResult::user_input_wrong(format!("Table '{}' not found", table_name))
+            })
     }
 
-    fn resolve_field(
-        request: &str,
-        schema: &TableSchema,
-    ) -> Result<Field, QueryResult> {
-        let matches: Vec<_> = schema.fields
-            .iter()
-            .filter(|f| f.name == request)
-            .collect();
+    fn resolve_field(request: &str, schema: &TableSchema) -> Result<Field, QueryResult> {
+        let matches: Vec<_> = schema.fields.iter().filter(|f| f.name == request).collect();
 
         if matches.is_empty() {
             let parts: Vec<&str> = request.split('.').collect();
             if parts.len() == 2 {
-                let found = schema.fields.iter().find(|f| f.name == parts[1] && f.table_name == parts[0]);
+                let found = schema
+                    .fields
+                    .iter()
+                    .find(|f| f.name == parts[1] && f.table_name == parts[0]);
                 return match found {
                     Some(pair) => Ok(pair.clone()),
                     None => Err(QueryResult::user_input_wrong(format!(
-                        "Column '{}.{}' not found in source", parts[0], parts[1]
+                        "Column '{}.{}' not found in source",
+                        parts[0], parts[1]
                     ))),
-                }
+                };
             }
             Err(QueryResult::user_input_wrong(format!(
-                "Column '{}' not found", request
+                "Column '{}' not found",
+                request
             )))
         } else if matches.len() > 1 {
             Err(QueryResult::user_input_wrong(format!(
@@ -496,7 +535,13 @@ impl Planner {
     fn compile_conditions(
         source: Vec<(String, String, String)>,
         schema: &TableSchema,
-    ) -> Result<(SqlConditionOpCode, Vec<(SqlStatementComparisonOperator, Vec<u8>)>), QueryResult> {
+    ) -> Result<
+        (
+            SqlConditionOpCode,
+            Vec<(SqlStatementComparisonOperator, Vec<u8>)>,
+        ),
+        QueryResult,
+    > {
         let mut op = SqlConditionOpCode::SelectFTS;
         let mut compiled_conditions = Vec::new();
         let mut is_primary_key = true;
@@ -547,7 +592,9 @@ impl Planner {
             Type::Date => Ok(Vec::from(
                 Serializer::parse_date(value).map_err(QueryResult::err)?,
             )),
-            Type::Boolean => Ok(vec![Serializer::parse_bool(value).map_err(QueryResult::err)?]),
+            Type::Boolean => Ok(vec![
+                Serializer::parse_bool(value).map_err(QueryResult::err)?,
+            ]),
             Type::Null => Ok(vec![]),
             _ => Err(QueryResult::user_input_wrong(format!(
                 "Unsupported type for compilation: {:?}",
