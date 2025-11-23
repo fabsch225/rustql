@@ -419,6 +419,8 @@ impl Planner {
                                     .find(|rf| rf.name == l_field.name)
                                 {
                                     natural_conds.push((l_field.clone(), r_field.clone()));
+                                    //ToDo Revisit this when we have multi-joins
+                                    break
                                 }
                             }
                             natural_conds
