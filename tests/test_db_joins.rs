@@ -235,11 +235,9 @@ mod tests {
         exec.exec("INSERT INTO B (val) VALUES (2)".into());
         exec.exec("INSERT INTO B (val) VALUES (1)".into());
 
-        // Executor implements simple append (UNION ALL behavior)
-        let query = "SELECT val FROM A UNION SELECT val FROM B";
+        let query = "SELECT val FROM A ALL SELECT val FROM B";
         let result = exec.exec(query.into());
 
-        // 1 (from A) + 2 (from B) + 1 (from B) = 3 rows
         assert_row_count(result, 3);
     }
 
@@ -454,4 +452,195 @@ mod tests {
         let result = exec.exec("SELECT name FROM test".to_string());
         assert_row_count(result, 1);
     }
+
+    #[test]
+    fn test_large_union_all() {
+        let mut exec = setup_executor();
+        exec.exec("CREATE TABLE A (val Integer)".into());
+        exec.exec("CREATE TABLE B (val Integer)".into());
+
+        // A: 1..1000
+        // B: 500..1500 (overlap of 500..1000)
+        for i in 1..=1000 {
+            exec.exec(format!("INSERT INTO A (val) VALUES ({})", i));
+        }
+        for i in 500..=1500 {
+            exec.exec(format!("INSERT INTO B (val) VALUES ({})", i));
+        }
+
+        let query = "SELECT val FROM A UNION ALL SELECT val FROM B";
+        let result = exec.exec(query.into());
+
+        // 1000 rows from A + 1001 rows from B = 2001
+        assert_row_count(result, 2001);
+    }
+
+    #[test]
+    fn test_large_union_distinct() {
+        let mut exec = setup_executor();
+        exec.exec("CREATE TABLE A (val Integer)".into());
+        exec.exec("CREATE TABLE B (val Integer)".into());
+
+        for i in 1..=5000 {
+            exec.exec(format!("INSERT INTO A (val) VALUES ({})", i));
+        }
+        for i in 4000..=9000 {
+            exec.exec(format!("INSERT INTO B (val) VALUES ({})", i));
+        }
+
+        let query = "SELECT val FROM A UNION SELECT val FROM B";
+        let result = exec.exec(query.into());
+
+        // Distinct set = 1..9000 → 9000 values
+        assert_row_count(result, 9000);
+    }
+
+    #[test]
+    fn test_large_intersect() {
+        let mut exec = setup_executor();
+        exec.exec("CREATE TABLE A (val Integer)".into());
+        exec.exec("CREATE TABLE B (val Integer)".into());
+
+        // A: 1..10k
+        // B: 5k..15k
+        for i in 1..=10000 {
+            exec.exec(format!("INSERT INTO A (val) VALUES ({})", i));
+        }
+        for i in 5000..=15000 {
+            exec.exec(format!("INSERT INTO B (val) VALUES ({})", i));
+        }
+
+        let query = "SELECT val FROM A INTERSECT SELECT val FROM B";
+        let result = exec.exec(query.into());
+
+        // Intersection = 5000..10000 (inclusive) → 5001 rows
+        assert_row_count(result, 5001);
+    }
+
+    #[test]
+    fn test_large_except() {
+        let mut exec = setup_executor();
+        exec.exec("CREATE TABLE A (val Integer)".into());
+        exec.exec("CREATE TABLE B (val Integer)".into());
+
+        // A: 1..8000
+        // B: 4000..12000
+        for i in 1..=8000 {
+            exec.exec(format!("INSERT INTO A (val) VALUES ({})", i));
+        }
+        for i in 4000..=12000 {
+            exec.exec(format!("INSERT INTO B (val) VALUES ({})", i));
+        }
+
+        let query = "SELECT val FROM A EXCEPT SELECT val FROM B";
+        let result = exec.exec(query.into());
+
+        // A minus B = 1..3999 → 3999 rows
+        assert_row_count(result, 3999);
+    }
+
+    #[test]
+    fn test_large_inner_join() {
+        let mut exec = setup_executor();
+
+        exec.exec("CREATE TABLE A (id Integer, v Integer)".into());
+        exec.exec("CREATE TABLE B (id Integer, x Integer)".into());
+
+        // A: ids 1..10k
+        // B: ids 5000..15k  => overlap: 5000..10000 → 5001 rows
+        for i in 1..=10000 {
+            exec.exec(format!("INSERT INTO A VALUES ({}, {})", i, i * 2));
+        }
+        for i in 5000..=15000 {
+            exec.exec(format!("INSERT INTO B VALUES ({}, {})", i, i * 3));
+        }
+
+        let query = "SELECT A.id FROM A JOIN B ON A.id = B.id";
+        let result = exec.exec(query.into());
+
+        assert_row_count(result, 5001);
+    }
+
+    #[test]
+    fn test_large_left_join_sparse_matches() {
+        let mut exec = setup_executor();
+
+        exec.exec("CREATE TABLE A (id Integer)".into());
+        exec.exec("CREATE TABLE B (id Integer)".into());
+
+        for i in 1..=10000 {
+            exec.exec(format!("INSERT INTO A VALUES ({})", i));
+        }
+
+        // Only 100 matches: every 100th value
+        for i in (100..=10000).step_by(100) {
+            exec.exec(format!("INSERT INTO B VALUES ({})", i));
+        }
+
+        let query = "SELECT A.id FROM A INNER JOIN B ON A.id = B.id";
+        let result = exec.exec(query.into());
+
+        // LEFT JOIN preserves all A rows = 10k
+        assert_row_count(result, 100);
+    }
+
+    #[test]
+    fn test_large_natural_join_three_tables() {
+        let mut exec = setup_executor();
+
+        exec.exec("CREATE TABLE A (id Integer)".into());
+        exec.exec("CREATE TABLE B (id Integer)".into());
+        exec.exec("CREATE TABLE C (id Integer)".into());
+
+        // IDs 1..5000 in each table
+        for i in 1..=5000 {
+            exec.exec(format!("INSERT INTO A VALUES ({})", i));
+            exec.exec(format!("INSERT INTO B VALUES ({})", i));
+            exec.exec(format!("INSERT INTO C VALUES ({})", i));
+        }
+
+        let query = "SELECT A.id FROM A NATURAL JOIN B NATURAL JOIN C";
+        let result = exec.exec(query.into());
+
+        assert_row_count(result, 5000);
+    }
+
+    #[test]
+    fn test_large_mixed_operations() {
+        let mut exec = setup_executor();
+
+        exec.exec("CREATE TABLE A (id Integer)".into());
+        exec.exec("CREATE TABLE B (id Integer)".into());
+        exec.exec("CREATE TABLE C (id Integer)".into());
+
+        // Insert 1..10000 into A
+        for i in 1..=10000 {
+            exec.exec(format!("INSERT INTO A VALUES ({})", i));
+        }
+        // Insert 5000..20000 into B
+        for i in 5000..=20000 {
+            exec.exec(format!("INSERT INTO B VALUES ({})", i));
+        }
+        // Insert 8000..12000 into C
+        for i in 8000..=12000 {
+            exec.exec(format!("INSERT INTO C VALUES ({})", i));
+        }
+
+        let query = r#"
+        SELECT id FROM (
+            SELECT id FROM A
+            INTERSECT
+            SELECT id FROM B
+        ) INTERSECT SELECT id FROM C
+    "#;
+
+        let result = exec.exec(query.into());
+
+        // Intersection of:
+        //   A: 1..10000
+        //   B: 5000..20000 → 5000..10000
+        //   C: 8000..12000 → final = 8000..10000 (2001 rows)
+        assert_row_count(result, 2001);
+    }
+
 }

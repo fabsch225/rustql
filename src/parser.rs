@@ -94,7 +94,7 @@ pub enum ParsedQuery {
     Delete(ParsedDeleteQuery),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum ParsedSetOperator {
     Union,
     Intersect,
@@ -308,7 +308,7 @@ impl Parser {
                 self.lexer.next_token();
                 return Ok(ParsedQueryTreeNode::SingleQuery(select_query));
             }
-            if let Some(operation) = match token.to_uppercase().as_str() {
+            if let Some(mut operation) = match token.to_uppercase().as_str() {
                 "UNION" => Some(ParsedSetOperator::Union),
                 "INTERSECT" => Some(ParsedSetOperator::Intersect),
                 "EXCEPT" => Some(ParsedSetOperator::Except),
@@ -321,6 +321,13 @@ impl Parser {
                 if let Some(token) = self.peek_token()
                     && token == "("
                 {
+                    self.lexer.next_token();
+                }
+                if let Some(token) = self.peek_token()
+                    && token == "ALL"
+                    && operation == ParsedSetOperator::Union
+                {
+                    operation = ParsedSetOperator::All;
                     self.lexer.next_token();
                 }
                 self.expect_token("SELECT")?;

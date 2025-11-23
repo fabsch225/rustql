@@ -272,15 +272,17 @@ fn calculate_hash(row: &[u8]) -> u64 {
 
 #[derive(Debug, Clone)]
 pub struct HashedMemorySource {
-    source: MemorySource,
+    source: Box<Source>,
     index: Option<HashMap<u64, Vec<usize>>>,
+    rows: Option<Vec<Vec<u8>>>,
 }
 
 impl HashedMemorySource {
-    pub fn new(source: MemorySource) -> Self {
+    pub fn new(source: Source) -> Self {
         Self {
-            source,
+            source: Box::new(source),
             index: None,
+            rows: None,
         }
     }
 
@@ -289,14 +291,22 @@ impl HashedMemorySource {
             return Ok(());
         }
 
-        let mut map: HashMap<u64, Vec<usize>> = HashMap::new();
+        let mut rows = Vec::new();
+        let mut index: HashMap<u64, Vec<usize>> = HashMap::new();
 
-        for (i, row) in self.source.data.iter().enumerate() {
-            let h = calculate_hash(row);
-            map.entry(h).or_default().push(i);
+        self.source.reset();
+
+        let mut i = 0usize;
+        while let Some(row) = self.source.next()? {
+            let h = calculate_hash(&row);
+            index.entry(h).or_default().push(i);
+            rows.push(row);
+            i += 1;
         }
 
-        self.index = Some(map);
+        self.rows = Some(rows);
+        self.index = Some(index);
+
         Ok(())
     }
 
@@ -304,15 +314,17 @@ impl HashedMemorySource {
         self.ensure_index()?;
 
         let h = calculate_hash(target_row);
-        let map = self.index.as_ref().unwrap();
+        let index = self.index.as_ref().unwrap();
+        let rows = self.rows.as_ref().unwrap();
 
-        if let Some(indices) = map.get(&h) {
-            for &idx in indices {
-                if &self.source.data[idx] == target_row {
+        if let Some(indices) = index.get(&h) {
+            for &i in indices {
+                if rows[i].as_slice() == target_row {
                     return Ok(true);
                 }
             }
         }
+
         Ok(false)
     }
 }
@@ -864,7 +876,6 @@ impl RightSideContainer {
             RightSideContainer::HashedMem(s) => s.probe(row),
             RightSideContainer::HashedBTree(s) => s.probe(row),
             RightSideContainer::Raw(s) => {
-                // Naive Nested Loop Scan
                 s.reset()?;
                 while let Some(r) = s.next()? {
                     if r == row {
@@ -899,6 +910,7 @@ pub struct SetOperationSource {
     right: RightSideContainer,
     op: ParsedSetOperator,
     state: SetOpState,
+    seen_rows: HashSet<Vec<u8>>,
 }
 impl SetOperationSource {
     pub fn new(
@@ -910,17 +922,13 @@ impl SetOperationSource {
         let right_container = match strategy {
             SetOpStrategy::NaiveNestedLoop => RightSideContainer::Raw(Box::new(right_source)),
             SetOpStrategy::HashedMemory => {
-                if let Source::Memory(ms) = right_source {
-                    RightSideContainer::HashedMem(HashedMemorySource::new(ms))
-                } else {
-                    RightSideContainer::Raw(Box::new(right_source))
-                }
+                RightSideContainer::HashedMem(HashedMemorySource::new(right_source))
             }
             SetOpStrategy::HashedBTree => {
                 if let Source::BTree(bts) = right_source {
                     RightSideContainer::HashedBTree(HashedBTreeSource::new(bts))
                 } else {
-                    RightSideContainer::Raw(Box::new(right_source))
+                    panic!()
                 }
             }
         };
@@ -930,6 +938,7 @@ impl SetOperationSource {
             right: right_container,
             op,
             state: SetOpState::LeftStream,
+            seen_rows: HashSet::new(),
         }
     }
 }
@@ -937,21 +946,48 @@ impl SetOperationSource {
 impl RowSource for SetOperationSource {
     fn next(&mut self) -> Result<Option<Vec<u8>>, Status> {
         match self.op {
-            ParsedSetOperator::Union => {
-                // Union All logic
+            ParsedSetOperator::All => {
                 match self.state {
                     SetOpState::LeftStream => {
                         let row = self.left.next()?;
                         if row.is_some() {
                             return Ok(row);
                         }
-
                         self.state = SetOpState::RightStream;
                         self.right.reset()?;
                         self.right.next_as_source()
                     }
                     SetOpState::RightStream => self.right.next_as_source(),
                     SetOpState::Done => Ok(None),
+                }
+            }
+            ParsedSetOperator::Union => {
+                loop {
+                    let row_opt = match self.state {
+                        SetOpState::LeftStream => {
+                            let r = self.left.next()?;
+                            if r.is_none() {
+                                self.state = SetOpState::RightStream;
+                                self.right.reset()?;
+                                self.right.next_as_source()?
+                            } else {
+                                r
+                            }
+                        },
+                        SetOpState::RightStream => self.right.next_as_source()?,
+                        SetOpState::Done => return Ok(None),
+                    };
+                    match row_opt {
+                        Some(row) => {
+                            if self.seen_rows.insert(row.clone()) {
+                                return Ok(Some(row));
+                            }
+                        },
+                        None => {
+                            self.state = SetOpState::Done;
+                            return Ok(None);
+                        }
+                    }
                 }
             }
             ParsedSetOperator::Intersect => {
@@ -961,9 +997,10 @@ impl RowSource for SetOperationSource {
                         None => return Ok(None),
                     };
 
-                    // Lazy Probe: Check if exists in Right
                     if self.right.contains(&row)? {
-                        return Ok(Some(row));
+                        if self.seen_rows.insert(row.clone()) {
+                            return Ok(Some(row));
+                        }
                     }
                 }
             }
@@ -973,10 +1010,10 @@ impl RowSource for SetOperationSource {
                         Some(r) => r,
                         None => return Ok(None),
                     };
-
-                    // Lazy Probe: Check if NOT exists in Right
                     if !self.right.contains(&row)? {
-                        return Ok(Some(row));
+                        if self.seen_rows.insert(row.clone()) {
+                            return Ok(Some(row));
+                        }
                     }
                 }
             }

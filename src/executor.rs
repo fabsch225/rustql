@@ -376,21 +376,21 @@ impl Executor {
             } => {
                 debug_assert!(*join_type == JoinType::Inner || *join_type == Natural);
                 debug_assert_eq!(conditions.len(), 1);
-                let mut left_source = self.get_row_source(left)?;
-                let right_source = self.get_row_source(right)?;
+                let left_df = self.exec_planned_tree(left)?;
+                let right_df = self.exec_planned_tree(right)?;
                 let left_col = conditions[0].0.clone();
                 let right_col = conditions[0].1.clone();
-                let l_idx = left_source
+                let l_idx = left_df
                     .header
                     .iter()
                     .position(|f| f.name == left_col.name && f.table_name == left_col.table_name)
                     .ok_or(Status::DataFrameJoinError)?;
-                let r_idx = right_source
+                let r_idx = right_df
                     .header
                     .iter()
                     .position(|f| f.name == right_col.name && f.table_name == right_col.table_name)
                     .ok_or(Status::DataFrameJoinError)?;
-                Ok(left_source.join(right_source, l_idx, r_idx, JoinStrategy::Hash)?)
+                Ok(left_df.join(right_df, l_idx, r_idx, JoinStrategy::Hash)?)
             }
 
             PlanNode::SetOperation { op, left, right } => {
@@ -399,26 +399,6 @@ impl Executor {
 
                 Ok(left_df.set_operation(right_df, op.clone(), SetOpStrategy::HashedMemory)?)
             }
-        }
-    }
-
-    fn get_row_source(&self, plan: &PlanNode) -> Result<DataFrame, Status> {
-        match plan {
-            PlanNode::SeqScan {
-                table_id,
-                operation,
-                conditions,
-                ..
-            } => {
-                let scan_source =
-                    self.create_scan_source(*table_id, operation.clone(), conditions.clone())?;
-                Ok(DataFrame {
-                    header: plan.get_header(&self.schema)?,
-                    identifier: plan.get_schema(&self.schema)?.name,
-                    row_source: Source::BTree(scan_source),
-                })
-            }
-            _ => self.exec_planned_tree(plan),
         }
     }
 
