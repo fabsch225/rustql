@@ -318,8 +318,8 @@ impl Executor {
                 while let Some(row) = source.next()? {
                     result_data.push(row);
                 }
-
-                Ok(DataFrame::from_memory(table_name.clone(), plan.get_header(&self.schema), result_data))
+                let x = DataFrame::from_memory(table_name.clone(), plan.get_header(&self.schema)?, result_data);
+                Ok(x)
             }
 
             PlanNode::Filter { source, conditions } => {
@@ -327,23 +327,23 @@ impl Executor {
                 let mut filtered_data = Vec::new();
 
                 for row in source_df.get_data()? {
-                    if Serializer::check_condition_on_bytes(&row, conditions, &plan.get_header(&self.schema)) {
+                    if Serializer::check_condition_on_bytes(&row, conditions, &plan.get_header(&self.schema)?) {
                         //ToDo potentially Expensive!
                         filtered_data.push(row.clone());
                     }
                 }
 
-                Ok(DataFrame::from_memory("".to_string(), plan.get_header(&self.schema), filtered_data))
+                Ok(DataFrame::from_memory("".to_string(), plan.get_header(&self.schema)?, filtered_data))
             }
 
             PlanNode::Project { source, fields } => {
                 let source_df = self.execute_plan(source)?;
                 let mut project_data = Vec::new();
-                let result_header: Vec<Field> = fields.iter().map(|(_, f)| f.clone()).collect();
+                let result_header: Vec<Field> = fields.clone();
 
                 let mut mapping_indices = Vec::new();
-                for (_, req_field) in fields {
-                    if let Some(idx) = source_df.header.iter().position(|f| f.identifier == req_field.identifier) {
+                for req_field in fields {
+                    if let Some(idx) = source_df.header.iter().position(|f| f.name == req_field.name) {
                         mapping_indices.push(idx);
                     } else {
                         return Err(Status::InternalExceptionCompilerError); // Should have been caught by Planner
@@ -364,7 +364,8 @@ impl Executor {
                 Ok(DataFrame::from_memory("".to_string(), result_header, project_data))
             }
 
-            PlanNode::Join { left, right, join_type, conditions } => {
+            PlanNode::Join {left, right, conditions, ..} => {
+                let x = plan.get_schema(&self.schema);
                 let mut left_source = self.get_row_source(left)?;
                 let mut right_source = self.get_row_source(right)?;
 
@@ -405,8 +406,8 @@ impl Executor {
             PlanNode::SeqScan { table_id, operation, conditions, .. } => {
                 let scan_source = self.create_scan_source(*table_id, operation.clone(), conditions.clone())?;
                 Ok(DataFrame {
-                    header: plan.get_schema(&self.schema).iter().map(|tuple|{tuple.1.clone()}).collect(),
-                    identifier: "".to_string(),
+                    header: plan.get_header(&self.schema)?,
+                    identifier: plan.get_schema(&self.schema)?.name,
                     row_source: Source::BTree(scan_source)
                 })
             }
@@ -514,18 +515,18 @@ impl Executor {
                     conditions: vec![],
                 }),
                 fields: vec![
-                    (MASTER_TABLE_NAME.to_string(), Field {
+                    Field {
                         field_type: Type::String,
-                        identifier: "name".to_string(),
-                    }),
-                    (MASTER_TABLE_NAME.to_string(), Field {
+                        name: "rustsql_master.name".to_string(),
+                    },
+                    Field {
                         field_type: Type::String,
-                        identifier: "sql".to_string(),
-                    }),
-                     (MASTER_TABLE_NAME.to_string(), Field {
+                        name: "rustsql_master.sql".to_string(),
+                    },
+                    Field {
                         field_type: Type::Integer,
-                        identifier: "rootpage".to_string(),
-                    }),
+                        name: "rustsql_master.rootpage".to_string(),
+                    },
                 ],
             }
         };

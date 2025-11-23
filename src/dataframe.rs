@@ -2,7 +2,7 @@ use std::fmt;
 use std::fmt::{Display, Formatter};
 use crate::btree::Btree;
 use crate::cursor::BTreeCursor;
-use crate::pager::{Row, Type};
+use crate::pager::{Position, Row, Type};
 use crate::planner::{SqlConditionOpCode, SqlStatementComparisonOperator};
 use crate::planner::SqlStatementComparisonOperator::{Equal, Greater, GreaterOrEqual};
 use crate::schema::{Field, TableSchema};
@@ -27,7 +27,7 @@ impl DataFrame
         DataFrame {
             identifier,
             header,
-            row_source: Source::Memory(MemorySource { data: data, idx: 0 })
+            row_source: Source::Memory(MemorySource { data, idx: 0 })
         }
     }
 
@@ -37,7 +37,7 @@ impl DataFrame
             identifier: "Message to the User".to_string(),
             header: vec![Field {
                 field_type: Type::String,
-                identifier: "Message".to_string(),
+                name: "Message".to_string(),
             }],
             row_source: Source::Memory(MemorySource { data: vec![Serializer::parse_string(message).to_vec()], idx: 0})
         }
@@ -85,12 +85,12 @@ impl DataFrame
 
                 for (l_col, r_col) in conditions {
                     let l_idx = left_header.iter()
-                        .position(|f| f.identifier == *l_col)
+                        .position(|f| f.name == *l_col)
                         //.ok_or(Status::Message(format!("Column '{}' not in left DF", l_col)))?;
                         .ok_or(Status::DataFrameJoinError)?;
 
                     let r_idx = right_header.iter()
-                        .position(|f| f.identifier == *r_col)
+                        .position(|f| f.name == *r_col)
                         //.ok_or(Status::Message(format!("Column '{}' not in right DF", r_col)))?;
                         .ok_or(Status::DataFrameJoinError)?;
 
@@ -119,7 +119,7 @@ impl DataFrame
 impl Display for DataFrame {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         for field in &self.header {
-            write!(f, "{}\t", field.identifier)?;
+            write!(f, "{}\t", field.name)?;
         }
         writeln!(f)?;
 

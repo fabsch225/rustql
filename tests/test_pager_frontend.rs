@@ -17,16 +17,17 @@ mod tests {
             key_position: 0,
             fields: vec![
                 Field {
-                    identifier: "Id".to_string(),
+                    name: "Id".to_string(),
                     field_type: Type::Integer,
                 },
                 Field {
-                    identifier: "Name".to_string(),
+                    name: "Name".to_string(),
                     field_type: Type::String,
                 },
             ],
             table_type: 0,
             entry_count: 0,
+            name: "".to_string()
         }
     }
 

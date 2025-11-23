@@ -1,11 +1,13 @@
 use crate::pager::{Position, TableName, Type};
+use crate::parser::JoinOp;
 use crate::serializer::Serializer;
 use crate::status::Status;
 
 #[derive(Debug, Clone)]
 pub struct Field {
     pub field_type: Type,
-    pub identifier: String,
+    pub name: String,
+    pub table_name: String,
 }
 
 #[derive(Clone, Debug)]
@@ -37,6 +39,7 @@ pub struct TableSchema {
     pub fields: Vec<Field>,
     pub table_type: u8,
     pub entry_count: i32,
+    pub name: String,
 }
 
 impl TableSchema {
@@ -84,5 +87,157 @@ impl TableSchema {
             len += Serializer::get_size_of_type(&field.field_type)?;
         }
         Ok(len)
+    }
+
+    pub fn join(
+        &self,
+        other: &TableSchema,
+        left_key: &String,
+        right_key: &String,
+    ) -> Result<TableSchema, Status> {
+        self.get_join_positions_and_validate(other, left_key, right_key)?;
+
+        let mut merged_fields = Vec::new();
+
+        let right_names: std::collections::HashSet<_> =
+            other.fields.iter().map(|f| f.name.as_str()).collect();
+
+        for f in &self.fields {
+            let is_dup = right_names.contains(f.name.as_str());
+
+            let mut base = if f.name.contains('.') {
+                f.name.clone()
+            } else {
+                format!("{}.{}", self.name, f.name)
+            };
+
+            if is_dup && !base.contains('.') {
+                base = format!("{}.{}", self.name, f.name);
+            }
+
+            merged_fields.push(Field {
+                field_type: f.field_type.clone(),
+                name: base
+            });
+        }
+
+        for f in &other.fields {
+            let is_dup = self.fields.iter().any(|lf| lf.name == f.name);
+
+            let mut base = if f.name.contains('.') {
+                f.name.clone()
+            } else {
+                format!("{}.{}", other.name, f.name)
+            };
+
+            if is_dup && !base.contains('.') {
+                base = format!("{}.{}", other.name, f.name);
+            }
+
+            merged_fields.push(Field {
+                field_type: f.field_type.clone(),
+                name: base
+            });
+        }
+
+        let new_table = TableSchema {
+            next_position: Position::make_empty(),
+            root: Position::make_empty(),
+            has_key: false,
+            key_position: 0,
+            fields: merged_fields,
+            table_type: 0,
+            entry_count: self.entry_count,
+            name: self.name.clone(),
+        };
+
+        Ok(new_table)
+    }
+
+    pub fn get_join_positions_and_validate(
+        &self,
+        other: &TableSchema,
+        left_key: &String,
+        right_key: &String,
+    ) -> Result<(usize, usize), Status> {
+        let (left_pos, left_field) = self.get_column_and_field(left_key).ok_or(
+            Status::Error
+        )?;
+
+        let (right_pos, right_field) = other.get_column_and_field(right_key).ok_or(
+            Status::Error
+        )?;
+
+        if left_field.field_type != right_field.field_type {
+            return Err(Status::Error);
+        }
+
+        Ok((left_pos, right_pos))
+    }
+
+    pub fn get_join_ops(
+        &self,
+        other: &TableSchema,
+        left_key: &String,
+        right_key: &String,
+    ) -> Result<(JoinOp, JoinOp), Status> {
+        let (left_pos, right_pos) =
+            self.get_join_positions_and_validate(other, left_key, right_key)?;
+        let left_op = if self.has_key && self.key_position == left_pos {
+            JoinOp::Key
+        } else {
+            JoinOp::Scan
+        };
+
+        let right_op = if other.has_key && other.key_position == right_pos {
+            JoinOp::Key
+        } else {
+            JoinOp::Scan
+        };
+
+        Ok((left_op, right_op))
+    }
+
+    pub fn project(&self, fields: &Vec<Field>) -> Self {
+        let mut projected_fields = Vec::new();
+
+        for fld in fields {
+            let req_name = fld.name.as_str();
+            let mut matched = None;
+
+            for f in &self.fields {
+                let stored_name = match f.name.split_once('.') {
+                    Some((_prefix, name)) => name.to_string(),
+                    None => f.name.clone(),
+                };
+
+                if stored_name == req_name {
+                    matched = Some(Field {
+                        field_type: f.field_type.clone(),
+                        name: f.name.clone(),
+                    });
+                    break;
+                }
+            }
+
+            if let Some(field) = matched {
+                projected_fields.push(field);
+            }
+        }
+
+        TableSchema {
+            next_position: self.next_position.clone(),
+            root: self.root.clone(),
+            has_key: false, //ToDo
+            key_position: 0,
+            fields: projected_fields,
+            table_type: self.table_type,
+            entry_count: self.entry_count,
+            name: self.name.clone(),
+        }
+    }
+
+    pub fn get_column_and_field(&self, col: &str) -> Option<(usize, Field)> {
+
     }
 }

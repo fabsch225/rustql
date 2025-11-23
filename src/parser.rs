@@ -29,6 +29,13 @@ pub enum JoinType {
     Natural
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum JoinOp {
+    Index,
+    Scan,
+    Key
+}
+
 #[derive(Debug)]
 pub struct ParsedJoinCondition {
     pub left: String,
