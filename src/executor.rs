@@ -39,13 +39,13 @@ pub static MASTER_TABLE_SQL: &str = "CREATE TABLE rustsql_master (
 #[derive(Debug)]
 pub struct QueryResult {
     pub success: bool,
-    pub result: DataFrame,
+    pub data: DataFrame,
     status: Status,
 }
 
 impl Display for QueryResult {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        write!(f, "{}\t", self.result)
+        write!(f, "{}\t", self.data)
     }
 }
 
@@ -53,7 +53,7 @@ impl QueryResult {
     pub fn user_input_wrong(msg: String) -> Self {
         QueryResult {
             success: false,
-            result: DataFrame::msg(msg.as_str()),
+            data: DataFrame::msg(msg.as_str()),
             status: ExceptionQueryMisformed,
         }
     }
@@ -62,7 +62,7 @@ impl QueryResult {
     pub fn msg(str: &str) -> QueryResult {
         QueryResult {
             success: false,
-            result: DataFrame::msg(str),
+            data: DataFrame::msg(str),
             status: ExceptionQueryMisformed,
         }
     }
@@ -71,7 +71,7 @@ impl QueryResult {
     pub fn err(s: Status) -> Self {
         QueryResult {
             success: false,
-            result: DataFrame::msg(format!("{:?}", s).as_str()),
+            data: DataFrame::msg(format!("{:?}", s).as_str()),
             status: s,
         }
     }
@@ -79,7 +79,7 @@ impl QueryResult {
     pub fn went_fine() -> Self {
         QueryResult {
             success: true,
-            result: DataFrame::msg("Query Executed Successfully"),
+            data: DataFrame::msg("Query Executed Successfully"),
             status: Status::Success,
         }
     }
@@ -87,7 +87,7 @@ impl QueryResult {
     pub fn return_data(data: DataFrame) -> Self {
         QueryResult {
             success: true,
-            result: data,
+            data: data,
             status: Status::Success,
         }
     }
@@ -97,16 +97,16 @@ impl QueryResult {
 /// - Misc
 /// - Managing a cache for queries
 /// - executing compiled queries
-pub struct Executor {
+pub struct QueryExecutor {
     pub pager_accessor: PagerAccessor,
     pub query_cache: HashMap<String, CompiledQuery>, //must be invalidated once schema is changed or in a smart way
     pub schema: Schema,
     pub btree_node_width: usize,
 }
 
-impl Executor {
+impl QueryExecutor {
     pub fn init(file_path: &str, t: usize) -> Self {
-        let pager_accessor = match PagerCore::init_from_file(file_path) {
+        let mut pager_accessor = match PagerCore::init_from_file(file_path) {
             Ok(pa) => pa,
             Err(e) => {
                 println!("{:?}", e);
@@ -124,7 +124,7 @@ impl Executor {
             }
         };
 
-        let mut bootstrap_executor = Executor {
+        let mut bootstrap_executor = QueryExecutor {
             pager_accessor: pager_accessor.clone(),
             query_cache: HashMap::new(),
             schema: Schema {
@@ -195,7 +195,7 @@ impl Executor {
         );
         println!(
             "System Table Data: \n {}",
-            self.exec("SELECT * FROM rustsql_master".to_string())
+            self.prepare("SELECT * FROM rustsql_master".to_string())
         );
     }
 
@@ -205,7 +205,7 @@ impl Executor {
             .expect("Error Flushing the Pager");
     }
 
-    pub fn exec(&mut self, query: String) -> QueryResult {
+    pub fn prepare(&mut self, query: String) -> QueryResult {
         let result = self.exec_intern(query, false);
         if !result.is_ok() {
             result.err().unwrap()
@@ -249,7 +249,7 @@ impl Executor {
                     MASTER_TABLE_NAME, q.table_name, 0, root_page, query
                 );
                 println!("{}", insert_query);
-                self.exec_intern(insert_query, true);
+                self.exec_intern(insert_query, true)?;
                 self.reload_schema()
             }
             CompiledQuery::DropTable(q) => {
@@ -521,7 +521,7 @@ impl Executor {
         let result = self
             .exec_planned_tree(&select_query.plan)
             .expect("Failed Initialisation");
-        let data = result.fetch_data().expect("Failed Initialisation");
+        let data = result.fetch().expect("Failed Initialisation");
         data.iter().for_each(|entry| {
             let name = Serializer::get_field_on_row(entry, 0, &master_table_schema)
                 .expect("Failed to get field: Name");
@@ -546,6 +546,7 @@ impl Executor {
                         .index
                         .push(name[0..strip_pos + 1].to_vec());
                     table.schema.root = Position::new(rootpage as usize, 0);
+                    table.schema.btree_order = self.btree_node_width; //ToDo Store this in the System Table
                     schema.tables.push(table.schema);
                 }
                 _ => {

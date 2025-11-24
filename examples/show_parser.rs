@@ -1,12 +1,12 @@
-use rustql::executor::{Executor, QueryResult};
+use rustql::executor::{QueryExecutor, QueryResult};
 use rustql::parser::*;
 use rustql::planner::{CompiledQuery, Planner};
 use std::io;
 use std::io::Write;
 
 fn main() {
-    let mut executor = Executor::init("./default.db.bin", 3);
-    executor.exec("CREATE TABLE test (id Integer, name String)".to_string());
+    let mut executor = QueryExecutor::init("./default.db.bin", 3);
+    executor.prepare("CREATE TABLE test (id Integer, name String)".to_string());
     println!("Queries will be compiled against the following Schema:");
     executor.debug(None);
     loop {

@@ -45,4 +45,5 @@ pub enum Status {
     DataFrameJoinError,
     NotImplemented,
     CursorError,
+    InternalError,
 }

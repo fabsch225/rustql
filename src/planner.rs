@@ -243,6 +243,7 @@ impl Planner {
                     entry_count: 0,
                     table_type: 0,
                     name: create_table_query.table_name.clone(),
+                    btree_order: 0
                 };
 
                 Ok(CompiledQuery::CreateTable(CompiledCreateTableQuery {

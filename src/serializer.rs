@@ -250,15 +250,8 @@ impl Serializer {
         position: &Position,
         schema: &TableSchema,
     ) -> Result<usize, Status> {
-        let mut offset = 0; //[num keys not included]
-
-        for _ in 0..position.cell() {
-            let num_keys = page[offset] as usize;
-            offset += NODE_METADATA_SIZE;
-            offset += num_keys * schema.get_key_and_row_length()? + (num_keys + 1) * POSITION_SIZE;
-        }
-
-        Ok(offset)
+        let node_length = schema.get_node_size_in_bytes()?;
+        Ok(position.cell() * node_length)
     }
 
     pub fn copy_node(
@@ -273,9 +266,7 @@ impl Serializer {
         let num_keys = page_source[offset_source] as usize;
         let key_length = table_schema.get_key_length()?;
         let row_length = table_schema.get_row_length()?;
-        let full_size = NODE_METADATA_SIZE
-            + num_keys * table_schema.get_key_and_row_length()?
-            + (num_keys + 1) * POSITION_SIZE;
+        let full_size = table_schema.get_node_size_in_bytes()?;
         page_dest[offset_dest..offset_dest + full_size]
             .copy_from_slice(&page_source[offset_source..offset_source + full_size]);
         Ok(())
@@ -301,13 +292,9 @@ impl Serializer {
             let num_keys_a = page_a[offset_a] as usize;
             let offset_b = Self::find_position_offset(page_a, &position_b, &table_schema)?;
             let num_keys_b = page_a[offset_b] as usize;
-            let full_size_a = NODE_METADATA_SIZE
-                + num_keys_a * table_schema.get_key_and_row_length()?
-                + (num_keys_a + 1) * POSITION_SIZE;
-            let full_size_b = NODE_METADATA_SIZE
-                + num_keys_b * table_schema.get_key_and_row_length()?
-                + (num_keys_b + 1) * POSITION_SIZE;
-
+            let node_length = table_schema.get_node_size_in_bytes()?;
+            let full_size_a = node_length;
+            let full_size_b = node_length;
             let mut temp = vec![0u8; full_size_a];
             temp.copy_from_slice(&page_a[offset_a..offset_a + full_size_a]);
             let shift_for_a = full_size_b as isize - full_size_a as isize;

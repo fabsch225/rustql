@@ -1,7 +1,7 @@
 mod tests {
     use rand::{Rng, seq::SliceRandom};
     use rustql::cursor::BTreeCursor;
-    use rustql::executor::Executor;
+    use rustql::executor::QueryExecutor;
     use rustql::pager::{FieldMeta, KeyMeta};
     use rustql::serializer::Serializer;
     use rustql::{
@@ -34,8 +34,8 @@ mod tests {
     }
 
     fn make_tree() -> Btree {
-        let mut executor = Executor::init("./default.db.bin", 3);
-        let result = executor.exec("CREATE TABLE test (id Integer, other Integer)".to_string());
+        let mut executor = QueryExecutor::init("./default.db.bin", 3);
+        let result = executor.prepare("CREATE TABLE test (id Integer, other Integer)".to_string());
         assert!(result.success);
         let idx = executor
             .schema

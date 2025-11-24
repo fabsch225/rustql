@@ -152,9 +152,10 @@ impl PagerProxy {
         children: Vec<Position>,
         data: Vec<Row>,
     ) -> Result<BTreeNode, Status> {
+        let new_node_length = schema.get_key_and_row_length()? + NODE_METADATA_SIZE + schema.btree_order * 2 - 1;
         let create_new_page = parent.is_none()
             || pager_interface.access_page_read(parent.expect("cant be none"), |p| {
-                Ok(p.free_space < schema.get_key_and_row_length()? + NODE_METADATA_SIZE)
+                Ok(p.free_space < new_node_length)
                 //TODO would it not be key_and_row_and_children_length ??
             })?;
         let mut new_node;
@@ -174,6 +175,7 @@ impl PagerProxy {
                 let offset =
                     Serializer::find_position_offset(&pc.data, &new_node.position, &schema)?;
                 pc.data[offset + 1] = Serializer::create_node_flag(true);
+                pc.free_space -= new_node_length;
                 Ok(())
             })?;
             Self::set_keys_and_children_as_positions(&new_node, keys, children.clone())?;

@@ -30,6 +30,7 @@ mod tests {
             table_type: 0,
             entry_count: 0,
             name: "".to_string(),
+            btree_order: 0,
         }
     }
 

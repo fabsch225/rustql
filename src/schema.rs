@@ -1,4 +1,4 @@
-use crate::pager::{Position, TableName, Type};
+use crate::pager::{Position, TableName, Type, NODE_METADATA_SIZE, POSITION_SIZE};
 use crate::parser::JoinOp;
 use crate::serializer::Serializer;
 use crate::status::Status;
@@ -40,6 +40,7 @@ pub struct TableSchema {
     pub table_type: u8,
     pub entry_count: i32,
     pub name: String,
+    pub btree_order: usize
 }
 
 impl TableSchema {
@@ -89,6 +90,12 @@ impl TableSchema {
         Ok(len)
     }
 
+    pub fn get_node_size_in_bytes(&self) -> Result<usize, Status> {
+        Ok(NODE_METADATA_SIZE
+            + self.btree_order * self.get_key_and_row_length()?
+            + (self.btree_order + 1) * POSITION_SIZE)
+    }
+
     pub fn join(
         &self,
         other: &TableSchema,
@@ -124,6 +131,7 @@ impl TableSchema {
             table_type: 0,
             entry_count: self.entry_count,
             name: format!("{}_JOIN_{}", self.name.clone(), other.name.clone()),
+            btree_order: 0,
         };
 
         Ok(new_table)
@@ -211,6 +219,7 @@ impl TableSchema {
             table_type: self.table_type,
             entry_count: self.entry_count,
             name: self.name.clone(),
+            btree_order: 0,
         }
     }
 

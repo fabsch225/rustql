@@ -59,7 +59,7 @@ impl DataFrame {
         }
     }
 
-    pub fn fetch_data(mut self) -> Result<Vec<Row>, Status> {
+    pub fn fetch(mut self) -> Result<Vec<Row>, Status> {
         self.row_source.reset()?;
         let mut rows = vec![];
         while let Some(row) = self.row_source.next()? {
@@ -167,18 +167,32 @@ impl Display for DataFrame {
         }
         writeln!(f)?;
 
-        for row in self.clone().fetch_data().expect("Error in the Data") {
-            let mut position = 0;
-            for field in &self.header {
-                let field_type = &field.field_type;
-                let field_len = Serializer::get_size_of_type(field_type).unwrap();
-                let field_value = &row[position..position + field_len];
-                let formatted_value =
-                    Serializer::format_field(&field_value.to_vec(), field_type).unwrap();
-                write!(f, "{}\t", formatted_value)?;
-                position += field_len;
+        let mut source = self.row_source.clone();
+
+        if source.reset().is_err() {
+            return write!(f, "<Error resetting source>");
+        }
+
+        loop {
+            match source.next() {
+                Ok(Some(row)) => {
+                    let mut position = 0;
+                    for field in &self.header {
+                        let field_type = &field.field_type;
+                        let field_len = Serializer::get_size_of_type(field_type).map_err(|_| fmt::Error)?;
+
+                        let field_value = &row[position..position + field_len];
+                        let formatted_value =
+                            Serializer::format_field(&field_value.to_vec(), field_type).map_err(|_| fmt::Error)?;
+
+                        write!(f, "{}\t", formatted_value)?;
+                        position += field_len;
+                    }
+                    writeln!(f)?;
+                }
+                Ok(None) => break,
+                Err(_) => return write!(f, "<Error fetching row>"),
             }
-            writeln!(f)?;
         }
 
         Ok(())
@@ -236,8 +250,10 @@ pub enum SetOpStrategy {
     NaiveNestedLoop,
     /// T: O(N) S: O(M)
     HashedMemory,
-    /// T: O(N) S: O(M)
+    /// T: O(N) S: O(M - but only Keys)
     HashedBTree,
+    /// T: O(N+M) S: O(1) - Requires Inputs sorted by Key
+    Sorted,
 }
 
 #[derive(Debug, Clone)]
@@ -245,6 +261,11 @@ enum SetOpState {
     LeftStream,
     RightStream,
     Done,
+    SortedMerge {
+        l_curr: Option<Vec<u8>>,
+        r_curr: Option<Vec<u8>>,
+        initialized: bool,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -252,6 +273,7 @@ pub enum RightSideContainer {
     Raw(Box<Source>),
     HashedMem(HashedMemorySource),
     HashedBTree(HashedBTreeSource),
+    Sorted(Box<Source>),
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -875,7 +897,7 @@ impl RightSideContainer {
         match self {
             RightSideContainer::HashedMem(s) => s.probe(row),
             RightSideContainer::HashedBTree(s) => s.probe(row),
-            RightSideContainer::Raw(s) => {
+            RightSideContainer::Raw(s) | RightSideContainer::Sorted(s) => {
                 s.reset()?;
                 while let Some(r) = s.next()? {
                     if r == row {
@@ -889,7 +911,7 @@ impl RightSideContainer {
 
     fn next_as_source(&mut self) -> Result<Option<Vec<u8>>, Status> {
         match self {
-            RightSideContainer::Raw(s) => s.next(),
+            RightSideContainer::Raw(s) | RightSideContainer::Sorted(s) => s.next(),
             RightSideContainer::HashedMem(s) => s.source.next(),
             RightSideContainer::HashedBTree(s) => s.source.next(),
         }
@@ -897,7 +919,7 @@ impl RightSideContainer {
 
     fn reset(&mut self) -> Result<(), Status> {
         match self {
-            RightSideContainer::Raw(s) => s.reset(),
+            RightSideContainer::Raw(s) | RightSideContainer::Sorted(s) => s.reset(),
             RightSideContainer::HashedMem(s) => s.source.reset(),
             RightSideContainer::HashedBTree(s) => s.source.reset(),
         }
@@ -919,25 +941,40 @@ impl SetOperationSource {
         op: ParsedSetOperator,
         strategy: SetOpStrategy,
     ) -> Self {
-        let right_container = match strategy {
-            SetOpStrategy::NaiveNestedLoop => RightSideContainer::Raw(Box::new(right_source)),
-            SetOpStrategy::HashedMemory => {
-                RightSideContainer::HashedMem(HashedMemorySource::new(right_source))
-            }
+        let (right_container, state) = match strategy {
+            SetOpStrategy::NaiveNestedLoop => (
+                RightSideContainer::Raw(Box::new(right_source)),
+                SetOpState::LeftStream,
+            ),
+            SetOpStrategy::HashedMemory => (
+                RightSideContainer::HashedMem(HashedMemorySource::new(right_source)),
+                SetOpState::LeftStream,
+            ),
             SetOpStrategy::HashedBTree => {
                 if let Source::BTree(bts) = right_source {
-                    RightSideContainer::HashedBTree(HashedBTreeSource::new(bts))
+                    (
+                        RightSideContainer::HashedBTree(HashedBTreeSource::new(bts)),
+                        SetOpState::LeftStream,
+                    )
                 } else {
                     panic!()
                 }
             }
+            SetOpStrategy::Sorted => (
+                RightSideContainer::Sorted(Box::new(right_source)),
+                SetOpState::SortedMerge {
+                    l_curr: None,
+                    r_curr: None,
+                    initialized: false,
+                },
+            ),
         };
 
         Self {
             left,
             right: right_container,
             op,
-            state: SetOpState::LeftStream,
+            state,
             seen_rows: HashSet::new(),
         }
     }
@@ -945,86 +982,177 @@ impl SetOperationSource {
 
 impl RowSource for SetOperationSource {
     fn next(&mut self) -> Result<Option<Vec<u8>>, Status> {
-        match self.op {
-            ParsedSetOperator::All => {
-                match self.state {
-                    SetOpState::LeftStream => {
-                        let row = self.left.next()?;
-                        if row.is_some() {
-                            return Ok(row);
-                        }
-                        self.state = SetOpState::RightStream;
-                        self.right.reset()?;
-                        self.right.next_as_source()
-                    }
-                    SetOpState::RightStream => self.right.next_as_source(),
-                    SetOpState::Done => Ok(None),
-                }
+        if let SetOpState::SortedMerge {
+            l_curr,
+            r_curr,
+            initialized,
+        } = &mut self.state
+        {
+            if !*initialized {
+                self.left.reset()?;
+                self.right.reset()?;
+                *l_curr = self.left.next()?;
+                *r_curr = self.right.next_as_source()?;
+                *initialized = true;
             }
-            ParsedSetOperator::Union => {
-                loop {
-                    let row_opt = match self.state {
-                        SetOpState::LeftStream => {
-                            let r = self.left.next()?;
-                            if r.is_none() {
-                                self.state = SetOpState::RightStream;
-                                self.right.reset()?;
-                                self.right.next_as_source()?
-                            } else {
-                                r
-                            }
-                        },
-                        SetOpState::RightStream => self.right.next_as_source()?,
-                        SetOpState::Done => return Ok(None),
-                    };
-                    match row_opt {
-                        Some(row) => {
-                            if self.seen_rows.insert(row.clone()) {
-                                return Ok(Some(row));
-                            }
-                        },
-                        None => {
-                            self.state = SetOpState::Done;
-                            return Ok(None);
-                        }
-                    }
-                }
-            }
-            ParsedSetOperator::Intersect => {
-                loop {
-                    let row = match self.left.next()? {
-                        Some(r) => r,
-                        None => return Ok(None),
-                    };
 
-                    if self.right.contains(&row)? {
+            loop {
+                match (l_curr.as_ref(), r_curr.as_ref()) {
+                    (Some(l), Some(r)) => match l.cmp(r) {
+                        std::cmp::Ordering::Less => match self.op {
+                            ParsedSetOperator::Union | ParsedSetOperator::All => {
+                                let ret = l.clone();
+                                *l_curr = self.left.next()?;
+                                return Ok(Some(ret));
+                            }
+                            ParsedSetOperator::Intersect => {
+                                *l_curr = self.left.next()?;
+                            }
+                            ParsedSetOperator::Except | ParsedSetOperator::Minus => {
+                                let ret = l.clone();
+                                *l_curr = self.left.next()?;
+                                return Ok(Some(ret));
+                            }
+                            _ => {}
+                        },
+                        std::cmp::Ordering::Greater => match self.op {
+                            ParsedSetOperator::Union | ParsedSetOperator::All => {
+                                let ret = r.clone();
+                                *r_curr = self.right.next_as_source()?;
+                                return Ok(Some(ret));
+                            }
+                            ParsedSetOperator::Intersect
+                            | ParsedSetOperator::Except
+                            | ParsedSetOperator::Minus => {
+                                *r_curr = self.right.next_as_source()?;
+                            }
+                            _ => {panic!()}
+                        },
+                        std::cmp::Ordering::Equal => match self.op {
+                            ParsedSetOperator::Union | ParsedSetOperator::Intersect => {
+                                let ret = l.clone();
+                                *l_curr = self.left.next()?;
+                                *r_curr = self.right.next_as_source()?;
+                                return Ok(Some(ret));
+                            }
+                            ParsedSetOperator::All => {
+                                let ret = l.clone();
+                                *l_curr = self.left.next()?;
+                                return Ok(Some(ret));
+                            }
+                            ParsedSetOperator::Except | ParsedSetOperator::Minus => {
+                                *l_curr = self.left.next()?;
+                                *r_curr = self.right.next_as_source()?;
+                            }
+                            _ => {panic!()}
+                        },
+                    },
+                    (Some(l), None) => match self.op {
+                        ParsedSetOperator::Union
+                        | ParsedSetOperator::All
+                        | ParsedSetOperator::Except
+                        | ParsedSetOperator::Minus => {
+                            let ret = l.clone();
+                            *l_curr = self.left.next()?;
+                            return Ok(Some(ret));
+                        }
+                        _ => return Ok(None),
+                    },
+                    (None, Some(r)) => match self.op {
+                        ParsedSetOperator::Union | ParsedSetOperator::All => {
+                            let ret = r.clone();
+                            *r_curr = self.right.next_as_source()?;
+                            return Ok(Some(ret));
+                        }
+                        _ => return Ok(None),
+                    },
+                    (None, None) => return Ok(None),
+                }
+            }
+        }
+
+        match self.op {
+            ParsedSetOperator::All => match self.state {
+                SetOpState::LeftStream => {
+                    let row = self.left.next()?;
+                    if row.is_some() {
+                        return Ok(row);
+                    }
+                    self.state = SetOpState::RightStream;
+                    self.right.reset()?;
+                    self.right.next_as_source()
+                }
+                SetOpState::RightStream => self.right.next_as_source(),
+                SetOpState::Done => Ok(None),
+                _ => Err(Status::InternalError),
+            },
+            ParsedSetOperator::Union => loop {
+                let row_opt = match self.state {
+                    SetOpState::LeftStream => {
+                        let r = self.left.next()?;
+                        if r.is_none() {
+                            self.state = SetOpState::RightStream;
+                            self.right.reset()?;
+                            self.right.next_as_source()?
+                        } else {
+                            r
+                        }
+                    }
+                    SetOpState::RightStream => self.right.next_as_source()?,
+                    SetOpState::Done => return Ok(None),
+                    _ => return Err(Status::InternalError),
+                };
+                match row_opt {
+                    Some(row) => {
                         if self.seen_rows.insert(row.clone()) {
                             return Ok(Some(row));
                         }
                     }
-                }
-            }
-            ParsedSetOperator::Except | ParsedSetOperator::Minus => {
-                loop {
-                    let row = match self.left.next()? {
-                        Some(r) => r,
-                        None => return Ok(None),
-                    };
-                    if !self.right.contains(&row)? {
-                        if self.seen_rows.insert(row.clone()) {
-                            return Ok(Some(row));
-                        }
+                    None => {
+                        self.state = SetOpState::Done;
+                        return Ok(None);
                     }
                 }
-            }
-            _ => Err(Status::NotImplemented),
+            },
+            ParsedSetOperator::Intersect => loop {
+                let row = match self.left.next()? {
+                    Some(r) => r,
+                    None => return Ok(None),
+                };
+
+                if self.right.contains(&row)? {
+                    if self.seen_rows.insert(row.clone()) {
+                        return Ok(Some(row));
+                    }
+                }
+            },
+            ParsedSetOperator::Except | ParsedSetOperator::Minus => loop {
+                let row = match self.left.next()? {
+                    Some(r) => r,
+                    None => return Ok(None),
+                };
+                if !self.right.contains(&row)? {
+                    if self.seen_rows.insert(row.clone()) {
+                        return Ok(Some(row));
+                    }
+                }
+            },
+            ParsedSetOperator::Times => todo!(),
         }
     }
 
     fn reset(&mut self) -> Result<(), Status> {
         self.left.reset()?;
         self.right.reset()?;
-        self.state = SetOpState::LeftStream;
+        if let RightSideContainer::Sorted(_) = self.right {
+            self.state = SetOpState::SortedMerge {
+                l_curr: None,
+                r_curr: None,
+                initialized: false,
+            };
+        } else {
+            self.state = SetOpState::LeftStream;
+        }
         Ok(())
     }
 }
