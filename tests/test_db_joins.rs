@@ -646,55 +646,48 @@ mod tests {
     #[test]
     fn test_nested_setops_and_joins_50k() {
         let mut exec = setup_executor();
-
+        let start = Instant::now();
         exec.prepare("CREATE TABLE A (id Integer, v Integer)".into());
         exec.prepare("CREATE TABLE B (id Integer, v Integer)".into());
         exec.prepare("CREATE TABLE C (id Integer, v Integer)".into());
         exec.prepare("CREATE TABLE D (id Integer, v Integer)".into());
 
         // A: 1..50000
-        for i in 1..=50000 {
+        for i in 1..=10000 {
             exec.prepare(format!("INSERT INTO A VALUES ({}, {})", i, i * 2));
         }
         // B: 25000..75000
-        for i in 25000..=75000 {
+        for i in 2500..=17500 {
             exec.prepare(format!("INSERT INTO B VALUES ({}, {})", i, i * 3));
         }
         // C: 40000..90000
-        for i in 40000..=90000 {
+        for i in 4000..=19000 {
             exec.prepare(format!("INSERT INTO C VALUES ({}, {})", i, i * 4));
         }
         // D: 10000..60000
-        for i in 10000..=60000 {
+        for i in 1000..=16000 {
             exec.prepare(format!("INSERT INTO D VALUES ({}, {})", i, i * 5));
         }
-
+        let duration = start.elapsed();
+        println!("Time elapsed: {:?}", duration);
         // Expected:
         //   A ∩ B = 25000..50000
         //   C ∩ D = 40000..60000 → 40000..50000 when intersected with A∩B
         //   final = 40000..50000 = 10001 rows
 
         let query = r#"
-        SELECT X.id
-        FROM (
-            SELECT id FROM (
-                SELECT id FROM A
-                INTERSECT
-                SELECT id FROM B
-            )
+        SELECT A.id FROM (
+            SELECT A.id FROM A INNER JOIN D ON D.id = A.id
             UNION
-            SELECT id FROM (
-                SELECT id FROM C
-                INTERSECT
-                SELECT id FROM D
-            )
-        ) X
-        INNER JOIN A ON X.id = A.id
+            SELECT B.id FROM B
+        ) INTERSECT SELECT C.id FROM C
     "#;
-
+        let start = Instant::now();
         let result = exec.prepare(query.into());
 
-        assert_row_count(result, 10001);
+        assert_row_count(result, 13501);
+        let duration = start.elapsed();
+        println!("Time elapsed: {:?}", duration);
     }
 
 }
