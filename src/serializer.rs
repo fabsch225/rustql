@@ -24,6 +24,32 @@ use crate::status::Status::{
 pub struct Serializer {}
 
 impl Serializer {
+    fn node_size_for_num_keys(
+        num_keys: usize,
+        key_length: usize,
+        row_length: usize,
+    ) -> usize {
+        NODE_METADATA_SIZE + num_keys * (key_length + row_length) + (num_keys + 1) * POSITION_SIZE
+    }
+
+    fn node_size_at_offset(
+        page: &PageData,
+        offset: usize,
+        schema: &TableSchema,
+    ) -> Result<usize, Status> {
+        if offset >= PAGE_SIZE {
+            return Err(InternalExceptionIndexOutOfRange);
+        }
+        let num_keys = page[offset] as usize;
+        let key_length = schema.get_key_length()?;
+        let row_length = schema.get_row_length()?;
+        let node_size = Self::node_size_for_num_keys(num_keys, key_length, row_length);
+        if offset + node_size > PAGE_SIZE {
+            return Err(InternalExceptionIndexOutOfRange);
+        }
+        Ok(node_size)
+    }
+
     pub(crate) fn split_row_into_fields<'a>(
         row: &'a [u8],
         header: &[Field],
@@ -250,8 +276,23 @@ impl Serializer {
         position: &Position,
         schema: &TableSchema,
     ) -> Result<usize, Status> {
-        let node_length = schema.get_node_size_in_bytes()?;
-        Ok(position.cell() * node_length)
+        let mut offset = 0usize;
+        let key_length = schema.get_key_length()?;
+        let row_length = schema.get_row_length()?;
+
+        for _ in 0..position.cell() {
+            if offset >= PAGE_SIZE {
+                return Err(InternalExceptionIndexOutOfRange);
+            }
+            let num_keys = page[offset] as usize;
+            let node_size = Self::node_size_for_num_keys(num_keys, key_length, row_length);
+            offset += node_size;
+        }
+
+        if offset >= PAGE_SIZE {
+            return Err(InternalExceptionIndexOutOfRange);
+        }
+        Ok(offset)
     }
 
     pub fn copy_node(
@@ -263,12 +304,16 @@ impl Serializer {
     ) -> Result<(), Status> {
         let offset_dest = Self::find_position_offset(page_dest, position_dest, table_schema)?;
         let offset_source = Self::find_position_offset(page_source, position_source, table_schema)?;
-        let num_keys = page_source[offset_source] as usize;
-        let key_length = table_schema.get_key_length()?;
-        let row_length = table_schema.get_row_length()?;
-        let full_size = table_schema.get_node_size_in_bytes()?;
-        page_dest[offset_dest..offset_dest + full_size]
-            .copy_from_slice(&page_source[offset_source..offset_source + full_size]);
+        let src_size = Self::node_size_at_offset(page_source, offset_source, table_schema)?;
+        let dest_size = Self::node_size_at_offset(page_dest, offset_dest, table_schema)?;
+        let src_node = page_source[offset_source..offset_source + src_size].to_vec();
+
+        let shift = src_size as isize - dest_size as isize;
+        if shift != 0 {
+            Self::shift_page(page_dest, offset_dest + dest_size, shift)?;
+        }
+
+        page_dest[offset_dest..offset_dest + src_size].copy_from_slice(&src_node);
         Ok(())
     }
 
@@ -289,43 +334,43 @@ impl Serializer {
                 position_a.swap(&mut position_b);
             } //position_a is now the smaller one
             let offset_a = Self::find_position_offset(page_a, &position_a, &table_schema)?;
-            let num_keys_a = page_a[offset_a] as usize;
             let offset_b = Self::find_position_offset(page_a, &position_b, &table_schema)?;
-            let num_keys_b = page_a[offset_b] as usize;
-            let node_length = table_schema.get_node_size_in_bytes()?;
-            let full_size_a = node_length;
-            let full_size_b = node_length;
-            let mut temp = vec![0u8; full_size_a];
-            temp.copy_from_slice(&page_a[offset_a..offset_a + full_size_a]);
-            let shift_for_a = full_size_b as isize - full_size_a as isize;
-            Self::shift_page(page_a, offset_a + full_size_a, shift_for_a)?;
-            page_a.copy_within(offset_b..offset_b + full_size_b, offset_a);
-            page_a[offset_b..offset_b + full_size_a].copy_from_slice(&temp);
-            Self::shift_page(page_a, offset_b + full_size_a, -shift_for_a)?;
+            let full_size_a = Self::node_size_at_offset(page_a, offset_a, table_schema)?;
+            let full_size_b = Self::node_size_at_offset(page_a, offset_b, table_schema)?;
+
+            let node_a = page_a[offset_a..offset_a + full_size_a].to_vec();
+            let node_b = page_a[offset_b..offset_b + full_size_b].to_vec();
+            let between = page_a[offset_a + full_size_a..offset_b].to_vec();
+
+            let mut replacement = Vec::with_capacity(full_size_b + between.len() + full_size_a);
+            replacement.extend_from_slice(&node_b);
+            replacement.extend_from_slice(&between);
+            replacement.extend_from_slice(&node_a);
+
+            let end = offset_b + full_size_b;
+            page_a[offset_a..end].copy_from_slice(&replacement);
         } else {
             assert_ne!(position_a.page(), position_b.page());
             let page_b = page_b.unwrap();
             let offset_a = Self::find_position_offset(page_a, position_a, &table_schema)?;
-            let num_keys_a = page_a[offset_a] as usize;
             let offset_b = Self::find_position_offset(page_b, position_b, &table_schema)?;
-            let num_keys_b = page_b[offset_b] as usize;
-            let full_size_a = NODE_METADATA_SIZE
-                + num_keys_a * table_schema.get_key_and_row_length()?
-                + (num_keys_a + 1) * POSITION_SIZE;
-            let full_size_b = NODE_METADATA_SIZE
-                + num_keys_b * table_schema.get_key_and_row_length()?
-                + (num_keys_b + 1) * POSITION_SIZE;
+            let full_size_a = Self::node_size_at_offset(page_a, offset_a, table_schema)?;
+            let full_size_b = Self::node_size_at_offset(page_b, offset_b, table_schema)?;
 
-            let mut temp = vec![0u8; full_size_a];
-            temp.copy_from_slice(&page_a[offset_a..offset_a + full_size_a]);
+            let node_a = page_a[offset_a..offset_a + full_size_a].to_vec();
+            let node_b = page_b[offset_b..offset_b + full_size_b].to_vec();
+
             let shift_for_a = full_size_b as isize - full_size_a as isize;
-            Self::shift_page(page_a, offset_a + full_size_a, shift_for_a)?;
-            page_a[offset_a..offset_a + full_size_b]
-                .copy_from_slice(&page_b[offset_b..offset_b + full_size_b]);
+            if shift_for_a != 0 {
+                Self::shift_page(page_a, offset_a + full_size_a, shift_for_a)?;
+            }
+            page_a[offset_a..offset_a + full_size_b].copy_from_slice(&node_b);
 
             let shift_for_b = full_size_a as isize - full_size_b as isize;
-            Self::shift_page(page_b, offset_b + full_size_b, shift_for_b)?;
-            page_b[offset_b..offset_b + full_size_a].copy_from_slice(&temp);
+            if shift_for_b != 0 {
+                Self::shift_page(page_b, offset_b + full_size_b, shift_for_b)?;
+            }
+            page_b[offset_b..offset_b + full_size_a].copy_from_slice(&node_a);
         }
         Ok(())
     }
@@ -388,7 +433,7 @@ impl Serializer {
         let size: usize = page[offset] as usize;
         let key_length = schema.get_key_length()?;
 
-        if position.cell() >= size {
+        if index >= size {
             return Err(InternalExceptionIndexOutOfRange);
         }
 
