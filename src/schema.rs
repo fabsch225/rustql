@@ -1,4 +1,4 @@
-use crate::pager::{Position, TableName, Type, NODE_METADATA_SIZE, POSITION_SIZE};
+use crate::pager::{Position, TableName, Type, NODE_METADATA_SIZE, PAGE_SIZE, POSITION_SIZE};
 use crate::parser::JoinOp;
 use crate::serializer::Serializer;
 use crate::status::Status;
@@ -40,7 +40,9 @@ pub struct TableSchema {
     pub table_type: u8,
     pub entry_count: i32,
     pub name: String,
-    pub btree_order: usize
+    pub btree_order: usize,
+    /// (page_id, free_slots)
+    pub free_list: Vec<(usize, usize)>,
 }
 
 impl TableSchema {
@@ -91,9 +93,47 @@ impl TableSchema {
     }
 
     pub fn get_node_size_in_bytes(&self) -> Result<usize, Status> {
-        Ok(NODE_METADATA_SIZE
-            + self.btree_order * self.get_key_and_row_length()?
-            + (self.btree_order + 1) * POSITION_SIZE)
+        let max_keys = self.max_keys_per_node();
+        let key_len = self.get_key_length()?;
+        let row_len = self.get_row_length()?;
+        Ok(NODE_METADATA_SIZE + max_keys * (key_len + row_len) + (max_keys + 1) * POSITION_SIZE)
+    }
+
+    pub fn max_keys_per_node(&self) -> usize {
+        if self.btree_order == 0 {
+            1
+        } else {
+            (2 * self.btree_order) - 1
+        }
+    }
+
+    pub fn max_nodes_per_page(&self) -> Result<usize, Status> {
+        let node_size = self.get_node_size_in_bytes()?;
+        Ok(std::cmp::max(1, PAGE_SIZE / node_size))
+    }
+
+    pub fn free_list_to_string(&self) -> String {
+        self.free_list
+            .iter()
+            .map(|(page, slots)| format!("{}:{}", page, slots))
+            .collect::<Vec<String>>()
+            .join(",")
+    }
+
+    pub fn free_list_from_string(value: &str) -> Vec<(usize, usize)> {
+        let mut list = Vec::new();
+        for entry in value.split(',') {
+            let trimmed = entry.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            if let Some((p, s)) = trimmed.split_once(':')
+                && let (Ok(page), Ok(slots)) = (p.parse::<usize>(), s.parse::<usize>())
+            {
+                list.push((page, slots));
+            }
+        }
+        list
     }
 
     pub fn join(
@@ -132,6 +172,7 @@ impl TableSchema {
             entry_count: self.entry_count,
             name: format!("{}_JOIN_{}", self.name.clone(), other.name.clone()),
             btree_order: 0,
+            free_list: vec![],
         };
 
         Ok(new_table)
@@ -161,10 +202,6 @@ impl TableSchema {
         left_key: &Field,
         right_key: &Field,
     ) -> Result<(JoinOp, JoinOp), Status> {
-        println!(
-            "{:?} - {:?} - {:?} - {:?}",
-            self, other, left_key, right_key
-        );
         let (left_pos, right_pos) =
             self.get_join_positions_and_validate(other, left_key, right_key)?;
         let left_op = if self.has_key && self.key_position == left_pos {
@@ -220,6 +257,7 @@ impl TableSchema {
             entry_count: self.entry_count,
             name: self.name.clone(),
             btree_order: 0,
+            free_list: vec![],
         }
     }
 

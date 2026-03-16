@@ -58,15 +58,14 @@ fn main() {
     println!("running RustSQL shell...");
 
     executor.prepare(format!(
-        "CREATE TABLE Users (id Integer, name String, place String))"
+        "CREATE TABLE Users (id Integer, age Integer))"
     ));
 
     for i in 0..50 {
         executor.prepare(format!(
-            "INSERT INTO Users (id, name, place) VALUES ({}, 'User {}', 'Place {}')",
+            "INSERT INTO Users (id, age) VALUES ({}, {})",
             i,
-            i,
-            i % 4
+            i * 2,
         ));
     }
     loop {

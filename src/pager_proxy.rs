@@ -1,5 +1,5 @@
 use crate::btree::BTreeNode;
-use crate::pager::{Key, NODE_METADATA_SIZE, PAGE_SIZE, PagerAccessor, Position, Row};
+use crate::pager::{Key, NODE_METADATA_SIZE, PAGE_SIZE, POSITION_SIZE, PagerAccessor, Position, Row};
 use crate::schema::TableSchema;
 use crate::serializer::Serializer;
 use crate::status::Status;
@@ -7,6 +7,39 @@ use crate::status::Status;
 pub struct PagerProxy {}
 
 impl PagerProxy {
+    fn node_size_for_num_keys(schema: &TableSchema, num_keys: usize) -> Result<usize, Status> {
+        let key_length = schema.get_key_length()?;
+        let row_length = schema.get_row_length()?;
+        Ok(NODE_METADATA_SIZE
+            + num_keys * (key_length + row_length)
+            + (num_keys + 1) * POSITION_SIZE)
+    }
+
+    fn count_nodes_on_page(schema: &TableSchema, page_data: &[u8; PAGE_SIZE]) -> Result<usize, Status> {
+        let mut count = 0usize;
+        let mut offset = 0usize;
+
+        while offset + NODE_METADATA_SIZE <= PAGE_SIZE {
+            let num_keys = page_data[offset] as usize;
+            let flag = page_data[offset + 1];
+
+            // Unused tail of page
+            if num_keys == 0 && flag == 0 {
+                break;
+            }
+
+            let node_size = Self::node_size_for_num_keys(schema, num_keys)?;
+            if offset + node_size > PAGE_SIZE {
+                return Err(Status::InternalExceptionIndexOutOfRange);
+            }
+
+            count += 1;
+            offset += node_size;
+        }
+
+        Ok(count)
+    }
+
     pub fn clear_table_root(
         table_schema: &TableSchema,
         pager_interface: PagerAccessor,
@@ -60,6 +93,14 @@ impl PagerProxy {
         let page = pager_interface.access_pager_write(|p| p.create_page())?;
         let cell = 0;
         let position = Position::new(page, cell);
+        Self::create_empty_node_at_position(schema, pager_interface, position)
+    }
+
+    fn create_empty_node_at_position(
+        schema: &TableSchema,
+        pager_interface: PagerAccessor,
+        position: Position,
+    ) -> Result<BTreeNode, Status> {
         let node = BTreeNode {
             position,
             pager_accessor: pager_interface.clone(),
@@ -68,8 +109,8 @@ impl PagerProxy {
 
         //create the inital node-flag (set is_leaf to true)
         pager_interface.access_page_write(&node, |d| {
-            d.free_space -= schema.get_key_and_row_length()? + NODE_METADATA_SIZE;
-            d.data[1] = Serializer::create_node_flag(true);
+            let node_offset = Serializer::find_position_offset(&d.data, &node.position, schema)?;
+            d.data[node_offset + 1] = Serializer::create_node_flag(true);
             Ok(())
         })?;
         Ok(node)
@@ -147,40 +188,46 @@ impl PagerProxy {
     pub fn create_node(
         schema: TableSchema,
         pager_interface: PagerAccessor,
-        parent: Option<&BTreeNode>,
+        _page_hint: Option<&BTreeNode>,
         keys: Vec<Key>,
         children: Vec<Position>,
         data: Vec<Row>,
     ) -> Result<BTreeNode, Status> {
-        let new_node_length = schema.get_key_and_row_length()? + NODE_METADATA_SIZE + schema.btree_order * 2 - 1;
-        let create_new_page = parent.is_none()
-            || pager_interface.access_page_read(parent.expect("cant be none"), |p| {
-                Ok(p.free_space < new_node_length)
-                //TODO would it not be key_and_row_and_children_length ??
-            })?;
-        let mut new_node;
-        if create_new_page {
-            new_node = Self::create_empty_node_on_new_page(&schema, pager_interface.clone())?;
+        if !children.is_empty() {
+            let new_node = Self::create_empty_node_on_new_page(&schema, pager_interface.clone())?;
             Self::set_keys_and_children_as_positions(&new_node, keys, children)?;
             Self::set_data(&new_node, data)?;
-        } else {
-            let new_position = parent.expect("cant be none").position.increase_cell();
-            new_node = BTreeNode {
-                position: new_position,
-                pager_accessor: pager_interface.clone(),
-                table_schema: schema.clone(),
-            };
-
-            pager_interface.access_page_write(&new_node, |pc| {
-                let offset =
-                    Serializer::find_position_offset(&pc.data, &new_node.position, &schema)?;
-                pc.data[offset + 1] = Serializer::create_node_flag(true);
-                pc.free_space -= new_node_length;
-                Ok(())
-            })?;
-            Self::set_keys_and_children_as_positions(&new_node, keys, children.clone())?;
-            Self::set_data(&new_node, data)?;
+            return Ok(new_node);
         }
+
+        let page_capacity = schema.max_nodes_per_page()?;
+
+        let mut chosen_position: Option<Position> = None;
+        for (page, advertised_free_slots) in &schema.free_list {
+            if *advertised_free_slots == 0 {
+                continue;
+            }
+            let used_slots = pager_interface
+                .access_pager_write(|p| p.access_page_read(&Position::new(*page, 0)))
+                .and_then(|pc| Self::count_nodes_on_page(&schema, &pc.data))?;
+
+            if used_slots < page_capacity {
+                chosen_position = Some(Position::new(*page, used_slots));
+                break;
+            }
+        }
+
+        let new_node = if let Some(position) = chosen_position {
+            println!("Reusing page {} for new node (used slots: {}, capacity: {})", position.page(), position.cell(), page_capacity);
+            Self::create_empty_node_at_position(&schema, pager_interface.clone(), position)?
+        } else {
+            println!("No suitable page found in free list, creating new page for new node");
+            Self::create_empty_node_on_new_page(&schema, pager_interface.clone())?
+        };
+
+        Self::set_keys_and_children_as_positions(&new_node, keys, children)?;    
+        Self::set_data(&new_node, data)?;
+       
         Ok(new_node)
     }
 
@@ -251,8 +298,28 @@ impl PagerProxy {
         let page = parent
             .pager_accessor
             .access_pager_write(|p| p.access_page_read(&parent.position))?;
-        let position =
-            Serializer::read_child(index, &page.data, &parent.position, &parent.table_schema)?;
+        let mut position = match Serializer::read_child(
+            index,
+            &page.data,
+            &parent.position,
+            &parent.table_schema,
+        ) {
+            Ok(p) => p,
+            Err(_) => Position::make_empty(),
+        };
+
+        if position.is_empty() {
+            let children =
+                Serializer::read_children_as_vec(&page.data, &parent.position, &parent.table_schema)?;
+            if children.is_empty() {
+                return Err(Status::InternalExceptionIndexOutOfRange);
+            }
+            position = if index < children.len() {
+                children[index].clone()
+            } else {
+                children.last().cloned().unwrap()
+            };
+        }
 
         Ok(BTreeNode {
             position,
@@ -350,6 +417,7 @@ impl PagerProxy {
         let mut page = parent
             .pager_accessor
             .access_pager_write(|p| p.access_page_read(&parent.position))?;
+        let was_leaf = Serializer::is_leaf(&page.data, &parent.position, &parent.table_schema)?;
         Serializer::write_keys_vec_resize_with_rows(
             &keys,
             &data,
@@ -357,6 +425,21 @@ impl PagerProxy {
             &parent.position,
             &parent.table_schema,
         )?;
+
+        if was_leaf {
+            Serializer::write_children_vec(
+                &vec![],
+                &mut page.data,
+                &parent.position,
+                &parent.table_schema,
+            )?;
+            Serializer::set_is_leaf(
+                &mut page.data,
+                &parent.position,
+                &parent.table_schema,
+                true,
+            )?;
+        }
 
         parent.pager_accessor.access_page_write(parent, |d| {
             d.free_space = PAGE_SIZE

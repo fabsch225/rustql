@@ -267,14 +267,16 @@ impl Btree {
                 i -= 1;
             }
             let mut i = (i + 1) as usize;
-            if x.get_child(i)?.get_keys_count()? == (2 * t) - 1 {
+            let child_i = x.get_child(i)?;
+            if child_i.get_keys_count()? == (2 * t) - 1 {
                 self.split_child(x, i, t, false)?;
                 let key_and_row = x.get_key(i)?;
                 if self.compare(&key, &key_and_row.0)? == std::cmp::Ordering::Greater {
                     i += 1;
                 }
             }
-            self.insert_non_full(&x.get_child(i)?, key, row, t)?;
+            let child_next = x.get_child(i)?;
+            self.insert_non_full(&child_next, key, row, t)?;
         }
         Ok(())
     }

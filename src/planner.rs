@@ -243,7 +243,8 @@ impl Planner {
                     entry_count: 0,
                     table_type: 0,
                     name: create_table_query.table_name.clone(),
-                    btree_order: 0
+                    btree_order: 0,
+                    free_list: vec![],
                 };
 
                 Ok(CompiledQuery::CreateTable(CompiledCreateTableQuery {
@@ -430,26 +431,59 @@ impl Planner {
                                        -> Result<(char, Field), QueryResult>
                             {
                                 let parts: Vec<&str> = token.split('.').collect();
-                                let mut field = Field {
-                                    field_type: Type::Null,
-                                    name: parts[0].to_string(),
-                                    table_name: "".to_string(),
-                                };
                                 if parts.len() == 2 {
-                                    field.name = parts[1].to_string();
-                                    field.table_name = parts[0].to_string();
+                                    let field = Field {
+                                        field_type: Type::Null,
+                                        name: parts[1].to_string(),
+                                        table_name: parts[0].to_string(),
+                                    };
+                                    if l_sch.get_column_and_field(&field).is_some() {
+                                        return Ok(('L', field));
+                                    } else if r_sch.get_column_and_field(&field).is_some() {
+                                        return Ok(('R', field));
+                                    } else {
+                                        return Err(QueryResult::user_input_wrong(format!(
+                                            "Column '{:?}' not found in join source", field
+                                        )));
+                                    }
+                                } else if parts.len() == 1 {
+                                    let name = parts[0];
+                                    let left_matches: Vec<Field> = l_sch
+                                        .fields
+                                        .iter()
+                                        .filter(|f| f.name == name)
+                                        .cloned()
+                                        .collect();
+                                    let right_matches: Vec<Field> = r_sch
+                                        .fields
+                                        .iter()
+                                        .filter(|f| f.name == name)
+                                        .cloned()
+                                        .collect();
+
+                                    if left_matches.len() + right_matches.len() == 0 {
+                                        return Err(QueryResult::user_input_wrong(format!(
+                                            "Column '{}' not found in join source",
+                                            token
+                                        )));
+                                    }
+                                    if left_matches.len() + right_matches.len() > 1 {
+                                        return Err(QueryResult::user_input_wrong(format!(
+                                            "Column '{}' is ambiguous in join condition",
+                                            token
+                                        )));
+                                    }
+
+                                    if let Some(field) = left_matches.into_iter().next() {
+                                        return Ok(('L', field));
+                                    }
+                                    if let Some(field) = right_matches.into_iter().next() {
+                                        return Ok(('R', field));
+                                    }
+                                    unreachable!();
                                 } else {
                                     return Err(QueryResult::user_input_wrong(format!(
                                         "Column '{:?}' is Invalid", token
-                                    )));
-                                }
-                                if l_sch.get_column_and_field(&field).is_some() {
-                                    return Ok(('L', field));
-                                } else if r_sch.get_column_and_field(&field).is_some() {
-                                    return Ok(('R', field));
-                                } else {
-                                    return Err(QueryResult::user_input_wrong(format!(
-                                        "Column '{:?}' not found in join source", field
                                     )));
                                 }
                             };

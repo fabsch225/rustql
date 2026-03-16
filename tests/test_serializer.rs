@@ -28,6 +28,7 @@ mod tests {
             entry_count: 0,
             name: "".to_string(),
             btree_order: 0,
+            free_list: vec![],
         }
     }
 

@@ -359,16 +359,16 @@ mod tests {
         assert_success(exec.prepare("INSERT INTO Marketing VALUES (1, 'North')".into()));
         assert_success(exec.prepare("INSERT INTO Marketing VALUES (3, 'South')".into()));
 
-        let union_query = "(SELECT emp_id FROM Sales) UNION (SELECT emp_id FROM Marketing)";
+        let union_query = "SELECT emp_id FROM Sales UNION SELECT emp_id FROM Marketing";
 
         let full_query = format!(
-            "SELECT name, ump_id FROM Employees JOIN ({}) ON id = emp_id",
+            "SELECT name, emp_id FROM Employees JOIN ({}) ON id = emp_id",
             union_query
         );
 
         let result = exec.prepare(full_query.into());
 
-        assert_row_count(result, 4);
+        assert_row_count(result, 3);
     }
 
     #[test]

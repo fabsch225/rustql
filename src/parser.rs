@@ -536,9 +536,21 @@ impl Parser {
         let token = self.lexer.next_token().ok_or("Expected source")?;
 
         if token == "(" {
+            let mut additional_open = 0usize;
+            while let Some(next) = self.peek_token() {
+                if next == "(" {
+                    self.expect_token("(")?;
+                    additional_open += 1;
+                } else {
+                    break;
+                }
+            }
             self.expect_token("SELECT")?;
             let sub = self.parse_select()?;
             //parse_select consumes the ")"
+            for _ in 0..additional_open {
+                self.expect_token(")")?;
+            }
             return Ok(ParsedSource::SubQuery(Box::new(sub)));
         }
 

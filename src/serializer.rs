@@ -612,52 +612,83 @@ impl Serializer {
         schema: &TableSchema,
     ) -> Result<(), Status> {
         let offset = Self::find_position_offset(page, position, schema)?;
-        //println!("write_keys_vec_resize before: {:?}", page);
         let orig_num_keys = page[offset] as usize;
         let new_num_keys = keys.len();
         let key_length = schema.get_key_length()?;
-        let keys_start = offset + NODE_METADATA_SIZE;
-        let orig_children_start = keys_start + orig_num_keys * key_length;
-        let orig_children_end = orig_children_start + (orig_num_keys + 1) * POSITION_SIZE;
-        let orig_data_start = orig_children_start + (orig_num_keys + 1) * POSITION_SIZE;
+        let row_length = schema.get_row_length()?;
+        let old_node_size =
+            NODE_METADATA_SIZE + orig_num_keys * (key_length + row_length) + (orig_num_keys + 1) * POSITION_SIZE;
+        let new_node_size =
+            NODE_METADATA_SIZE + new_num_keys * (key_length + row_length) + (new_num_keys + 1) * POSITION_SIZE;
 
-        if new_num_keys > orig_num_keys {
-            //shift data
-            let row_offset = (new_num_keys - orig_num_keys) as isize * key_length as isize
-                + POSITION_SIZE as isize;
-            let children_offset = (new_num_keys - orig_num_keys) as isize * key_length as isize;
-            Self::shift_page(page, orig_children_end, row_offset)?;
-            Self::shift_page_block(
-                page,
-                orig_children_start,
-                orig_children_end + children_offset as usize,
-                children_offset,
-            )?;
+        if offset + old_node_size > PAGE_SIZE || offset + new_node_size > PAGE_SIZE {
+            return Err(InternalExceptionIndexOutOfRange);
         }
 
-        for (i, key) in keys.iter().enumerate() {
-            let start_pos = keys_start + i * key_length;
-            let end_pos = start_pos + key_length;
-            page[start_pos..end_pos].copy_from_slice(key);
+        let old_flag = page[offset + 1];
+        let old_children_start = offset + NODE_METADATA_SIZE + orig_num_keys * key_length;
+        let old_children_len = (orig_num_keys + 1) * POSITION_SIZE;
+        let old_data_start = old_children_start + old_children_len;
+        let old_data_len = orig_num_keys * row_length;
+
+        let old_children = page[old_children_start..old_children_start + old_children_len].to_vec();
+        let old_rows = page[old_data_start..old_data_start + old_data_len].to_vec();
+        let tail = page[offset + old_node_size..].to_vec();
+
+        let mut rebuilt = vec![0u8; new_node_size];
+        rebuilt[0] = new_num_keys as u8;
+        rebuilt[1] = old_flag;
+
+        // keys
+        let mut cursor = NODE_METADATA_SIZE;
+        for key in keys.iter() {
+            if key.len() != key_length {
+                return Err(InternalExceptionInvalidRowLength);
+            }
+            rebuilt[cursor..cursor + key_length].copy_from_slice(key);
+            cursor += key_length;
         }
 
-        //shrink remaining page
-        if new_num_keys < orig_num_keys {
-            let children_offset = (orig_num_keys - new_num_keys) * key_length;
-            Self::shift_page_block(
-                page,
-                orig_children_start,
-                orig_data_start,
-                -(children_offset as isize),
-            )?;
-            let offset = (orig_num_keys - new_num_keys) * POSITION_SIZE + children_offset;
-            //println!("data (and rest page) offset: -{}", offset);
-            Self::shift_page(page, orig_children_end, -(offset as isize))?;
+        // children (preserve existing order, truncate/pad)
+        let new_children_count = new_num_keys + 1;
+        let old_children_count = orig_num_keys + 1;
+        let children_to_copy = std::cmp::min(new_children_count, old_children_count);
+        for i in 0..children_to_copy {
+            let old_start = i * POSITION_SIZE;
+            let new_start = cursor + i * POSITION_SIZE;
+            rebuilt[new_start..new_start + POSITION_SIZE]
+                .copy_from_slice(&old_children[old_start..old_start + POSITION_SIZE]);
+        }
+        cursor += new_children_count * POSITION_SIZE;
+
+        // rows (preserve old rows, truncate/pad)
+        let old_row_count = orig_num_keys;
+        let rows_to_copy = std::cmp::min(new_num_keys, old_row_count);
+        for i in 0..rows_to_copy {
+            let old_start = i * row_length;
+            let new_start = cursor + i * row_length;
+            rebuilt[new_start..new_start + row_length]
+                .copy_from_slice(&old_rows[old_start..old_start + row_length]);
         }
 
-        page[offset] = new_num_keys as u8;
+        page[offset..offset + new_node_size].copy_from_slice(&rebuilt);
+        let new_tail_start = offset + new_node_size;
+        let available_tail_capacity = PAGE_SIZE - new_tail_start;
+        let copy_len = std::cmp::min(tail.len(), available_tail_capacity);
 
-        //println!("write_keys_vec_resize after: {:?}", page);
+        if tail.len() > available_tail_capacity {
+            // If we need to truncate, only allow dropping zero-filled slack.
+            if tail[available_tail_capacity..].iter().any(|b| *b != 0) {
+                return Err(InternalExceptionIndexOutOfRange);
+            }
+        }
+
+        if copy_len > 0 {
+            page[new_tail_start..new_tail_start + copy_len].copy_from_slice(&tail[..copy_len]);
+        }
+        if new_tail_start + copy_len < PAGE_SIZE {
+            page[new_tail_start + copy_len..PAGE_SIZE].fill(0);
+        }
 
         Ok(())
     }

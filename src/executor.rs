@@ -21,7 +21,7 @@ use crate::serializer::Serializer;
 use crate::status::Status;
 use crate::status::Status::ExceptionQueryMisformed;
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::fmt::{Display, Formatter, format};
 use std::fs::OpenOptions;
@@ -33,7 +33,8 @@ pub static MASTER_TABLE_SQL: &str = "CREATE TABLE rustsql_master (
         name STRING,
         type STRING,
         rootpage INTEGER,
-        sql STRING
+    sql STRING,
+    free_list STRING
     )";
 
 #[derive(Debug)]
@@ -102,9 +103,30 @@ pub struct QueryExecutor {
     pub query_cache: HashMap<String, CompiledQuery>, //must be invalidated once schema is changed or in a smart way
     pub schema: Schema,
     pub btree_node_width: usize,
+    request_counter: usize,
+    last_write_table_id: Option<usize>,
 }
 
 impl QueryExecutor {
+    fn tree_order_for(schema: &TableSchema, fallback: usize) -> usize {
+        if schema.btree_order == 0 {
+            fallback
+        } else {
+            schema.btree_order
+        }
+    }
+
+    fn encode_free_list_top_10(table: &TableSchema) -> String {
+        let mut entries = table.free_list.clone();
+        entries.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        entries.truncate(10);
+        entries
+            .iter()
+            .map(|(page, slots)| format!("{}:{}", page, slots))
+            .collect::<Vec<String>>()
+            .join(",")
+    }
+
     pub fn init(file_path: &str, t: usize) -> Self {
         let mut pager_accessor = match PagerCore::init_from_file(file_path) {
             Ok(pa) => pa,
@@ -112,7 +134,7 @@ impl QueryExecutor {
                 println!("{:?}", e);
                 match e {
                     Status::InternalExceptionFileNotFound => {
-                        Self::create_database(file_path).expect("Failed to create database");
+                        let _ = Self::create_database(file_path);
                         PagerCore::init_from_file(file_path)
                             .expect("Failed to initialise PagerCore after creating database")
                     }
@@ -124,6 +146,13 @@ impl QueryExecutor {
             }
         };
 
+        if pager_accessor.get_next_page_index() < 2 {
+            Self::initialize_database_file(file_path)
+                .expect("Failed to initialize empty database file");
+            pager_accessor = PagerCore::init_from_file(file_path)
+                .expect("Failed to re-open pager after initializing database file");
+        }
+
         let mut bootstrap_executor = QueryExecutor {
             pager_accessor: pager_accessor.clone(),
             query_cache: HashMap::new(),
@@ -134,6 +163,8 @@ impl QueryExecutor {
                 tables: vec![Self::make_master_table_schema()],
             },
             btree_node_width: t,
+            request_counter: 0,
+            last_write_table_id: None,
         };
 
         bootstrap_executor.schema = bootstrap_executor.load_schema();
@@ -145,7 +176,7 @@ impl QueryExecutor {
             println!(
                 "System Table: {}",
                 Btree::init(
-                    self.btree_node_width,
+                    Self::tree_order_for(&self.schema.tables[0], self.btree_node_width),
                     self.pager_accessor.clone(),
                     self.schema.tables[0].clone()
                 )
@@ -156,7 +187,7 @@ impl QueryExecutor {
             let table_id = Planner::find_table_id(&self.schema, table_name).unwrap();
             let table_schema = self.schema.tables[table_id].clone();
             let btree = Btree::init(
-                self.btree_node_width,
+                Self::tree_order_for(&table_schema, self.btree_node_width),
                 self.pager_accessor.clone(),
                 table_schema.clone(),
             )
@@ -171,7 +202,7 @@ impl QueryExecutor {
             println!(
                 "System Table: {}",
                 Btree::init(
-                    self.btree_node_width,
+                    Self::tree_order_for(&self.schema.tables[0], self.btree_node_width),
                     self.pager_accessor.clone(),
                     self.schema.tables[0].clone()
                 )
@@ -182,7 +213,7 @@ impl QueryExecutor {
             let table_id = Planner::find_table_id(&self.schema, table_name).unwrap();
             let table_schema = self.schema.tables[table_id].clone();
             let btree = Btree::init(
-                self.btree_node_width,
+                Self::tree_order_for(&table_schema, self.btree_node_width),
                 self.pager_accessor.clone(),
                 table_schema.clone(),
             )
@@ -206,7 +237,20 @@ impl QueryExecutor {
     }
 
     pub fn prepare(&mut self, query: String) -> QueryResult {
+        self.request_counter += 1;
+        self.last_write_table_id = None;
         let result = self.exec_intern(query, false);
+        
+        if self.request_counter % 120 == 0 {
+            if let Some(table_id) = self.last_write_table_id {
+                if let Err(e) = self.refresh_table_free_list(table_id) {
+                    eprintln!("Failed to refresh free-list for table {}: {:?}", table_id, e);
+                } else if let Err(e) = self.persist_free_lists_snapshot_to_system_table() {
+                    eprintln!("Failed to persist free-lists to system table: {:?}", e);
+                }
+            }
+        }
+        
         if !result.is_ok() {
             result.err().unwrap()
         } else {
@@ -244,13 +288,31 @@ impl QueryExecutor {
                     return node.position.page();
                 })?;
 
+                let mut table_schema = q.schema.clone();
+                table_schema.btree_order = self.btree_node_width;
+                let page_capacity = table_schema
+                    .max_nodes_per_page()
+                    .map_err(QueryResult::err)?;
+                let initial_free = page_capacity.saturating_sub(1);
+                table_schema.free_list = vec![(root_page, initial_free)];
+                let free_list_encoded = Self::encode_free_list_top_10(&table_schema);
+
                 let insert_query = format!(
-                    "INSERT INTO {} (name, type, rootpage, sql) VALUES ({}, {}, {}, '{}')",
-                    MASTER_TABLE_NAME, q.table_name, 0, root_page, query
+                    "INSERT INTO {} (name, type, rootpage, sql, free_list) VALUES ('{}', '{}', {}, '{}', '{}')",
+                    MASTER_TABLE_NAME,
+                    q.table_name.replace("'", "''"),
+                    "table",
+                    root_page,
+                    query.replace("'", "''"),
+                    free_list_encoded.replace("'", "''")
                 );
-                println!("{}", insert_query);
                 self.exec_intern(insert_query, true)?;
-                self.reload_schema()
+                let result = self.reload_schema()?;
+                if !allow_modification_to_system_table {
+                    let created_table_id = Planner::find_table_id(&self.schema, &q.table_name)?;
+                    self.last_write_table_id = Some(created_table_id);
+                }
+                Ok(result)
             }
             CompiledQuery::DropTable(q) => {
                 todo!()
@@ -262,16 +324,22 @@ impl QueryExecutor {
                 Ok(QueryResult::return_data(result_df))
             }
             CompiledQuery::Insert(q) => {
-                let schema = &self.schema.tables[q.table_id];
+                let mut schema = self.schema.tables[q.table_id].clone();
+                if allow_modification_to_system_table && q.table_id == 0 {
+                    schema.free_list.clear();
+                }
                 let mut btree = Btree::init(
-                    self.btree_node_width,
+                    Self::tree_order_for(&schema, self.btree_node_width),
                     self.pager_accessor.clone(),
-                    schema.clone(),
+                    schema,
                 )
                 .map_err(|s| QueryResult::err(s))?;
                 btree
                     .insert(q.data.0, q.data.1)
                     .map_err(|s| QueryResult::err(s))?;
+                if !allow_modification_to_system_table {
+                    self.last_write_table_id = Some(q.table_id);
+                }
                 Ok(QueryResult::went_fine())
             }
             CompiledQuery::Delete(q) => {
@@ -305,10 +373,15 @@ impl QueryExecutor {
                     keys_to_delete.push(key);
                 }
 
+                let mut btree_schema = schema.clone();
+                if allow_modification_to_system_table && q.table_id == 0 {
+                    btree_schema.free_list.clear();
+                }
+
                 let mut btree = Btree::init(
-                    self.btree_node_width,
+                    Self::tree_order_for(&btree_schema, self.btree_node_width),
                     self.pager_accessor.clone(),
-                    schema.clone(),
+                    btree_schema,
                 )
                 .map_err(|s| QueryResult::err(s))?;
 
@@ -330,7 +403,7 @@ impl QueryExecutor {
             } => {
                 let schema = self.schema.tables[*table_id].clone();
                 let btree = Btree::init(
-                    self.btree_node_width,
+                    Self::tree_order_for(&schema, self.btree_node_width),
                     self.pager_accessor.clone(),
                     schema.clone(),
                 )?;
@@ -410,7 +483,7 @@ impl QueryExecutor {
     ) -> Result<BTreeScanSource, Status> {
         let schema = self.schema.tables[table_id].clone();
         let btree = Btree::init(
-            self.btree_node_width,
+            Self::tree_order_for(&schema, self.btree_node_width),
             self.pager_accessor.clone(),
             schema.clone(),
         )?;
@@ -418,9 +491,174 @@ impl QueryExecutor {
         Ok(BTreeScanSource::new(btree, schema, operation, conditions))
     }
 
+    fn count_nodes_on_page(&self, schema: &TableSchema, page_data: &[u8; PAGE_SIZE]) -> Result<usize, Status> {
+        let mut count = 0usize;
+        let mut offset = 0usize;
+        let key_length = schema.get_key_length()?;
+        let row_length = schema.get_row_length()?;
+
+        while offset + 2 <= PAGE_SIZE {
+            let num_keys = page_data[offset] as usize;
+            let flag = page_data[offset + 1];
+
+            if num_keys == 0 && flag == 0 {
+                break;
+            }
+
+            let node_size = 2 + num_keys * (key_length + row_length) + (num_keys + 1) * 4;
+            if offset + node_size > PAGE_SIZE {
+                return Err(Status::InternalExceptionIndexOutOfRange);
+            }
+
+            count += 1;
+            offset += node_size;
+        }
+
+        Ok(count)
+    }
+
+    fn collect_btree_pages(&self, node: &crate::btree::BTreeNode, pages: &mut HashSet<usize>) -> Result<(), Status> {
+        if !pages.insert(node.position.page()) {
+            return Ok(());
+        }
+        for child in PagerProxy::get_children(node)? {
+            self.collect_btree_pages(&child, pages)?;
+        }
+        Ok(())
+    }
+
+    fn refresh_table_free_list(&mut self, table_id: usize) -> Result<(), Status> {
+        if table_id >= self.schema.tables.len() {
+            return Ok(());
+        }
+        let table_schema = self.schema.tables[table_id].clone();
+        let btree = Btree::init(
+            Self::tree_order_for(&table_schema, self.btree_node_width),
+            self.pager_accessor.clone(),
+            table_schema.clone(),
+        )?;
+        let root = btree.root.ok_or(Status::InternalExceptionNoRoot)?;
+
+        let mut pages: HashSet<usize> = table_schema
+            .free_list
+            .iter()
+            .map(|(page, _)| *page)
+            .collect();
+        pages.insert(root.position.page());
+
+        let capacity = table_schema.max_nodes_per_page()?;
+        let mut free_list = Vec::new();
+
+        for page in pages {
+            let page_data = self
+                .pager_accessor
+                .access_pager_write(|p| p.access_page_read(&Position::new(page, 0)))?;
+            let used = self.count_nodes_on_page(&table_schema, &page_data.data)?;
+            let free = capacity.saturating_sub(used);
+            free_list.push((page, free));
+        }
+
+        free_list.sort_by_key(|(page, _)| *page);
+        self.schema.tables[table_id].free_list = free_list;
+        Ok(())
+    }
+
+    fn refresh_all_free_lists(&mut self) {
+        for table_id in 1..self.schema.tables.len() {
+            if let Err(e) = self.refresh_table_free_list(table_id) {
+                eprintln!("Failed to refresh free-list for table {}: {:?}", table_id, e);
+            }
+        }
+    }
+
+    fn schema_to_create_sql(schema: &TableSchema) -> String {
+        let fields = schema
+            .fields
+            .iter()
+            .map(|f| {
+                let type_str = match f.field_type {
+                    Type::String => "String",
+                    Type::Integer => "Integer",
+                    Type::Date => "Date",
+                    Type::Boolean => "Boolean",
+                    Type::Null => "Null",
+                };
+                format!("{} {}", f.name, type_str)
+            })
+            .collect::<Vec<String>>()
+            .join(", ");
+        format!("CREATE TABLE {} ({})", schema.name, fields)
+    }
+
+    fn persist_free_lists_to_system_table(&mut self) -> Result<(), QueryResult> {
+        self.exec_intern(format!("DELETE FROM {}", MASTER_TABLE_NAME), true)?;
+
+        let tables_to_persist: Vec<TableSchema> = self.schema.tables.iter().skip(1).cloned().collect();
+        for table in tables_to_persist {
+            let create_sql = Self::schema_to_create_sql(&table);
+            let insert_query = format!(
+                "INSERT INTO {} (name, type, rootpage, sql, free_list) VALUES ('{}', '{}', {}, '{}', '{}')",
+                MASTER_TABLE_NAME,
+                table.name.replace("'", "''"),
+                "table",
+                table.root.page(),
+                create_sql.replace("'", "''"),
+                Self::encode_free_list_top_10(&table).replace("'", "''")
+            );
+            self.exec_intern(insert_query, true)?;
+        }
+
+        self.reload_schema()?;
+        Ok(())
+    }
+
+    fn persist_table_free_list_to_system_table(&mut self, table_id: usize) -> Result<(), QueryResult> {
+        if table_id == 0 || table_id >= self.schema.tables.len() {
+            return Ok(());
+        }
+
+        let table = self.schema.tables[table_id].clone();
+        let create_sql = Self::schema_to_create_sql(&table);
+
+        let insert_query = format!(
+            "INSERT INTO {} (name, type, rootpage, sql, free_list) VALUES ('{}', '{}', {}, '{}', '{}')",
+            MASTER_TABLE_NAME,
+            table.name.replace("'", "''"),
+            "table",
+            table.root.page(),
+            create_sql.replace("'", "''"),
+            Self::encode_free_list_top_10(&table).replace("'", "''")
+        );
+        self.exec_intern(insert_query, true)?;
+        Ok(())
+    }
+
+    fn persist_free_lists_snapshot_to_system_table(&mut self) -> Result<(), QueryResult> {
+        let master_schema = self.schema.tables[0].clone();
+        PagerProxy::clear_table_root(&master_schema, self.pager_accessor.clone())
+            .map_err(QueryResult::err)?;
+
+        let tables_to_persist: Vec<TableSchema> = self.schema.tables.iter().skip(1).cloned().collect();
+        for table in tables_to_persist {
+            let create_sql = Self::schema_to_create_sql(&table);
+            let insert_query = format!(
+                "INSERT INTO {} (name, type, rootpage, sql, free_list) VALUES ('{}', '{}', {}, '{}', '{}')",
+                MASTER_TABLE_NAME,
+                table.name.replace("'", "''"),
+                "table",
+                table.root.page(),
+                create_sql.replace("'", "''"),
+                Self::encode_free_list_top_10(&table).replace("'", "''")
+            );
+            self.exec_intern(insert_query, true)?;
+        }
+
+        Ok(())
+    }
+
     pub fn check_integrity(&self) -> Result<(), Status> {
         let btree = Btree::init(
-            self.btree_node_width,
+            Self::tree_order_for(&self.schema.tables[0], self.btree_node_width),
             self.pager_accessor.clone(),
             self.schema.tables[0].clone(),
         )?;
@@ -454,26 +692,43 @@ impl QueryExecutor {
     }
 
     pub fn create_database(file_name: &str) -> Result<(), Status> {
+        let mut file = OpenOptions::new()
+            .create_new(true)
+            .read(true)
+            .write(true)
+            .open(file_name)
+            .map_err(|_| Status::InternalExceptionDBCreationFailed)?;
+
+        let db = Self::make_initial_db_bytes();
+        file.write_all(&db)
+            .map_err(|_| Status::InternalExceptionDBCreationFailed)?;
+
+        Ok(())
+    }
+
+    fn initialize_database_file(file_name: &str) -> Result<(), Status> {
+        let mut file = OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .read(true)
+            .write(true)
+            .open(file_name)
+            .map_err(|_| Status::InternalExceptionDBCreationFailed)?;
+
+        let db = Self::make_initial_db_bytes();
+        file.write_all(&db)
+            .map_err(|_| Status::InternalExceptionDBCreationFailed)?;
+        Ok(())
+    }
+
+    fn make_initial_db_bytes() -> [u8; 2 + PAGE_SIZE_WITH_META] {
         let mut db = [0u8; 2 + PAGE_SIZE_WITH_META];
-        //i think this will continue to be hardcoded here for the foreseeable future
-        //where to store Next_Page??
         // [<0, 1> Next Page, <0, 1> Free Space, Flag, Num-keys, Flag]
         db[1] = 2; //next page: [0, 1] -> 2 (starts at 1)
         db[2] = ((PAGE_SIZE - 600) << 8) as u8;
         db[3] = ((PAGE_SIZE - 600) & 0xFF) as u8;
         db[6] = Serializer::create_node_flag(true); //flag: is a leaf
-
-        match OpenOptions::new()
-            .create_new(true)
-            .read(true)
-            .write(true)
-            .open(file_name)
-            .unwrap()
-            .write(&db)
-        {
-            Ok(f) => Ok(()),
-            _ => Err(Status::InternalExceptionDBCreationFailed),
-        }
+        db
     }
 
     fn reload_schema(&mut self) -> Result<QueryResult, QueryResult> {
@@ -514,6 +769,16 @@ impl QueryExecutor {
                         name: "rootpage".to_string(),
                         table_name: MASTER_TABLE_NAME.to_string(),
                     },
+                    Field {
+                        field_type: Type::String,
+                        name: "type".to_string(),
+                        table_name: MASTER_TABLE_NAME.to_string(),
+                    },
+                    Field {
+                        field_type: Type::String,
+                        name: "free_list".to_string(),
+                        table_name: MASTER_TABLE_NAME.to_string(),
+                    },
                 ],
             },
         };
@@ -534,6 +799,8 @@ impl QueryExecutor {
                 )
                 .unwrap(),
             );
+            let free_list_encoded = Serializer::format_field_on_row(entry, 4, &master_table_schema)
+                .expect("Failed to format field: free_list");
             let mut parser = Parser::new(sql);
             let parsed_query = parser.parse_query().expect("Failed to parse query");
             let compiled_query = Planner::plan(&Schema::make_empty(), parsed_query)
@@ -541,13 +808,21 @@ impl QueryExecutor {
             match compiled_query {
                 CompiledQuery::CreateTable(mut table) => {
                     let strip_pos = name.iter().rposition(|&x| x != 0).expect("cant be empty");
-                    schema
-                        .table_index
-                        .index
-                        .push(name[0..strip_pos + 1].to_vec());
+                    let table_name = name[0..strip_pos + 1].to_vec();
                     table.schema.root = Position::new(rootpage as usize, 0);
                     table.schema.btree_order = self.btree_node_width; //ToDo Store this in the System Table
-                    schema.tables.push(table.schema);
+                    table.schema.free_list = TableSchema::free_list_from_string(&free_list_encoded);
+                    if let Some(existing_idx) = schema
+                        .table_index
+                        .index
+                        .iter()
+                        .position(|t| t == &table_name)
+                    {
+                        schema.tables[existing_idx] = table.schema;
+                    } else {
+                        schema.table_index.index.push(table_name);
+                        schema.tables.push(table.schema);
+                    }
                 }
                 _ => {
                     panic!("in the system table should only be create table queries")
@@ -566,6 +841,7 @@ impl QueryExecutor {
         match compiled_query {
             Ok(CompiledQuery::CreateTable(mut create)) => {
                 create.schema.root = Position::new(1, 0);
+                create.schema.btree_order = 2;
                 create.schema
             }
             _ => {

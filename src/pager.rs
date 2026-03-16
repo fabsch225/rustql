@@ -157,7 +157,7 @@ impl Position {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.page == 0 && self.cell == 0
+        self.page == 0
     }
 
     pub fn page(&self) -> usize {
