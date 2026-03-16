@@ -2,7 +2,7 @@
 mod tests {
     use rustql::executor::QueryExecutor;
 
-    const BTREE_NODE_SIZE: usize = 5;
+    const BTREE_NODE_SIZE: usize = 7;
 
     #[test]
     fn test_create_table() {

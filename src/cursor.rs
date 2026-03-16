@@ -1,5 +1,5 @@
 use crate::btree::{BTreeNode, Btree};
-use crate::pager::{Key, Row};
+use crate::pager::{Key, Position, Row};
 use crate::status::Status;
 
 #[derive(Debug, Clone)]
@@ -73,6 +73,10 @@ impl BTreeCursor {
                 Ok(None)
             }
         }
+    }
+
+    pub fn current_position(&self) -> Option<Position> {
+        self.stack.last().map(|(node, _)| node.position.clone())
     }
 
     pub fn perform_action_on_current<Action>(&self, exec: &Action) -> Result<(), Status>

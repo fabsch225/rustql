@@ -241,7 +241,8 @@ impl QueryExecutor {
         self.last_write_table_id = None;
         let result = self.execute_compiled_query(query, false);
 
-        if self.request_counter % 120 == 0 {
+        //this should be done here anyway, so the hardcoded 30 is not that bad..
+        if self.request_counter % 30 == 0 {
             if let Some(table_id) = self.last_write_table_id {
                 if let Err(e) = self.refresh_table_free_list(table_id) {
                     eprintln!("Failed to refresh free-list for table {}: {:?}", table_id, e);
@@ -611,12 +612,8 @@ impl QueryExecutor {
         )?;
         let root = btree.root.ok_or(Status::InternalExceptionNoRoot)?;
 
-        let mut pages: HashSet<usize> = table_schema
-            .free_list
-            .iter()
-            .map(|(page, _)| *page)
-            .collect();
-        pages.insert(root.position.page());
+        let mut pages = HashSet::new();
+        self.collect_btree_pages(&root, &mut pages)?;
 
         let capacity = table_schema.max_nodes_per_page()?;
         let mut free_list = Vec::new();
