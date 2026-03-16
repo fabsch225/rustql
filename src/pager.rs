@@ -17,7 +17,7 @@ use std::sync::{Arc, RwLock};
 use std::{fmt, usize};
 
 //in bytes
-pub const PAGE_SIZE: usize = 4096; //PAGE_SIZE_WITH_META should be 4096
+pub const PAGE_SIZE: usize = 4093; //PAGE_SIZE_WITH_META should be 4096
 pub const PAGE_SIZE_WITH_META: usize = PAGE_SIZE + 3; //<2 for free space on page>, <1 for flag>
 pub const NODE_METADATA_SIZE: usize = 2; //<number of keys> <flag> -- the number of keys is used to skip through the nodes on a page
 pub const STRING_SIZE: usize = 256; //len: 255
