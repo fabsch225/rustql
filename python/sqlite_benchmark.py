@@ -65,19 +65,19 @@ def main():
     start = time.perf_counter()
 
     # A: 1..10000
-    for i in range(1, 10001):
+    for i in range(1, 50001):
         exec.exec(f"INSERT INTO A VALUES ({i}, {i*2})")
 
     # B: 2500..17500
-    for i in range(2500, 17501):
+    for i in range(25000, 75001):
         exec.exec(f"INSERT INTO B VALUES ({i}, {i*3})")
 
     # C: 4000..19000
-    for i in range(4000, 19001):
+    for i in range(40000, 90001):
         exec.exec(f"INSERT INTO C VALUES ({i}, {i*4})")
 
     # D: 1000..16000
-    for i in range(1000, 16001):
+    for i in range(10000, 60001):
         exec.exec(f"INSERT INTO D VALUES ({i}, {i*5})")
 
     duration = time.perf_counter() - start
@@ -92,7 +92,7 @@ def main():
     """
     start = time.perf_counter()
     result = exec.exec(query)
-    assert_row_count(result, 13501)
+    assert_row_count(result, 35001)
     duration = time.perf_counter() - start
     print(f"Query time: {duration*1000:.3f} ms")
 

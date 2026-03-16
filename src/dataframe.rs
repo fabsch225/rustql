@@ -17,6 +17,7 @@ pub struct DataFrame {
     pub identifier: String,
     pub header: Vec<Field>,
     pub(crate) row_source: Source,
+    cursor_started: bool,
 }
 
 impl DataFrame {
@@ -25,6 +26,7 @@ impl DataFrame {
             identifier,
             header,
             row_source: Source::Memory(MemorySource { data, idx: 0 }),
+            cursor_started: false,
         }
     }
 
@@ -40,6 +42,7 @@ impl DataFrame {
             identifier,
             header,
             row_source: Source::BTree(BTreeScanSource::new(btree, schema, operation, conditions)),
+            cursor_started: false,
         }
     }
 
@@ -56,15 +59,38 @@ impl DataFrame {
                 data: vec![Serializer::parse_string(message).to_vec()],
                 idx: 0,
             }),
+            cursor_started: false,
         }
     }
 
     pub fn fetch(mut self) -> Result<Vec<Row>, Status> {
         self.row_source.reset()?;
+        self.cursor_started = true;
         let mut rows = vec![];
         while let Some(row) = self.row_source.next()? {
             rows.push(row);
         }
+        Ok(rows)
+    }
+
+    pub fn fetch_n(&mut self, n: usize) -> Result<Vec<Row>, Status> {
+        if n == 0 {
+            return Ok(vec![]);
+        }
+
+        if !self.cursor_started {
+            self.row_source.reset()?;
+            self.cursor_started = true;
+        }
+
+        let mut rows = Vec::with_capacity(n);
+        while rows.len() < n {
+            match self.row_source.next()? {
+                Some(row) => rows.push(row),
+                None => break,
+            }
+        }
+
         Ok(rows)
     }
 
@@ -79,6 +105,7 @@ impl DataFrame {
                 conditions,
                 header,
             )),
+            cursor_started: false,
         }
     }
 
@@ -93,6 +120,7 @@ impl DataFrame {
                 mapping_indices,
                 source_header,
             )),
+            cursor_started: false,
         }
     }
 
@@ -136,6 +164,7 @@ impl DataFrame {
             identifier: format!("Join({}, {})", self.identifier, other.identifier),
             header: result_header,
             row_source: new_source,
+            cursor_started: false,
         })
     }
 
@@ -156,6 +185,7 @@ impl DataFrame {
             identifier: "SetOpResult".to_string(),
             header: self.header,
             row_source: Source::SetOp(new_source),
+            cursor_started: false,
         })
     }
 }
