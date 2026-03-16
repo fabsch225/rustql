@@ -146,6 +146,10 @@ pub enum CompiledQuery {
 }
 
 impl Planner {
+    pub fn is_readonly_query(compiled_query: &CompiledQuery) -> bool {
+        matches!(compiled_query, CompiledQuery::Select(_))
+    }
+
     pub fn plan(schema: &Schema, query: ParsedQuery) -> Result<CompiledQuery, QueryResult> {
         match query {
             ParsedQuery::Insert(mut insert_query) => {

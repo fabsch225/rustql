@@ -239,8 +239,8 @@ impl QueryExecutor {
     pub fn prepare(&mut self, query: String) -> QueryResult {
         self.request_counter += 1;
         self.last_write_table_id = None;
-        let result = self.exec_intern(query, false);
-        
+        let result = self.execute_compiled_query(query, false);
+
         if self.request_counter % 120 == 0 {
             if let Some(table_id) = self.last_write_table_id {
                 if let Err(e) = self.refresh_table_free_list(table_id) {
@@ -250,7 +250,6 @@ impl QueryExecutor {
                 }
             }
         }
-        
         if !result.is_ok() {
             result.err().unwrap()
         } else {
@@ -258,16 +257,62 @@ impl QueryExecutor {
         }
     }
 
-    fn exec_intern(
+    pub fn execute_readonly(&self, query: String) -> QueryResult {
+        let result = self.execute_readonly_intern(query);
+        if !result.is_ok() {
+            result.err().unwrap()
+        } else {
+            result.expect("just checked")
+        }
+    }
+
+    pub fn planner_feedback_is_readonly(&self, query: &str) -> Result<bool, QueryResult> {
+        let compiled_query = self.compile_query(query)?;
+        Ok(Planner::is_readonly_query(&compiled_query))
+    }
+
+    fn compile_query(&self, query: &str) -> Result<CompiledQuery, QueryResult> {
+        let mut parser = Parser::new(query.to_string());
+        let parsed_query = parser
+            .parse_query()
+            .map_err(|s| QueryResult::user_input_wrong(s))?;
+        Planner::plan(&self.schema, parsed_query)
+    }
+
+    fn execute_compiled_query(
         &mut self,
         query: String,
         allow_modification_to_system_table: bool,
     ) -> Result<QueryResult, QueryResult> {
-        let mut parser = Parser::new(query.clone());
-        let parsed_query = parser
-            .parse_query()
-            .map_err(|s| QueryResult::user_input_wrong(s))?;
-        let compiled_query = Planner::plan(&self.schema, parsed_query)?;
+        let compiled_query = self.compile_query(&query)?;
+        self.exec_compiled(
+            compiled_query,
+            query,
+            allow_modification_to_system_table,
+        )
+    }
+
+    fn execute_readonly_intern(&self, query: String) -> Result<QueryResult, QueryResult> {
+        let compiled_query = self.compile_query(&query)?;
+        match compiled_query {
+            CompiledQuery::Select(q) => {
+                let result_df = self
+                    .exec_planned_tree(&q.plan)
+                    .map_err(|s| QueryResult::err(s))?;
+                Ok(QueryResult::return_data(result_df))
+            }
+            _ => Err(QueryResult::user_input_wrong(
+                "query is not read-only".to_string(),
+            )),
+        }
+    }
+
+    fn exec_compiled(
+        &mut self,
+        compiled_query: CompiledQuery,
+        query: String,
+        allow_modification_to_system_table: bool,
+    ) -> Result<QueryResult, QueryResult> {
         match compiled_query {
             CompiledQuery::CreateTable(q) => {
                 //check if the table already exists
@@ -306,7 +351,7 @@ impl QueryExecutor {
                     query.replace("'", "''"),
                     free_list_encoded.replace("'", "''")
                 );
-                self.exec_intern(insert_query, true)?;
+                self.execute_compiled_query(insert_query, true)?;
                 let result = self.reload_schema()?;
                 if !allow_modification_to_system_table {
                     let created_table_id = Planner::find_table_id(&self.schema, &q.table_name)?;
@@ -324,6 +369,10 @@ impl QueryExecutor {
                 Ok(QueryResult::return_data(result_df))
             }
             CompiledQuery::Insert(q) => {
+                if !allow_modification_to_system_table && q.table_id == 0 {
+                    return Err(QueryResult::msg("You are not allowed to modify this table."));
+                }
+
                 let mut schema = self.schema.tables[q.table_id].clone();
                 if allow_modification_to_system_table && q.table_id == 0 {
                     schema.free_list.clear();
@@ -343,6 +392,10 @@ impl QueryExecutor {
                 Ok(QueryResult::went_fine())
             }
             CompiledQuery::Delete(q) => {
+                if !allow_modification_to_system_table && q.table_id == 0 {
+                    return Err(QueryResult::msg("You are not allowed to modify this table."));
+                }
+
                 let mut source = self
                     .create_scan_source(q.table_id, q.operation, q.conditions.clone())
                     .map_err(|s| QueryResult::err(s))?;
@@ -596,11 +649,12 @@ impl QueryExecutor {
             .iter()
             .map(|f| {
                 let type_str = match f.field_type {
-                    Type::String => "String",
-                    Type::Integer => "Integer",
-                    Type::Date => "Date",
-                    Type::Boolean => "Boolean",
-                    Type::Null => "Null",
+                    Type::String => "String".to_string(),
+                    Type::Varchar(len) => format!("Varchar({})", len),
+                    Type::Integer => "Integer".to_string(),
+                    Type::Date => "Date".to_string(),
+                    Type::Boolean => "Boolean".to_string(),
+                    Type::Null => "Null".to_string(),
                 };
                 format!("{} {}", f.name, type_str)
             })
@@ -610,7 +664,7 @@ impl QueryExecutor {
     }
 
     fn persist_free_lists_to_system_table(&mut self) -> Result<(), QueryResult> {
-        self.exec_intern(format!("DELETE FROM {}", MASTER_TABLE_NAME), true)?;
+        self.execute_compiled_query(format!("DELETE FROM {}", MASTER_TABLE_NAME), true)?;
 
         let tables_to_persist: Vec<TableSchema> = self.schema.tables.iter().skip(1).cloned().collect();
         for table in tables_to_persist {
@@ -624,7 +678,7 @@ impl QueryExecutor {
                 create_sql.replace("'", "''"),
                 Self::encode_free_list_top_10(&table).replace("'", "''")
             );
-            self.exec_intern(insert_query, true)?;
+            self.execute_compiled_query(insert_query, true)?;
         }
 
         self.reload_schema()?;
@@ -648,7 +702,7 @@ impl QueryExecutor {
             create_sql.replace("'", "''"),
             Self::encode_free_list_top_10(&table).replace("'", "''")
         );
-        self.exec_intern(insert_query, true)?;
+        self.execute_compiled_query(insert_query, true)?;
         Ok(())
     }
 
@@ -669,7 +723,7 @@ impl QueryExecutor {
                 create_sql.replace("'", "''"),
                 Self::encode_free_list_top_10(&table).replace("'", "''")
             );
-            self.exec_intern(insert_query, true)?;
+            self.execute_compiled_query(insert_query, true)?;
         }
 
         Ok(())

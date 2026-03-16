@@ -4,7 +4,7 @@ use crate::schema::Field;
 use crate::serializer::Serializer;
 use std::io::{self, ErrorKind, Read, Write};
 use std::net::{TcpListener, TcpStream};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, RwLock};
 use std::thread;
 
 const MAGIC: &[u8; 4] = b"RSQL";
@@ -46,7 +46,7 @@ pub fn serve_tcp(
     db_path: &str,
     btree_node_width: usize,
 ) -> io::Result<()> {
-    let engine = Arc::new(Mutex::new(QueryExecutor::init(db_path, btree_node_width)));
+    let engine = Arc::new(RwLock::new(QueryExecutor::init(db_path, btree_node_width)));
 
     let listener = TcpListener::bind(bind_addr)?;
     println!("RustQL TCP server listening on {bind_addr}");
@@ -71,7 +71,7 @@ pub fn serve_tcp(
 
 fn handle_client(
     mut stream: TcpStream,
-    engine: Arc<Mutex<QueryExecutor>>,
+    engine: Arc<RwLock<QueryExecutor>>,
 ) -> io::Result<()> {
     loop {
         let request = match read_request(&mut stream) {
@@ -80,12 +80,59 @@ fn handle_client(
             Err(e) => return Err(e),
         };
 
-        let (status, message, mut data) = {
-            let mut guard = engine
-                .lock()
-                .map_err(|_| io::Error::other("engine lock poisoned"))?;
+        let query = request.sql;
+        let readonly = {
+            let guard = engine
+                .read()
+                .map_err(|_| io::Error::other("engine read lock poisoned"))?;
+            match guard.planner_feedback_is_readonly(&query) {
+                Ok(v) => v,
+                Err(result) => {
+                    let success = result.success;
+                    let mut data = result.data;
+                    let message = if success {
+                        "OK".to_string()
+                    } else {
+                        decode_message_from_dataframe(&data)
+                            .unwrap_or_else(|| "query failed".to_string())
+                    };
+                    let fetch_n = if request.fetch_n == 0 {
+                        DEFAULT_FETCH_N
+                    } else {
+                        request.fetch_n
+                    };
+                    write_response(
+                        &mut stream,
+                        if success { 0u8 } else { 1u8 },
+                        &message,
+                        &mut data,
+                        fetch_n,
+                    )?;
+                    continue;
+                }
+            }
+        };
 
-            let result = guard.prepare(request.sql);
+        let (status, message, mut data) = if readonly {
+            let guard = engine
+                .read()
+                .map_err(|_| io::Error::other("engine read lock poisoned"))?;
+
+            let result = guard.execute_readonly(query);
+            let success = result.success;
+            let data = result.data;
+            let message = if success {
+                "OK".to_string()
+            } else {
+                decode_message_from_dataframe(&data).unwrap_or_else(|| "query failed".to_string())
+            };
+            (if success { 0u8 } else { 1u8 }, message, data)
+        } else {
+            let mut guard = engine
+                .write()
+                .map_err(|_| io::Error::other("engine write lock poisoned"))?;
+
+            let result = guard.prepare(query);
             let success = result.success;
             let data = result.data;
             let message = if success {
@@ -102,12 +149,6 @@ fn handle_client(
             request.fetch_n
         };
         write_response(&mut stream, status, &message, &mut data, fetch_n)?;
-
-        
-        let mut guard = engine
-            .lock()
-            .map_err(|_| io::Error::other("engine lock poisoned"))?;
-        guard.exit();
     }
 }
 

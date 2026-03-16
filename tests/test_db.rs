@@ -1,10 +1,8 @@
 #[cfg(test)]
 mod tests {
-    use std::fmt::format;
     use rustql::executor::QueryExecutor;
-    use rustql::serializer::Serializer;
 
-    const BTREE_NODE_SIZE: usize = 3;
+    const BTREE_NODE_SIZE: usize = 5;
 
     #[test]
     fn test_create_table() {
@@ -437,5 +435,24 @@ mod tests {
             }
         }
         executor.debug(Some("test"));
+    }
+
+    #[test]
+    fn test_very_large_inserts() {
+        let mut executor = QueryExecutor::init("./default.db.bin", BTREE_NODE_SIZE);
+        executor.prepare("CREATE TABLE test (id Integer, other Integer)".to_string());
+        for i in 1..=100000 {
+            let result = executor.prepare(format!(
+                "INSERT INTO test (id, other) VALUES ({}, {})",
+                i, i * 3
+            ));
+            if !result.success {
+                println!("Failed to insert {}: {}", i, result);
+            }
+            assert!(result.success);
+        }
+        let result = executor.prepare("SELECT * FROM test WHERE other < 90000".to_string());
+        assert!(result.success);
+        assert_eq!(result.data.fetch().unwrap().len(), 29999);
     }
 }

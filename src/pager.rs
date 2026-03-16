@@ -1,6 +1,3 @@
-//will end up probably using unsafe rust -> c arrays?
-//for now, just use vecs
-
 use crate::btree::BTreeNode;
 use crate::crypto::generate_random_hash;
 use crate::serializer::Serializer;
@@ -15,11 +12,12 @@ use std::fmt::{Debug, Display, Formatter};
 use std::fs::{File, OpenOptions};
 use std::hash::{Hash, Hasher};
 use std::io::{ErrorKind, Read, Seek, SeekFrom, Write};
+use std::os::unix::fs::FileExt;
 use std::sync::{Arc, RwLock};
 use std::{fmt, usize};
 
 //in bytes
-pub const PAGE_SIZE: usize = 4096; //PAGE_SIZE_WITH_META should be 4096 (TODO: change & test this)
+pub const PAGE_SIZE: usize = 4096; //PAGE_SIZE_WITH_META should be 4096
 pub const PAGE_SIZE_WITH_META: usize = PAGE_SIZE + 3; //<2 for free space on page>, <1 for flag>
 pub const NODE_METADATA_SIZE: usize = 2; //<number of keys> <flag> -- the number of keys is used to skip through the nodes on a page
 pub const STRING_SIZE: usize = 256; //len: 255
@@ -258,17 +256,25 @@ impl PagerAccessor {
     where
         F: FnOnce(&PageContainer) -> Result<T, Status>,
     {
+        // Fast path
+        {
+            let pager = self.pager.read().map_err(|e| {
+                println!("{:?}", e);
+                Status::InternalExceptionPagerWriteLock
+            })?;
+
+            if let Some(page) = pager.try_read_page_from_cache(&node.position) {
+                return func(&page);
+            }
+        }
+
+        // Slow path: cache miss requires loading from disk and mutating cache
         let mut pager = self.pager.write().map_err(|e| {
             println!("{:?}", e);
             Status::InternalExceptionPagerWriteLock
         })?;
-        let page = pager.access_page_read(&node.position);
-
-        if page.is_ok() {
-            func(&page?)
-        } else {
-            Err(page.unwrap_err())
-        }
+        let page = pager.access_page_read(&node.position)?;
+        func(&page)
     }
 
     pub fn access_page_write<F>(&self, node: &BTreeNode, func: F) -> Result<(), Status>
@@ -290,6 +296,35 @@ impl PagerAccessor {
 }
 
 impl PagerCore {
+    fn read_exact_at(file: &File, mut offset: u64, mut buf: &mut [u8]) -> Result<(), Status> {
+        while !buf.is_empty() {
+            let bytes = file
+                .read_at(buf, offset)
+                .map_err(|_| Status::InternalExceptionReadFailed)?;
+            if bytes == 0 {
+                return Err(Status::InternalExceptionReadFailed);
+            }
+            offset += bytes as u64;
+            let (_, rest) = buf.split_at_mut(bytes);
+            buf = rest;
+        }
+        Ok(())
+    }
+
+    fn write_all_at(file: &File, mut offset: u64, mut buf: &[u8]) -> Result<(), Status> {
+        while !buf.is_empty() {
+            let bytes = file
+                .write_at(buf, offset)
+                .map_err(|_| Status::InternalExceptionWriteFailed)?;
+            if bytes == 0 {
+                return Err(Status::InternalExceptionWriteFailed);
+            }
+            offset += bytes as u64;
+            buf = &buf[bytes..];
+        }
+        Ok(())
+    }
+
     pub fn flush(&mut self) -> Result<(), Status> {
         self.write_next_page_pos_to_disk()?;
         let page_indices: Vec<usize> = self.cache.keys().cloned().collect();
@@ -372,6 +407,10 @@ impl PagerCore {
         }
     }
 
+    pub fn try_read_page_from_cache(&self, position: &Position) -> Option<PageContainer> {
+        self.cache.get(&position.page()).cloned()
+    }
+
     //this should be the only function that writes to pages, so we can keep track of the dirty-flag
     pub fn access_page_write(&mut self, position: &Position) -> Result<&mut PageContainer, Status> {
         let miss = !self.cache.contains_key(&position.page());
@@ -428,23 +467,12 @@ impl PagerCore {
         InternalSuccess
     }
 
-    fn read_page_from_disk(&mut self, position: &Position) -> Result<PageContainer, Status> {
-        self.file
-            .seek(SeekFrom::Start(position.get_file_position()))
-            .map_err(|_| {
-                panic!("Cannot seek to this position");
-                Status::InternalExceptionReadFailed
-            })?;
+    fn read_page_from_disk(&self, position: &Position) -> Result<PageContainer, Status> {
+        let offset = position.get_file_position();
         let mut meta_buffer = [0u8; 3];
-        self.file.read_exact(&mut meta_buffer).map_err(|_| {
-            panic!("Cannot read File to this len (metadata len 3)");
-            Status::InternalExceptionReadFailed
-        })?;
+        Self::read_exact_at(&self.file, offset, &mut meta_buffer)?;
         let mut main_buffer = [0u8; PAGE_SIZE as usize];
-        self.file.read_exact(&mut main_buffer).map_err(|e| {
-            panic!("Cannot read File to this len: {}", e);
-            Status::InternalExceptionReadFailed
-        })?;
+        Self::read_exact_at(&self.file, offset + 3, &mut main_buffer)?;
         Ok(PageContainer {
             data: main_buffer,
             position: position.clone(),
@@ -453,20 +481,14 @@ impl PagerCore {
         })
     }
 
-    fn write_page_to_disk(&mut self, page: &PageContainer) -> Result<(), Status> {
-        self.file
-            .seek(SeekFrom::Start(page.position.get_file_position()))
-            .map_err(|_| Status::InternalExceptionWriteFailed)?;
+    fn write_page_to_disk(&self, page: &PageContainer) -> Result<(), Status> {
+        let offset = page.position.get_file_position();
         assert_eq!(page.data.len(), PAGE_SIZE);
         let mut meta_data = [0; 3];
         meta_data[0..2].copy_from_slice(&(page.free_space as u16).to_be_bytes());
         meta_data[2] = page.flag;
-        self.file
-            .write_all(&meta_data)
-            .map_err(|_| Status::InternalExceptionWriteFailed)?;
-        self.file
-            .write_all(&page.data)
-            .map_err(|_| Status::InternalExceptionWriteFailed)?;
+        Self::write_all_at(&self.file, offset, &meta_data)?;
+        Self::write_all_at(&self.file, offset + 3, &page.data)?;
         Ok(())
     }
 }

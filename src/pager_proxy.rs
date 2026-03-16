@@ -73,8 +73,7 @@ impl PagerProxy {
             pager_accessor: pager_interface.clone(),
             table_schema: schema.clone(),
         };
-        let src_page =
-            pager_interface.access_pager_write(|p| p.access_page_read(&node.position))?;
+        let src_page = pager_interface.access_page_read(node, |pc| Ok(pc.clone()))?;
         pager_interface.access_page_write(&root, |pc| {
             Serializer::copy_node(
                 &schema,
@@ -252,8 +251,9 @@ impl PagerProxy {
         let position = &btree_node.position;
         let interface = btree_node.pager_accessor.clone();
         let table_schema = &btree_node.table_schema;
-        let page_container = interface.access_pager_write(|p| p.access_page_read(&position))?;
-        Serializer::is_leaf(&page_container.data, position, table_schema)
+        interface.access_page_read(btree_node, |page_container| {
+            Serializer::is_leaf(&page_container.data, position, table_schema)
+        })
     }
 
     pub fn get_keys_count(node: &BTreeNode) -> Result<usize, Status> {
@@ -295,22 +295,23 @@ impl PagerProxy {
     }
 
     pub fn get_child(index: usize, parent: &BTreeNode) -> Result<BTreeNode, Status> {
-        let page = parent
-            .pager_accessor
-            .access_pager_write(|p| p.access_page_read(&parent.position))?;
-        let mut position = match Serializer::read_child(
-            index,
-            &page.data,
-            &parent.position,
-            &parent.table_schema,
-        ) {
-            Ok(p) => p,
-            Err(_) => Position::make_empty(),
-        };
+        let (mut position, children) = parent.pager_accessor.access_page_read(parent, |page| {
+            let position = Serializer::read_child(
+                index,
+                &page.data,
+                &parent.position,
+                &parent.table_schema,
+            )
+            .unwrap_or_else(|_| Position::make_empty());
+            let children = Serializer::read_children_as_vec(
+                &page.data,
+                &parent.position,
+                &parent.table_schema,
+            )?;
+            Ok((position, children))
+        })?;
 
         if position.is_empty() {
-            let children =
-                Serializer::read_children_as_vec(&page.data, &parent.position, &parent.table_schema)?;
             if children.is_empty() {
                 return Err(Status::InternalExceptionIndexOutOfRange);
             }
@@ -355,11 +356,9 @@ impl PagerProxy {
     }
 
     pub fn get_children(parent: &BTreeNode) -> Result<Vec<BTreeNode>, Status> {
-        let page = parent
-            .pager_accessor
-            .access_pager_write(|p| p.access_page_read(&parent.position))?;
-        let positions =
-            Serializer::read_children_as_vec(&page.data, &parent.position, &parent.table_schema)?;
+        let positions = parent.pager_accessor.access_page_read(parent, |page| {
+            Serializer::read_children_as_vec(&page.data, &parent.position, &parent.table_schema)
+        })?;
 
         let mut result = vec![];
 
@@ -403,14 +402,13 @@ impl PagerProxy {
     }
 
     pub fn get_keys(parent: &BTreeNode) -> Result<(Vec<Key>, Vec<Row>), Status> {
-        let page = parent
-            .pager_accessor
-            .access_pager_write(|p| p.access_page_read(&parent.position))?;
-        let keys =
-            Serializer::read_keys_as_vec(&page.data, &parent.position, &parent.table_schema)?;
-        let data =
-            Serializer::read_data_as_vec(&page.data, &parent.position, &parent.table_schema)?;
-        Ok((keys, data))
+        parent.pager_accessor.access_page_read(parent, |page| {
+            let keys =
+                Serializer::read_keys_as_vec(&page.data, &parent.position, &parent.table_schema)?;
+            let data =
+                Serializer::read_data_as_vec(&page.data, &parent.position, &parent.table_schema)?;
+            Ok((keys, data))
+        })
     }
 
     pub fn set_keys(parent: &BTreeNode, keys: Vec<Key>, data: Vec<Row>) -> Result<(), Status> {
@@ -452,17 +450,17 @@ impl PagerProxy {
     }
 
     pub fn get_key(index: usize, parent: &BTreeNode) -> Result<(Key, Row), Status> {
-        let page = parent
-            .pager_accessor
-            .access_pager_write(|p| p.access_page_read(&parent.position))?;
-        let key = Serializer::read_key(index, &page.data, &parent.position, &parent.table_schema)?;
-        let data = Serializer::read_data_by_index(
-            index,
-            &page.data,
-            &parent.position,
-            &parent.table_schema,
-        )?;
-        Ok((key, data))
+        parent.pager_accessor.access_page_read(parent, |page| {
+            let key =
+                Serializer::read_key(index, &page.data, &parent.position, &parent.table_schema)?;
+            let data = Serializer::read_data_by_index(
+                index,
+                &page.data,
+                &parent.position,
+                &parent.table_schema,
+            )?;
+            Ok((key, data))
+        })
     }
 
     pub fn set_key(index: usize, parent: &BTreeNode, key: Key, data: Row) -> Result<(), Status> {
@@ -493,14 +491,17 @@ impl PagerProxy {
     }
 
     pub fn get_keys_and_children(parent: &BTreeNode) -> Result<(Vec<Key>, Vec<BTreeNode>), Status> {
-        let page = parent
-            .pager_accessor
-            .access_pager_write(|p| p.access_page_read(&parent.position))?;
-        let keys =
-            Serializer::read_keys_as_vec(&page.data, &parent.position, &parent.table_schema)?;
+        let (keys, positions) = parent.pager_accessor.access_page_read(parent, |page| {
+            let keys =
+                Serializer::read_keys_as_vec(&page.data, &parent.position, &parent.table_schema)?;
 
-        let positions =
-            Serializer::read_children_as_vec(&page.data, &parent.position, &parent.table_schema)?;
+            let positions = Serializer::read_children_as_vec(
+                &page.data,
+                &parent.position,
+                &parent.table_schema,
+            )?;
+            Ok((keys, positions))
+        })?;
 
         let mut children = vec![];
 
@@ -556,10 +557,9 @@ impl PagerProxy {
     }
 
     pub fn get_data(node: &BTreeNode) -> Result<Vec<Row>, Status> {
-        let page = node
-            .pager_accessor
-            .access_pager_write(|p| p.access_page_read(&node.position))?;
-        Serializer::read_data_as_vec(&page.data, &node.position, &node.table_schema)
+        node.pager_accessor.access_page_read(node, |page| {
+            Serializer::read_data_as_vec(&page.data, &node.position, &node.table_schema)
+        })
     }
 
     pub fn set_data(node: &BTreeNode, data: Vec<Row>) -> Result<(), Status> {

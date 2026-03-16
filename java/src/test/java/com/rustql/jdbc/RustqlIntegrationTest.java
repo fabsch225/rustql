@@ -8,6 +8,7 @@ import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
 import java.net.InetSocketAddress;
+import java.net.ServerSocket;
 import java.net.Socket;
 import java.nio.file.Path;
 import java.sql.Connection;
@@ -19,6 +20,14 @@ import java.sql.SQLException;
 import java.sql.Statement;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.Callable;
+import java.util.concurrent.CyclicBarrier;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -27,9 +36,10 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class RustqlIntegrationTest {
     private static final String HOST = "127.0.0.1";
-    private static final int PORT = 5544;
+    private static int PORT;
     private static Process serverProcess;
     private static Thread logDrainer;
+    private static String dbPath;
 
     @BeforeAll
     static void startServer() throws Exception {
@@ -38,7 +48,19 @@ class RustqlIntegrationTest {
         Path rustProjectRoot = Path.of("..").toAbsolutePath().normalize();
         File rootDir = rustProjectRoot.toFile();
 
-        serverProcess = new ProcessBuilder("cargo", "run", "--example", "tcp_server")
+        PORT = findFreePort();
+        dbPath = "./server-it-" + System.nanoTime() + ".db.bin";
+        String bindAddr = HOST + ":" + PORT;
+
+        serverProcess = new ProcessBuilder(
+            "cargo",
+            "run",
+            "--example",
+            "tcp_server",
+            "--",
+            bindAddr,
+            dbPath
+        )
             .directory(rootDir)
             .redirectErrorStream(true)
             .start();
@@ -58,13 +80,20 @@ class RustqlIntegrationTest {
                 serverProcess.destroyForcibly();
             }
         }
+
+        if (dbPath != null) {
+            try {
+                java.nio.file.Files.deleteIfExists(Path.of(dbPath));
+            } catch (IOException ignored) {
+            }
+        }
     }
 
     @Test
     void roundTripCreateInsertSelectWorks() throws SQLException {
         String table = "it_users_" + System.nanoTime();
 
-        try (Connection connection = DriverManager.getConnection("jdbc:rustql://127.0.0.1:5544");
+        try (Connection connection = DriverManager.getConnection(jdbcUrl());
              Statement statement = connection.createStatement()) {
             statement.setFetchSize(1);
 
@@ -84,7 +113,7 @@ class RustqlIntegrationTest {
 
     @Test
     void invalidQueryReturnsSQLException() throws SQLException {
-        try (Connection connection = DriverManager.getConnection("jdbc:rustql://127.0.0.1:5544");
+        try (Connection connection = DriverManager.getConnection(jdbcUrl());
              Statement statement = connection.createStatement()) {
             assertThrows(SQLException.class, () -> statement.executeQuery("SELECT FROM"));
         }
@@ -94,7 +123,7 @@ class RustqlIntegrationTest {
     void roundTripAllDatatypesWorks() throws SQLException {
         String table = "it_types_" + System.nanoTime();
 
-        try (Connection connection = DriverManager.getConnection("jdbc:rustql://127.0.0.1:5544");
+        try (Connection connection = DriverManager.getConnection(jdbcUrl());
              Statement statement = connection.createStatement()) {
             statement.setFetchSize(1);
 
@@ -132,6 +161,100 @@ class RustqlIntegrationTest {
 
                 assertFalse(rs.next());
             }
+        }
+    }
+
+    @Test
+    void concurrentReadsAcrossConnectionsWork() throws Exception {
+        String table = "it_concurrent_reads_" + System.nanoTime();
+        final int rowCount = 24000;
+        final int workers = 8;
+        final int roundsPerWorker = 12;
+        final int fetchSize = 32;
+
+        try (Connection setupConnection = DriverManager.getConnection(jdbcUrl());
+             Statement setupStatement = setupConnection.createStatement()) {
+            setupStatement.execute("CREATE TABLE " + table + " (id Integer, name Varchar(25), place Varchar(25))");
+
+            for (int i = 1; i <= rowCount; i++) {
+                setupStatement.execute(
+                    "INSERT INTO " + table + " (id, name, place) VALUES (" +
+                        i + ", 'name_" + i + "', 'city_" + (i % 7) + "')"
+                );
+            }
+        }
+
+        ExecutorService executor = Executors.newFixedThreadPool(workers);
+        CyclicBarrier startBarrier = new CyclicBarrier(workers);
+        List<Callable<Integer>> tasks = new ArrayList<>();
+
+        long baselineStart = System.nanoTime();
+        int baselineObservedRows = runReadRounds(table, roundsPerWorker, rowCount, fetchSize);
+        long baselineNanosPerWorker = System.nanoTime() - baselineStart;
+        assertEquals(rowCount * roundsPerWorker, baselineObservedRows);
+
+        for (int worker = 0; worker < workers; worker++) {
+            tasks.add(() -> {
+                startBarrier.await(5, TimeUnit.SECONDS);
+
+                int observedRows = 0;
+                observedRows += runReadRounds(table, roundsPerWorker, rowCount, fetchSize);
+                return observedRows;
+            });
+        }
+
+        try {
+            long concurrentStart = System.nanoTime();
+            List<Future<Integer>> futures = executor.invokeAll(tasks, 30, TimeUnit.SECONDS);
+            long concurrentNanos = System.nanoTime() - concurrentStart;
+            int expectedPerWorker = rowCount * roundsPerWorker;
+
+            for (Future<Integer> future : futures) {
+                assertTrue(future.isDone(), "concurrent read worker did not finish in time");
+                assertFalse(future.isCancelled(), "concurrent read worker was cancelled");
+                assertEquals(expectedPerWorker, future.get(1, TimeUnit.SECONDS));
+            }
+
+            long serializedEstimate = baselineNanosPerWorker * workers;
+            assertTrue(
+                concurrentNanos < (long) (serializedEstimate * 0.75),
+                "reads look serialized: concurrent=" + concurrentNanos + "ns, serialized_estimate=" + serializedEstimate + "ns"
+            );
+        } finally {
+            executor.shutdownNow();
+            assertTrue(executor.awaitTermination(5, TimeUnit.SECONDS), "worker threads did not terminate");
+        }
+    }
+
+    private static int runReadRounds(String table, int rounds, int expectedRowsPerRound, int fetchSize) throws SQLException {
+        int observedRows = 0;
+        try (Connection connection = DriverManager.getConnection(jdbcUrl());
+             Statement statement = connection.createStatement()) {
+            statement.setFetchSize(fetchSize);
+            for (int round = 0; round < rounds; round++) {
+                int localCount = 0;
+                try (ResultSet rs = statement.executeQuery("SELECT id, name, place FROM " + table)) {
+                    while (rs.next()) {
+                        localCount++;
+                    }
+                }
+                if (localCount != expectedRowsPerRound) {
+                    throw new AssertionError("expected " + expectedRowsPerRound + " rows, got " + localCount);
+                }
+                observedRows += localCount;
+            }
+        }
+        return observedRows;
+    }
+
+    private static String jdbcUrl() {
+        return "jdbc:rustql://" + HOST + ":" + PORT;
+    }
+
+    private static int findFreePort() throws IOException {
+        try (ServerSocket socket = new ServerSocket(0)) {
+            socket.setReuseAddress(true);
+            return socket.getLocalPort();
         }
     }
 
