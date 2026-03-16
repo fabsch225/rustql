@@ -1,10 +1,7 @@
-use rustql::pager::{Key, PageData, Position, Row};
-use rustql::serializer::Serializer;
-
 #[cfg(test)]
 mod tests {
     use rustql::btree::BTreeNode;
-    use rustql::pager::{Key, PageData, PagerAccessor, PagerCore, Position, Row, Type};
+    use rustql::pager::{Key, PagerAccessor, PagerCore, Position, Row, Type, PAGE_SIZE};
     use rustql::pager_proxy::PagerProxy;
     use rustql::schema::{Field, TableSchema};
     use rustql::serializer::Serializer;
@@ -45,7 +42,7 @@ mod tests {
             .collect();
         let children: Vec<Position> = vec![Position::make_empty(); num_keys + 1];
         let rows: Vec<Row> = (0..num_keys)
-            .map(|i| {
+            .map(|_| {
                 let mut row = vec![0u8; schema.get_row_length().unwrap()];
                 row[0..9].copy_from_slice(b"Mock Name");
                 row
@@ -120,7 +117,7 @@ mod tests {
         let node = create_and_insert_mock_btree_node(2, pager_interface.clone());
         let new_keys = vec![vec![9u8; 5], vec![10u8; 5]];
         let new_rows: Vec<Row> = (0..2)
-            .map(|i| {
+            .map(|_| {
                 let mut row = vec![0u8; get_schema().get_row_length().unwrap()];
                 row[0..9].copy_from_slice(b"Mock Name");
                 row
@@ -156,7 +153,7 @@ mod tests {
     fn test_is_leaf() {
         let pager_interface = PagerCore::init_from_file("./default.db.bin").unwrap();
         let node = create_and_insert_mock_btree_node(2, pager_interface.clone());
-        pager_interface.access_page_read(&node, |data| Ok(()));
+        let _ = pager_interface.access_page_read(&node, |_data| Ok(()));
         let is_leaf = PagerProxy::is_leaf(&node).unwrap();
         assert!(is_leaf);
     }
@@ -193,7 +190,104 @@ mod tests {
             create_and_insert_mock_btree_node(1, pager_interface.clone()),
         ];
         PagerProxy::set_children(&node, child_nodes.clone()).unwrap();
-        let child = PagerProxy::get_child(0, &node).unwrap();
+        let _child = PagerProxy::get_child(0, &node).unwrap();
         //assert_eq!(child.page_position, 261);
+    }
+
+    #[test]
+    fn test_string_tail_is_offloaded_and_roundtrips() {
+        let pager_interface = PagerCore::init_from_file("./default.db.bin").unwrap();
+        let node = create_and_insert_mock_btree_node(1, pager_interface.clone());
+
+        let long_name = "abcdefghijklmnopqrstuvwx";
+        let row: Row = Serializer::parse_string(long_name).to_vec();
+
+        PagerProxy::set_data(&node, vec![row.clone()]).unwrap();
+        let rows = PagerProxy::get_data(&node).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0], row);
+
+        let raw_row = pager_interface
+            .access_page_read(&node, |pc| {
+                Serializer::read_data_by_index(0, &pc.data, &node.position, &node.table_schema)
+            })
+            .unwrap();
+
+        assert!(Serializer::is_external(&raw_row, &Type::String).unwrap());
+        assert_eq!(&raw_row[0..12], b"abcdefghijkl");
+        assert_eq!(raw_row[12], 0);
+
+        let ptr = Serializer::bytes_to_position(
+            <&[u8; 4]>::try_from(&raw_row[13..17]).expect("invalid pointer bytes"),
+        );
+        assert!(!ptr.is_empty());
+
+        let data_page = pager_interface
+            .access_pager_write(|p| p.access_page_read(&ptr))
+            .unwrap();
+        assert!(Serializer::is_data_page(&data_page).unwrap());
+    }
+
+    #[test]
+    fn test_payload_spills_to_overflow_pages() {
+        let pager_interface = PagerCore::init_from_file("./default.db.bin").unwrap();
+        let payload = vec![42u8; PAGE_SIZE + 128];
+
+        let start = PagerProxy::write_payload_to_data_pages(pager_interface.clone(), &payload, 0)
+            .unwrap();
+        assert!(!start.is_empty());
+
+        let restored = PagerProxy::read_payload_from_pages(pager_interface.clone(), start.clone())
+            .unwrap();
+        assert_eq!(restored, payload);
+
+        let first_page = pager_interface
+            .access_pager_write(|p| p.access_page_read(&start))
+            .unwrap();
+        assert!(Serializer::is_data_page(&first_page).unwrap());
+
+        let next_page = u16::from_be_bytes([first_page.data[0], first_page.data[1]]) as usize;
+        assert!(next_page > 0);
+
+        let overflow_pos = Position::new(next_page, 0);
+        let overflow_page = pager_interface
+            .access_pager_write(|p| p.access_page_read(&overflow_pos))
+            .unwrap();
+        assert!(Serializer::is_overflow_page(&overflow_page).unwrap());
+    }
+
+    #[test]
+    fn test_deprecated_data_pages_are_reused() {
+        let pager_interface = PagerCore::init_from_file("./default.db.bin").unwrap();
+        let node = create_and_insert_mock_btree_node(1, pager_interface.clone());
+
+        let first_long = Serializer::parse_string(&("A".repeat(48))).to_vec();
+        PagerProxy::set_data(&node, vec![first_long]).unwrap();
+
+        let raw_first = pager_interface
+            .access_page_read(&node, |pc| {
+                Serializer::read_data_by_index(0, &pc.data, &node.position, &node.table_schema)
+            })
+            .unwrap();
+        let first_ptr = Serializer::bytes_to_position(
+            <&[u8; 4]>::try_from(&raw_first[13..17]).expect("invalid pointer bytes"),
+        );
+        assert!(!first_ptr.is_empty());
+
+        let short = Serializer::parse_string("short").to_vec();
+        PagerProxy::set_data(&node, vec![short]).unwrap();
+
+        let second_long = Serializer::parse_string(&("B".repeat(64))).to_vec();
+        PagerProxy::set_data(&node, vec![second_long]).unwrap();
+
+        let raw_second = pager_interface
+            .access_page_read(&node, |pc| {
+                Serializer::read_data_by_index(0, &pc.data, &node.position, &node.table_schema)
+            })
+            .unwrap();
+        let second_ptr = Serializer::bytes_to_position(
+            <&[u8; 4]>::try_from(&raw_second[13..17]).expect("invalid pointer bytes"),
+        );
+        assert_eq!(first_ptr.page(), second_ptr.page());
     }
 }

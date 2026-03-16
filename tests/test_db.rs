@@ -186,8 +186,7 @@ mod tests {
             //println!("{}", result);
             //println!("---");
             assert_eq!(result.data.clone().fetch().unwrap().len(), len / 2);
-            for (i, row) in result.data.fetch().unwrap().iter().enumerate() {
-                let expected_id = i + len / 2 + 2;
+            for (_i, _row) in result.data.fetch().unwrap().iter().enumerate() {
                 //assert_eq!(Serializer::bytes_to_int(row[0..5].try_into().unwrap()), expected_id as i32);
             }
 
@@ -454,5 +453,132 @@ mod tests {
         let result = executor.prepare("SELECT * FROM test WHERE other < 90000".to_string());
         assert!(result.success);
         assert_eq!(result.data.fetch().unwrap().len(), 29999);
+    }
+
+    #[test]
+    fn test_many_varchars() {
+        let mut executor = QueryExecutor::init("./default.db.bin", BTREE_NODE_SIZE);
+        executor.prepare("CREATE TABLE test (id Integer, name VARCHAR(420), age Integer)".to_string());
+        for i in 1..=200 {
+            let long_name = "User ".to_string() + &i.to_string() + &"x".repeat(300);
+            let result = executor.prepare(format!(
+                "INSERT INTO test (id, name, age) VALUES ({}, '{}', {})",
+                i, long_name, i * 3
+            ));
+            if !result.success {
+                println!("Failed to insert {}: {}", i, result);
+            }
+            assert!(result.success);
+        }
+        let result = executor.prepare("SELECT * FROM test WHERE id <= 20".to_string());
+        assert!(result.success);
+        assert_eq!(result.data.fetch().unwrap().len(), 20);
+    }
+
+    #[test]
+    fn test_many_strings() {
+        let mut executor = QueryExecutor::init("./default.db.bin", BTREE_NODE_SIZE);
+        executor.prepare("CREATE TABLE test (id Integer, name String, age Integer)".to_string());
+        for i in 1..=200 {
+            let long_name = "User ".to_string() + &i.to_string() + &"x".repeat(100);
+            let result = executor.prepare(format!(
+                "INSERT INTO test (id, name, age) VALUES ({}, '{}', {})",
+                i, long_name, i * 3
+            ));
+            if !result.success {
+                println!("Failed to insert {}: {}", i, result);
+            }
+            assert!(result.success);
+        }
+        let result = executor.prepare("SELECT * FROM test WHERE id <= 20".to_string());
+        assert!(result.success);
+        assert_eq!(result.data.fetch().unwrap().len(), 20);
+    }
+
+    #[test]
+    fn test_large_nodes() {
+        let mut executor = QueryExecutor::init("./default.db.bin", 50);
+        executor.prepare("CREATE TABLE test (id Integer, name VARCHAR(420), age Integer)".to_string());
+        for i in 1..=100 {
+            let long_name = "User ".to_string() + &i.to_string() + &"x".repeat(300);
+            let result = executor.prepare(format!(
+                "INSERT INTO test (id, name, age) VALUES ({}, '{}', {})",
+                i, long_name, i * 3
+            ));
+            if !result.success {
+                println!("Failed to insert {}: {}", i, result);
+            }
+            assert!(result.success);
+        }
+        let result = executor.prepare("SELECT * FROM test WHERE id <= 20".to_string());
+        assert!(result.success);
+        assert_eq!(result.data.fetch().unwrap().len(), 20);
+    }
+
+    #[test]
+    fn test_large_nodes_multiple_splits_and_integrity() {
+        let mut executor = QueryExecutor::init("./default.db.bin", 50);
+        executor.prepare("CREATE TABLE test (id Integer, name VARCHAR(420), age Integer)".to_string());
+
+        for i in 1..=220 {
+            let long_name = "User ".to_string() + &i.to_string() + &"y".repeat(320);
+            let result = executor.prepare(format!(
+                "INSERT INTO test (id, name, age) VALUES ({}, '{}', {})",
+                i, long_name, i * 2
+            ));
+            if !result.success {
+                println!("Failed to insert {}: {}", i, result);
+            }
+            assert!(result.success);
+        }
+
+        let all_rows = executor.prepare("SELECT * FROM test".to_string());
+        assert!(all_rows.success);
+        assert_eq!(all_rows.data.fetch().unwrap().len(), 220);
+
+        let subset = executor.prepare("SELECT * FROM test WHERE id <= 37".to_string());
+        assert!(subset.success);
+        assert_eq!(subset.data.fetch().unwrap().len(), 37);
+
+        assert!(executor.check_integrity().is_ok());
+    }
+
+    #[test]
+    fn test_large_nodes_delete_and_reinsert() {
+        let mut executor = QueryExecutor::init("./default.db.bin", 50);
+        executor.prepare("CREATE TABLE test (id Integer, name VARCHAR(420), age Integer)".to_string());
+
+        for i in 1..=160 {
+            let long_name = "User ".to_string() + &i.to_string() + &"z".repeat(280);
+            let result = executor.prepare(format!(
+                "INSERT INTO test (id, name, age) VALUES ({}, '{}', {})",
+                i, long_name, i * 3
+            ));
+            if !result.success {
+                println!("Failed to insert {}: {}", i, result);
+            }
+            assert!(result.success);
+        }
+
+        let delete_result = executor.prepare("DELETE FROM test WHERE id <= 60".to_string());
+        assert!(delete_result.success);
+
+        for i in 1..=60 {
+            let long_name = "ReUser ".to_string() + &i.to_string() + &"w".repeat(260);
+            let result = executor.prepare(format!(
+                "INSERT INTO test (id, name, age) VALUES ({}, '{}', {})",
+                i, long_name, i * 5
+            ));
+            if !result.success {
+                println!("Failed to reinsert {}: {}", i, result);
+            }
+            assert!(result.success);
+        }
+
+        let all_rows = executor.prepare("SELECT * FROM test".to_string());
+        assert!(all_rows.success);
+        assert_eq!(all_rows.data.fetch().unwrap().len(), 160);
+
+        assert!(executor.check_integrity().is_ok());
     }
 }

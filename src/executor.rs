@@ -241,13 +241,13 @@ impl QueryExecutor {
         self.last_write_table_id = None;
         let result = self.execute_compiled_query(query, false);
 
-        //this should be done here anyway, so the hardcoded 30 is not that bad..
+        // Keep free-lists fresh in memory, but do not rewrite the whole system table periodically.
+        // Rewriting every 30 requests caused repeated re-encoding of long SQL strings
+        // (stored with external payload pages), which accumulates duplicate SQL text in the file.
         if self.request_counter % 30 == 0 {
             if let Some(table_id) = self.last_write_table_id {
                 if let Err(e) = self.refresh_table_free_list(table_id) {
                     eprintln!("Failed to refresh free-list for table {}: {:?}", table_id, e);
-                } else if let Err(e) = self.persist_free_lists_snapshot_to_system_table() {
-                    eprintln!("Failed to persist free-lists to system table: {:?}", e);
                 }
             }
         }
@@ -325,8 +325,11 @@ impl QueryExecutor {
                     return Err(QueryResult::err(Status::ExceptionTableAlreadyExists));
                 }
 
+                let mut table_schema = q.schema.clone();
+                table_schema.btree_order = self.btree_node_width;
+
                 let root_page = PagerProxy::create_empty_node_on_new_page(
-                    &q.schema,
+                    &table_schema,
                     self.pager_accessor.clone(),
                 )
                 .map_err(|status| QueryResult::err(status))
@@ -334,8 +337,6 @@ impl QueryExecutor {
                     return node.position.page();
                 })?;
 
-                let mut table_schema = q.schema.clone();
-                table_schema.btree_order = self.btree_node_width;
                 let page_capacity = table_schema
                     .max_nodes_per_page()
                     .map_err(QueryResult::err)?;
@@ -565,6 +566,19 @@ impl QueryExecutor {
     }
 
     fn count_nodes_on_page(&self, schema: &TableSchema, page_data: &[u8; PAGE_SIZE]) -> Result<usize, Status> {
+        let mut effective_schema = schema.clone();
+        if effective_schema.btree_order == 0 {
+            effective_schema.btree_order = self.btree_node_width;
+        }
+
+        let has_varchar = schema
+            .fields
+            .iter()
+            .any(|f| matches!(f.field_type, Type::Varchar(_)));
+        if has_varchar && effective_schema.get_node_size_in_bytes()? > PAGE_SIZE {
+            return Ok(if page_data[0] == 0 && page_data[1] == 0 { 0 } else { 1 });
+        }
+
         let mut count = 0usize;
         let mut offset = 0usize;
         let key_length = schema.get_key_length()?;

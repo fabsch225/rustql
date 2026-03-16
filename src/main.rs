@@ -50,7 +50,7 @@ use std::io::Write;
 /// - PagerProxy <-> PagerAccessor <-> PagerCore
 /// - File on Disk
 
-const BTREE_NODE_SIZE: usize = 3; //this means a maximum of 5 keys per node
+const BTREE_NODE_SIZE: usize = 7; //this means a maximum of 5 keys per node
 pub const TOMB_THRESHOLD: usize = 10; //10 percent
 
 fn main() {
@@ -58,16 +58,26 @@ fn main() {
     println!("running RustSQL shell...");
 
     executor.prepare(format!(
-        "CREATE TABLE Users (id Integer, name Varchar(12), age Integer))"
+        "CREATE TABLE Users (id Integer, name VARCHAR(200), age Integer)"
     ));
 
-    for i in 0..5000 {
-        executor.prepare(format!(
-            "INSERT INTO Users (id, name, age) VALUES ({}, 'User {}', {})",
+    fn get_long_name(i : usize) -> String {
+        let mut name = "Hi123321 ".to_string() + &i.to_string();
+        for _ in 0..20 {
+            name += "x";
+            name += &i.to_string();
+        }
+        name
+    }
+
+    for i in 0..2 {
+        let result = executor.prepare(format!(
+            "INSERT INTO Users (id, name, age) VALUES ({}, '{}', {})",
             i,
-            i * 2,
+            get_long_name(i),
             i * 3
         ));
+        assert!(result.success, "insert failed for i={}, result={:?}", i, result)
     }
     loop {
         io::stdout().flush().unwrap();

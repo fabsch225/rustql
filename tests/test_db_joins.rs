@@ -1,13 +1,46 @@
 mod tests {
     use rustql::executor::{QueryExecutor, QueryResult};
-    use rustql::serializer::Serializer;
     use std::fs;
+    use std::ops::{Deref, DerefMut};
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Instant;
 
     const BTREE_NODE_SIZE: usize = 10;
+    static DB_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
-    fn setup_executor() -> QueryExecutor {
-        QueryExecutor::init("default.db.bin", BTREE_NODE_SIZE)
+    struct TestExecutor {
+        inner: QueryExecutor,
+        db_path: String,
+    }
+
+    impl Deref for TestExecutor {
+        type Target = QueryExecutor;
+
+        fn deref(&self) -> &Self::Target {
+            &self.inner
+        }
+    }
+
+    impl DerefMut for TestExecutor {
+        fn deref_mut(&mut self) -> &mut Self::Target {
+            &mut self.inner
+        }
+    }
+
+    impl Drop for TestExecutor {
+        fn drop(&mut self) {
+            let _ = fs::remove_file(&self.db_path);
+        }
+    }
+
+    fn setup_executor() -> TestExecutor {
+        let idx = DB_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let path = format!("./default.db.joins.{}.{}.bin", std::process::id(), idx);
+        let _ = fs::remove_file(&path);
+        TestExecutor {
+            inner: QueryExecutor::init(&path, BTREE_NODE_SIZE),
+            db_path: path,
+        }
     }
 
     fn assert_success(result: QueryResult) {

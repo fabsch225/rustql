@@ -252,11 +252,66 @@ impl Serializer {
             PageFlag::Deleted as u8,
         ))
     }
+    pub fn is_data_page(page_container: &PageContainer) -> Result<bool, Status> {
+        Ok(Self::byte_to_bool_at_position(
+            page_container.flag,
+            PageFlag::Data as u8,
+        ))
+    }
+    pub fn set_is_data_page(
+        page_container: &mut PageContainer,
+        new_value: bool,
+    ) -> Result<(), Status> {
+        Self::write_byte_at_position(&mut page_container.flag, PageFlag::Data as u8, new_value);
+        Ok(())
+    }
+    pub fn is_overflow_page(page_container: &PageContainer) -> Result<bool, Status> {
+        Ok(Self::byte_to_bool_at_position(
+            page_container.flag,
+            PageFlag::Overflow as u8,
+        ))
+    }
+    pub fn set_is_overflow_page(
+        page_container: &mut PageContainer,
+        new_value: bool,
+    ) -> Result<(), Status> {
+        Self::write_byte_at_position(
+            &mut page_container.flag,
+            PageFlag::Overflow as u8,
+            new_value,
+        );
+        Ok(())
+    }
     pub fn set_is_deleted(
         page_container: &mut PageContainer,
         new_value: bool,
     ) -> Result<(), Status> {
         Self::write_byte_at_position(&mut page_container.flag, PageFlag::Deleted as u8, new_value);
+        Ok(())
+    }
+    pub fn has_external_data(
+        page_data: &PageData,
+        position: &Position,
+        table_schema: &TableSchema,
+    ) -> Result<bool, Status> {
+        let location = Self::find_position_offset(page_data, &position, &table_schema)?;
+        Ok(Self::byte_to_bool_at_position(
+            page_data[location + 1],
+            NodeFlag::HasExternalData as u8,
+        ))
+    }
+    pub fn set_has_external_data(
+        page_data: &mut PageData,
+        position: &Position,
+        table_schema: &TableSchema,
+        new_value: bool,
+    ) -> Result<(), Status> {
+        let location = Self::find_position_offset(page_data, &position, &table_schema)?;
+        Self::write_byte_at_position(
+            &mut page_data[location + 1],
+            NodeFlag::HasExternalData as u8,
+            new_value,
+        );
         Ok(())
     }
     pub fn is_tomb(key: &Key, schema: &TableSchema) -> Result<bool, Status> {
@@ -270,6 +325,76 @@ impl Serializer {
     }
     pub fn set_is_null(field: &mut Vec<u8>, value: bool, field_type: &Type) -> Result<(), Status> {
         Self::set_flag_at_position(field, FieldMeta::Null as u8, value, field_type)
+    }
+    pub fn is_external(field: &Vec<u8>, field_type: &Type) -> Result<bool, Status> {
+        Self::get_flag_at_position(field, FieldMeta::External as u8, field_type)
+    }
+    pub fn set_is_external(
+        field: &mut Vec<u8>,
+        value: bool,
+        field_type: &Type,
+    ) -> Result<(), Status> {
+        Self::set_flag_at_position(field, FieldMeta::External as u8, value, field_type)
+    }
+
+    pub fn map_row_non_key_fields_with_callback<F>(
+        row: &Row,
+        schema: &TableSchema,
+        mut callback: F,
+    ) -> Result<Row, Status>
+    where
+        F: FnMut(usize, &Type, &[u8]) -> Result<Vec<u8>, Status>,
+    {
+        let mut result = Vec::with_capacity(row.len());
+        let mut cursor = 0usize;
+
+        for (field_idx, field) in schema.fields.iter().enumerate() {
+            if field_idx == schema.key_position {
+                continue;
+            }
+
+            let field_len = Self::get_size_of_type(&field.field_type)?;
+            if cursor + field_len > row.len() {
+                return Err(InternalExceptionInvalidRowLength);
+            }
+
+            let slice = &row[cursor..cursor + field_len];
+            let transformed = callback(field_idx, &field.field_type, slice)?;
+            if transformed.len() != field_len {
+                return Err(InternalExceptionInvalidRowLength);
+            }
+            result.extend_from_slice(&transformed);
+            cursor += field_len;
+        }
+
+        if cursor != row.len() {
+            return Err(InternalExceptionInvalidRowLength);
+        }
+
+        Ok(result)
+    }
+
+    pub fn row_has_external_non_key_field(row: &Row, schema: &TableSchema) -> Result<bool, Status> {
+        let mut cursor = 0usize;
+        for (field_idx, field) in schema.fields.iter().enumerate() {
+            if field_idx == schema.key_position {
+                continue;
+            }
+
+            let field_len = Self::get_size_of_type(&field.field_type)?;
+            if cursor + field_len > row.len() {
+                return Err(InternalExceptionInvalidRowLength);
+            }
+
+            if matches!(field.field_type, Type::String | Type::Varchar(_)) {
+                let slice = row[cursor..cursor + field_len].to_vec();
+                if Self::is_external(&slice, &field.field_type)? {
+                    return Ok(true);
+                }
+            }
+            cursor += field_len;
+        }
+        Ok(false)
     }
 
     pub fn find_position_offset(

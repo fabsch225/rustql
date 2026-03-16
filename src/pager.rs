@@ -70,11 +70,14 @@ pub enum PageFlag {
     Dirty = 0,
     Deleted = 2,
     Lock = 4,
+    Data = 5,
+    Overflow = 6,
 }
 
 #[repr(u8)]
 pub enum NodeFlag {
     Leaf = 1,
+    HasExternalData = 2,
 }
 
 #[repr(u8)]
@@ -85,6 +88,7 @@ pub enum KeyMeta {
 #[repr(u8)]
 pub enum FieldMeta {
     Null = 0,
+    External = 1,
 }
 
 #[derive(PartialEq, Clone)]
