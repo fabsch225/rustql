@@ -20,6 +20,22 @@ mod tests {
     }
 
     #[test]
+    fn test_create_table_with_varchar_type() {
+        let query = "CREATE TABLE users (id Integer, name VARCHAR(32))";
+        let mut parser = Parser::new(query.to_string());
+        let result = parser.parse_query();
+        assert!(result.is_ok());
+
+        if let ParsedQuery::CreateTable(create_query) = result.unwrap() {
+            assert_eq!(create_query.table_name, "users");
+            assert_eq!(create_query.table_fields, vec!["id", "name"]);
+            assert_eq!(create_query.table_types, vec!["Integer", "VARCHAR(32)"]);
+        } else {
+            panic!("Expected CreateTable query");
+        }
+    }
+
+    #[test]
     fn test_create_table_missing_field_type() {
         let query = "CREATE TABLE users (id Integer, name";
         let mut parser = Parser::new(query.to_string());

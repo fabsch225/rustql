@@ -66,6 +66,33 @@ mod tests {
     }
 
     #[test]
+    fn test_varchar_insert_and_select() {
+        let mut executor = QueryExecutor::init("./default.db.bin", BTREE_NODE_SIZE);
+        executor.prepare("CREATE TABLE test (id Integer, name VARCHAR(5))".to_string());
+
+        let insert_result =
+            executor.prepare("INSERT INTO test (id, name) VALUES (1, 'Alice')".to_string());
+        assert!(insert_result.success);
+
+        let result = executor.prepare("SELECT name FROM test WHERE id = 1".to_string());
+        assert!(result.success);
+        let rows = result.data.fetch().unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0], vec![b'A', b'l', b'i', b'c', b'e', 0]);
+    }
+
+    #[test]
+    fn test_varchar_rejects_too_long_values() {
+        let mut executor = QueryExecutor::init("./default.db.bin", BTREE_NODE_SIZE);
+        executor.prepare("CREATE TABLE test (id Integer, name VARCHAR(5))".to_string());
+
+        let result =
+            executor.prepare("INSERT INTO test (id, name) VALUES (1, 'TooLong')".to_string());
+
+        assert!(!result.success);
+    }
+
+    #[test]
     fn test_delete_single_row() {
         let mut executor = QueryExecutor::init("./default.db.bin", BTREE_NODE_SIZE);
         executor.prepare("CREATE TABLE test (id Integer, name String)".to_string());

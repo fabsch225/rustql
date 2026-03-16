@@ -149,6 +149,7 @@ impl Serializer {
     pub(crate) fn get_size_of_type(ty: &Type) -> Result<usize, Status> {
         match ty {
             Type::String => Ok(STRING_SIZE),
+            Type::Varchar(max) => Ok(*max + 1),
             Type::Integer => Ok(INTEGER_SIZE),
             Type::Date => Ok(DATE_SIZE),
             Type::Boolean => Ok(BOOLEAN_SIZE),
@@ -983,6 +984,7 @@ impl Serializer {
     pub fn infinity(field_type: &Type) -> Vec<u8> {
         match field_type {
             Type::String => vec![u8::MAX; STRING_SIZE],
+            Type::Varchar(max) => vec![u8::MAX; max + 1],
             Type::Integer => vec![0x7F; INTEGER_SIZE], // Max positive value for signed integer
             Type::Date => vec![0xFF; DATE_SIZE],       // Max value for date
             Type::Boolean => vec![1],                  // True as infinity for boolean
@@ -993,6 +995,7 @@ impl Serializer {
     pub fn negative_infinity(field_type: &Type) -> Vec<u8> {
         match field_type {
             Type::String => vec![u8::MIN; STRING_SIZE],
+            Type::Varchar(max) => vec![u8::MIN; max + 1],
             Type::Integer => vec![0x80; INTEGER_SIZE], // Min negative value for signed integer
             Type::Date => vec![0x00; DATE_SIZE],       // Min value for date
             Type::Boolean => vec![0],                  // False as negative infinity for boolean
@@ -1040,10 +1043,7 @@ impl Serializer {
         field_type: &Type,
     ) -> Result<std::cmp::Ordering, Status> {
         match field_type {
-            Type::String => Ok(Self::compare_strings(
-                <[u8; STRING_SIZE]>::try_from(a.to_vec()).unwrap(),
-                <[u8; STRING_SIZE]>::try_from(b.to_vec()).unwrap(),
-            )),
+            Type::String | Type::Varchar(_) => Ok(Self::compare_string_bytes(a, b)),
             Type::Integer => Ok(Self::compare_integers(
                 <[u8; INTEGER_SIZE]>::try_from(a.to_vec()).unwrap(),
                 <[u8; INTEGER_SIZE]>::try_from(b.to_vec()).unwrap(),
@@ -1064,8 +1064,14 @@ impl Serializer {
     }
 
     pub fn compare_strings(a: [u8; STRING_SIZE], b: [u8; STRING_SIZE]) -> std::cmp::Ordering {
-        let str_a = Self::bytes_to_ascii(a);
-        let str_b = Self::bytes_to_ascii(b);
+        let str_a = Self::bytes_to_ascii_slice(&a);
+        let str_b = Self::bytes_to_ascii_slice(&b);
+        str_a.cmp(&str_b)
+    }
+
+    pub fn compare_string_bytes(a: &[u8], b: &[u8]) -> std::cmp::Ordering {
+        let str_a = Self::bytes_to_ascii_slice(a);
+        let str_b = Self::bytes_to_ascii_slice(b);
         str_a.cmp(&str_b)
     }
 
@@ -1114,9 +1120,7 @@ impl Serializer {
 
     pub fn format_field(bytes: &Vec<u8>, field_type: &Type) -> Result<String, Status> {
         match field_type {
-            Type::String => Ok(Self::format_string(
-                <[u8; STRING_SIZE]>::try_from(bytes.clone()).expect("wrong len for type String"),
-            )),
+            Type::String | Type::Varchar(_) => Ok(Self::format_string_bytes(bytes)),
             Type::Date => Ok(Self::format_date(
                 <[u8; DATE_SIZE]>::try_from(bytes.clone()).expect("wrong len for type Date"),
             )),
@@ -1153,7 +1157,11 @@ impl Serializer {
     }
 
     pub fn format_string(bytes: [u8; STRING_SIZE]) -> String {
-        String::from_utf8(bytes.iter().copied().take_while(|&b| b != 0).collect()).unwrap()
+        Self::bytes_to_ascii_slice(&bytes)
+    }
+
+    pub fn format_string_bytes(bytes: &[u8]) -> String {
+        Self::bytes_to_ascii_slice(bytes)
     }
 
     pub fn format_int(bytes: [u8; INTEGER_SIZE]) -> String {
@@ -1177,6 +1185,14 @@ impl Serializer {
     pub fn parse_string(s: &str) -> [u8; STRING_SIZE] {
         let mut bytes = [0u8; STRING_SIZE];
         for (i, &c) in s.as_bytes().iter().take(STRING_SIZE).enumerate() {
+            bytes[i] = c;
+        }
+        bytes
+    }
+
+    pub fn parse_varchar(s: &str, max_len: usize) -> Vec<u8> {
+        let mut bytes = vec![0u8; max_len + 1];
+        for (i, &c) in s.as_bytes().iter().take(max_len).enumerate() {
             bytes[i] = c;
         }
         bytes
@@ -1209,10 +1225,16 @@ impl Serializer {
     }
 
     pub fn bytes_to_ascii(bytes: [u8; STRING_SIZE]) -> String {
-        bytes[0..STRING_SIZE - 1]
+        Self::bytes_to_ascii_slice(&bytes)
+    }
+
+    pub fn bytes_to_ascii_slice(bytes: &[u8]) -> String {
+        let payload_len = bytes.len().saturating_sub(1);
+        bytes[..payload_len]
             .iter()
-            .map(|&byte| byte as char)
-            .take_while(|&c| c != '\0')
+            .copied()
+            .take_while(|&b| b != 0)
+            .map(|b| b as char)
             .collect()
     }
 
@@ -1324,6 +1346,7 @@ impl Serializer {
             Type::Null => 0,
             Type::Integer => 1,
             Type::String => 2,
+            Type::Varchar(_) => 5,
             Type::Date => 3,
             Type::Boolean => 4,
         }
@@ -1336,6 +1359,7 @@ impl Serializer {
             2 => Some(Type::String),
             3 => Some(Type::Date),
             4 => Some(Type::Boolean),
+            5 => Some(Type::Varchar(STRING_SIZE - 1)),
             _ => None,
         }
     }

@@ -230,10 +230,7 @@ impl Parser {
                 return Err("Invalid name: )".to_string());
             }
 
-            let field_type = self
-                .lexer
-                .next_token()
-                .ok_or_else(|| "Expected field type".to_string())?;
+            let field_type = self.parse_column_type()?;
 
             fields.push(field_name);
 
@@ -256,6 +253,45 @@ impl Parser {
             table_types: types,
             if_not_exists,
         }))
+    }
+
+    fn parse_column_type(&mut self) -> Result<String, String> {
+        let base_type = self
+            .lexer
+            .next_token()
+            .ok_or_else(|| "Expected field type".to_string())?;
+
+        if base_type == ")" {
+            return Err("Invalid type: )".to_string());
+        }
+
+        if let Some(next) = self.peek_token()
+            && next == "("
+        {
+            self.expect_token("(")?;
+            let mut params = Vec::new();
+            loop {
+                let token = self
+                    .lexer
+                    .next_token()
+                    .ok_or_else(|| "Expected type parameter or ')'".to_string())?;
+                if token == ")" {
+                    break;
+                }
+                if token == "," {
+                    return Err("Unexpected ',' in type parameter".to_string());
+                }
+                params.push(token);
+            }
+
+            if params.is_empty() {
+                return Err("Expected type parameter".to_string());
+            }
+
+            return Ok(format!("{}({})", base_type, params.join("")));
+        }
+
+        Ok(base_type)
     }
 
     fn parse_drop_table(&mut self) -> Result<ParsedQuery, String> {

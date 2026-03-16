@@ -8,7 +8,7 @@ use crate::pager::{
 };
 use crate::pager_proxy::PagerProxy;
 use crate::parser::JoinType::Natural;
-use crate::parser::{JoinType, ParsedSetOperator, Parser};
+use crate::parser::{JoinOp, JoinType, ParsedSetOperator, Parser};
 use crate::planner::SqlStatementComparisonOperator::{
     Equal, Greater, GreaterOrEqual, Lesser, LesserOrEqual,
 };
@@ -445,6 +445,8 @@ impl QueryExecutor {
                 right,
                 conditions,
                 join_type,
+                left_join_op,
+                right_join_op,
                 ..
             } => {
                 debug_assert!(*join_type == JoinType::Inner || *join_type == Natural);
@@ -463,7 +465,24 @@ impl QueryExecutor {
                     .iter()
                     .position(|f| f.name == right_col.name && f.table_name == right_col.table_name)
                     .ok_or(Status::DataFrameJoinError)?;
-                Ok(left_df.join(right_df, l_idx, r_idx, JoinStrategy::Hash)?)
+                let strategy = if *left_join_op == JoinOp::Key && *right_join_op == JoinOp::Key {
+                    JoinStrategy::SortMerge
+                } else {
+                    JoinStrategy::Hash
+                };
+
+                println!(
+                    "[JOIN] strategy={:?}, left_op={:?}, right_op={:?}, on={}.{}={}.{}",
+                    strategy,
+                    left_join_op,
+                    right_join_op,
+                    left_col.table_name,
+                    left_col.name,
+                    right_col.table_name,
+                    right_col.name
+                );
+
+                Ok(left_df.join(right_df, l_idx, r_idx, strategy)?)
             }
 
             PlanNode::SetOperation { op, left, right } => {

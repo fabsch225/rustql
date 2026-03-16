@@ -4,7 +4,7 @@ mod tests {
     use std::fs;
     use std::time::Instant;
 
-    const BTREE_NODE_SIZE: usize = 3;
+    const BTREE_NODE_SIZE: usize = 10;
 
     fn setup_executor() -> QueryExecutor {
         QueryExecutor::init("default.db.bin", BTREE_NODE_SIZE)
@@ -641,6 +641,201 @@ mod tests {
         //   A: 1..10000
         //   B: 5000..20000 → 5000..10000
         //   C: 8000..12000 → final = 8000..10000 (2001 rows)
+    }
+
+    #[test]
+    fn test_pk_join_integer_exact_overlap_small() {
+        let mut exec = setup_executor();
+
+        exec.prepare("CREATE TABLE A (id Integer, v Integer)".into());
+        exec.prepare("CREATE TABLE B (id Integer, x Integer)".into());
+
+        for i in 1..=5 {
+            exec.prepare(format!("INSERT INTO A VALUES ({}, {})", i, i * 10));
+        }
+        for i in 3..=7 {
+            exec.prepare(format!("INSERT INTO B VALUES ({}, {})", i, i * 100));
+        }
+
+        let result = exec.prepare("SELECT A.id FROM A JOIN B ON A.id = B.id".into());
+        assert_row_count(result, 3);
+    }
+
+    #[test]
+    fn test_pk_join_integer_no_overlap() {
+        let mut exec = setup_executor();
+
+        exec.prepare("CREATE TABLE A (id Integer, v Integer)".into());
+        exec.prepare("CREATE TABLE B (id Integer, x Integer)".into());
+
+        for i in 1..=5 {
+            exec.prepare(format!("INSERT INTO A VALUES ({}, {})", i, i));
+        }
+        for i in 10..=15 {
+            exec.prepare(format!("INSERT INTO B VALUES ({}, {})", i, i));
+        }
+
+        let result = exec.prepare("SELECT A.id FROM A JOIN B ON A.id = B.id".into());
+        assert_row_count(result, 0);
+    }
+
+    #[test]
+    fn test_pk_join_string_keys() {
+        let mut exec = setup_executor();
+
+        exec.prepare("CREATE TABLE A (id String, v Integer)".into());
+        exec.prepare("CREATE TABLE B (id String, x Integer)".into());
+
+        exec.prepare("INSERT INTO A VALUES ('k1', 1)".into());
+        exec.prepare("INSERT INTO A VALUES ('k2', 2)".into());
+        exec.prepare("INSERT INTO A VALUES ('k3', 3)".into());
+
+        exec.prepare("INSERT INTO B VALUES ('k2', 20)".into());
+        exec.prepare("INSERT INTO B VALUES ('k3', 30)".into());
+        exec.prepare("INSERT INTO B VALUES ('k4', 40)".into());
+
+        let result = exec.prepare("SELECT A.id FROM A JOIN B ON A.id = B.id".into());
+        assert_row_count(result, 2);
+    }
+
+    #[test]
+    fn test_pk_join_integer_sparse_keys() {
+        let mut exec = setup_executor();
+
+        exec.prepare("CREATE TABLE A (id Integer, v Integer)".into());
+        exec.prepare("CREATE TABLE B (id Integer, x Integer)".into());
+
+        exec.prepare("INSERT INTO A VALUES (10, 1)".into());
+        exec.prepare("INSERT INTO A VALUES (100, 2)".into());
+        exec.prepare("INSERT INTO A VALUES (1000, 3)".into());
+
+        exec.prepare("INSERT INTO B VALUES (1, 11)".into());
+        exec.prepare("INSERT INTO B VALUES (10, 22)".into());
+        exec.prepare("INSERT INTO B VALUES (1000, 33)".into());
+
+        let result = exec.prepare("SELECT A.id FROM A JOIN B ON A.id = B.id".into());
+        assert_row_count(result, 2);
+    }
+
+    #[test]
+    fn test_pk_join_with_where_filter_small() {
+        let mut exec = setup_executor();
+
+        exec.prepare("CREATE TABLE A (id Integer, v Integer)".into());
+        exec.prepare("CREATE TABLE B (id Integer, x Integer)".into());
+
+        exec.prepare("INSERT INTO A VALUES (1, 10)".into());
+        exec.prepare("INSERT INTO A VALUES (2, 20)".into());
+        exec.prepare("INSERT INTO A VALUES (3, 30)".into());
+
+        exec.prepare("INSERT INTO B VALUES (1, 100)".into());
+        exec.prepare("INSERT INTO B VALUES (2, 200)".into());
+        exec.prepare("INSERT INTO B VALUES (3, 300)".into());
+
+        let result =
+            exec.prepare("SELECT A.id FROM A JOIN B ON A.id = B.id WHERE A.v > 15".into());
+        assert_row_count(result, 2);
+    }
+
+    #[test]
+    fn test_non_pk_join_integer_column() {
+        let mut exec = setup_executor();
+
+        exec.prepare("CREATE TABLE A (id Integer, v Integer)".into());
+        exec.prepare("CREATE TABLE B (id Integer, v Integer)".into());
+
+        exec.prepare("INSERT INTO A VALUES (1, 10)".into());
+        exec.prepare("INSERT INTO A VALUES (2, 20)".into());
+        exec.prepare("INSERT INTO A VALUES (3, 20)".into());
+
+        exec.prepare("INSERT INTO B VALUES (11, 20)".into());
+        exec.prepare("INSERT INTO B VALUES (12, 30)".into());
+
+        let result = exec.prepare("SELECT A.id FROM A JOIN B ON A.v = B.v".into());
+        assert_row_count(result, 2);
+    }
+
+    #[test]
+    fn test_non_pk_join_duplicate_multiplicity() {
+        let mut exec = setup_executor();
+
+        exec.prepare("CREATE TABLE A (id Integer, v Integer)".into());
+        exec.prepare("CREATE TABLE B (id Integer, v Integer)".into());
+
+        exec.prepare("INSERT INTO A VALUES (1, 5)".into());
+        exec.prepare("INSERT INTO A VALUES (2, 5)".into());
+
+        exec.prepare("INSERT INTO B VALUES (10, 5)".into());
+        exec.prepare("INSERT INTO B VALUES (11, 5)".into());
+        exec.prepare("INSERT INTO B VALUES (12, 5)".into());
+
+        let result = exec.prepare("SELECT A.id FROM A JOIN B ON A.v = B.v".into());
+        assert_row_count(result, 6);
+    }
+
+    #[test]
+    fn test_mixed_chain_join_pk_then_nonpk() {
+        let mut exec = setup_executor();
+
+        exec.prepare("CREATE TABLE A (id Integer, v Integer)".into());
+        exec.prepare("CREATE TABLE B (id Integer, v Integer)".into());
+        exec.prepare("CREATE TABLE C (cid Integer, bv Integer)".into());
+
+        exec.prepare("INSERT INTO A VALUES (1, 100)".into());
+        exec.prepare("INSERT INTO A VALUES (2, 200)".into());
+
+        exec.prepare("INSERT INTO B VALUES (1, 900)".into());
+        exec.prepare("INSERT INTO B VALUES (2, 901)".into());
+
+        exec.prepare("INSERT INTO C VALUES (10, 900)".into());
+
+        let query =
+            "SELECT A.id FROM A JOIN B ON A.id = B.id JOIN C ON B.v = C.bv";
+        let result = exec.prepare(query.into());
+        assert_row_count(result, 1);
+    }
+
+    #[test]
+    fn test_join_subquery_on_non_pk_column() {
+        let mut exec = setup_executor();
+
+        exec.prepare("CREATE TABLE A (id Integer, v Integer)".into());
+        exec.prepare("CREATE TABLE B (id Integer, v Integer)".into());
+
+        exec.prepare("INSERT INTO A VALUES (1, 10)".into());
+        exec.prepare("INSERT INTO A VALUES (2, 20)".into());
+        exec.prepare("INSERT INTO A VALUES (3, 30)".into());
+
+        exec.prepare("INSERT INTO B VALUES (11, 5)".into());
+        exec.prepare("INSERT INTO B VALUES (12, 20)".into());
+        exec.prepare("INSERT INTO B VALUES (13, 30)".into());
+
+        let query = "SELECT A.id FROM A INNER JOIN (SELECT * FROM B WHERE v > 10) ON A.v = B.v";
+        let result = exec.prepare(query.into());
+        assert_row_count(result, 2);
+    }
+
+    #[test]
+    fn test_natural_join_three_tables_small_pk_chain() {
+        let mut exec = setup_executor();
+
+        exec.prepare("CREATE TABLE A (id Integer, x Integer)".into());
+        exec.prepare("CREATE TABLE B (id Integer, y Integer)".into());
+        exec.prepare("CREATE TABLE C (id Integer, z Integer)".into());
+
+        exec.prepare("INSERT INTO A VALUES (1, 10)".into());
+        exec.prepare("INSERT INTO A VALUES (2, 20)".into());
+        exec.prepare("INSERT INTO A VALUES (3, 30)".into());
+
+        exec.prepare("INSERT INTO B VALUES (2, 200)".into());
+        exec.prepare("INSERT INTO B VALUES (3, 300)".into());
+        exec.prepare("INSERT INTO B VALUES (4, 400)".into());
+
+        exec.prepare("INSERT INTO C VALUES (3, 3000)".into());
+        exec.prepare("INSERT INTO C VALUES (4, 4000)".into());
+
+        let result = exec.prepare("SELECT A.id FROM A NATURAL JOIN B NATURAL JOIN C".into());
+        assert_row_count(result, 1);
     }
 
     #[test]

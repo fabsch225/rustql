@@ -94,8 +94,8 @@ pub enum Type {
     Null, //TODO remove this. this is not a type. each type can be null
     Integer,
     String,
+    Varchar(usize),
     //Double, future feature
-    //Varchar, future feature
     Date,
     Boolean,
     //Blob    future feature, requires special treatment
@@ -108,9 +108,9 @@ impl Debug for Type {
             Type::Null => write!(f, "Null"),
             Type::Integer => write!(f, "Integer"),
             Type::String => write!(f, "String"),
+            Type::Varchar(max) => write!(f, "Varchar({})", max),
             Type::Date => write!(f, "Date"),
             Type::Boolean => write!(f, "Boolean"),
-            _ => write!(f, "Unknown"),
         }
         .expect("Wierd Error");
         Ok(())

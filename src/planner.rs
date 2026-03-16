@@ -220,7 +220,7 @@ impl Planner {
                     .zip(create_table_query.table_types.iter())
                 {
                     let field_type = Type::from_str(type_str)
-                        .map_err(|_| QueryResult::user_input_wrong("wrong type".to_string()))?;
+                        .map_err(QueryResult::user_input_wrong)?;
                     fields.push(Field {
                         name: name.clone(),
                         field_type,
@@ -626,6 +626,15 @@ impl Planner {
                     .to_vec())
             }
             Type::String => Ok(Serializer::parse_string(value).to_vec()),
+            Type::Varchar(max_len) => {
+                if value.len() > max_len {
+                    return Err(QueryResult::user_input_wrong(format!(
+                        "'{}' exceeds VARCHAR({})",
+                        value, max_len
+                    )));
+                }
+                Ok(Serializer::parse_varchar(value, max_len))
+            }
             Type::Date => Ok(Vec::from(
                 Serializer::parse_date(value).map_err(QueryResult::err)?,
             )),
@@ -633,10 +642,6 @@ impl Planner {
                 Serializer::parse_bool(value).map_err(QueryResult::err)?,
             ]),
             Type::Null => Ok(vec![]),
-            _ => Err(QueryResult::user_input_wrong(format!(
-                "Unsupported type for compilation: {:?}",
-                field_schema.field_type
-            ))),
         }
     }
 
@@ -661,7 +666,19 @@ impl FromStr for Type {
     type Err = String;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s.to_lowercase().as_str() {
+        let lowered = s.trim().to_lowercase();
+        if lowered.starts_with("varchar(") && lowered.ends_with(')') {
+            let inner = &lowered[8..lowered.len() - 1];
+            let length = inner
+                .parse::<usize>()
+                .map_err(|_| format!("Invalid type: {}", s))?;
+            if length == 0 {
+                return Err("Invalid type: VARCHAR must have length > 0".to_string());
+            }
+            return Ok(Type::Varchar(length));
+        }
+
+        match lowered.as_str() {
             "null" => Ok(Type::Null),
             "integer" => Ok(Type::Integer),
             "string" => Ok(Type::String),
