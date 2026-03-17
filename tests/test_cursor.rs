@@ -2,11 +2,11 @@ mod tests {
     use rand::{Rng, seq::SliceRandom};
     use rustql::cursor::BTreeCursor;
     use rustql::executor::QueryExecutor;
-    use rustql::pager::{FieldMeta, KeyMeta};
+    use rustql::constants::{FieldMeta, KeyMeta};
     use rustql::serializer::Serializer;
     use rustql::{
         btree::Btree,
-        pager::{Key, PagerAccessor, PagerCore, Position, Row, Type},
+        pager::Type,
     };
 
     fn make_int_key(k: i32) -> Vec<u8> {

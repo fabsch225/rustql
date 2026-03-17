@@ -1,34 +1,27 @@
 use crate::btree::BTreeNode;
+use crate::constants::{
+    EXTERNAL_LEN_OFFSET, EXTERNAL_MARKER, EXTERNAL_MARKER_OFFSET, EXTERNAL_META_MIN_FIELD_LEN,
+    EXTERNAL_ORIG_FLAG_OFFSET, EXTERNAL_PTR_OFFSET, INLINE_STRING_PREFIX_LEN,
+    PAYLOAD_HEADER_SIZE,
+};
 use crate::pager::{
-    Key, NODE_METADATA_SIZE, PAGE_SIZE, POSITION_SIZE, PagerAccessor, Position, Row, Type,
+    Key, NODE_METADATA_SIZE, PAGE_SIZE, POSITION_SIZE, PageContainer, PagerAccessor, Position,
+    Row, Type,
 };
 use crate::schema::TableSchema;
 use crate::serializer::Serializer;
-use crate::status::Status;
+use crate::debug::Status;
 use std::collections::HashSet;
 
-pub struct PagerProxy {}
+pub struct PageManager {}
 
-impl PagerProxy {
-    const INLINE_STRING_PREFIX_LEN: usize = 12;
-    const EXTERNAL_PAGE_HEADER_SIZE: usize = 8;
-    const EXTERNAL_PTR_OFFSET: usize = Self::INLINE_STRING_PREFIX_LEN + 1;
-    const EXTERNAL_LEN_OFFSET: usize = Self::EXTERNAL_PTR_OFFSET + POSITION_SIZE;
-    const EXTERNAL_MARKER_OFFSET: usize = Self::EXTERNAL_LEN_OFFSET + 2;
-    const EXTERNAL_ORIG_FLAG_OFFSET: usize = Self::EXTERNAL_MARKER_OFFSET + 1;
-    const EXTERNAL_MARKER: u8 = 0xA5;
-    const EXTERNAL_META_MIN_FIELD_LEN: usize = Self::EXTERNAL_ORIG_FLAG_OFFSET + 1;
-    const EXTERNAL_DEPRECATED_OFFSET: usize = 4;
-    const EXTERNAL_OWNER_ROOT_OFFSET: usize = 5;
-    const EXTERNAL_MAGIC_OFFSET: usize = 7;
-    const EXTERNAL_PAGE_MAGIC: u8 = 0xD1;
-
+impl PageManager {
     fn external_page_payload_capacity() -> usize {
-        PAGE_SIZE - Self::EXTERNAL_PAGE_HEADER_SIZE
+        PAGE_SIZE - PAYLOAD_HEADER_SIZE
     }
 
     fn can_externalize_field(field_len: usize) -> bool {
-        field_len >= Self::EXTERNAL_META_MIN_FIELD_LEN
+        field_len >= EXTERNAL_META_MIN_FIELD_LEN
     }
 
     fn field_string_payload_len(field_bytes: &[u8]) -> usize {
@@ -39,25 +32,10 @@ impl PagerProxy {
             .unwrap_or(payload_len)
     }
 
-    fn read_next_page_index_from_payload_page(page_data: &[u8; PAGE_SIZE]) -> usize {
-        u16::from_be_bytes([page_data[0], page_data[1]]) as usize
-    }
-
-    fn read_payload_owner_root_page(page_data: &[u8; PAGE_SIZE]) -> usize {
-        u16::from_be_bytes([
-            page_data[Self::EXTERNAL_OWNER_ROOT_OFFSET],
-            page_data[Self::EXTERNAL_OWNER_ROOT_OFFSET + 1],
-        ]) as usize
-    }
-
     fn is_payload_page_candidate(page: &crate::pager::PageContainer) -> Result<bool, Status> {
         let is_data = Serializer::is_data_page(page)?;
         let is_overflow = Serializer::is_overflow_page(page)?;
-        Ok((is_data || is_overflow) && page.data[Self::EXTERNAL_MAGIC_OFFSET] == Self::EXTERNAL_PAGE_MAGIC)
-    }
-
-    fn is_payload_page_deprecated(page_data: &[u8; PAGE_SIZE]) -> bool {
-        page_data[Self::EXTERNAL_DEPRECATED_OFFSET] == 1
+        Ok((is_data || is_overflow) && Serializer::has_payload_magic(&page.data))
     }
 
     fn collect_external_payload_heads_from_rows(
@@ -72,7 +50,7 @@ impl PagerProxy {
                 |_, field_type, field_bytes| {
                     if Self::is_field_externalized(field_type, field_bytes)? {
                         let ptr_slice = &field_bytes
-                            [Self::EXTERNAL_PTR_OFFSET..Self::EXTERNAL_PTR_OFFSET + POSITION_SIZE];
+                            [EXTERNAL_PTR_OFFSET..EXTERNAL_PTR_OFFSET + POSITION_SIZE];
                         let ptr = Serializer::bytes_to_position(
                             <&[u8; POSITION_SIZE]>::try_from(ptr_slice)
                                 .expect("slice length checked"),
@@ -110,10 +88,11 @@ impl PagerProxy {
                 break;
             }
 
-            let next_page = Self::read_next_page_index_from_payload_page(&page_read.data);
+            let next_page = Serializer::get_payload_next_page_index(&page_read.data);
             pager_interface.access_pager_write(|p| {
                 let page = p.access_page_write(&pos)?;
-                page.data[Self::EXTERNAL_DEPRECATED_OFFSET] = 1;
+                Serializer::set_payload_page_deprecated(&mut page.data, true);
+                Serializer::set_is_deleted(page, true)?;
                 Ok(())
             })?;
             current_page = next_page;
@@ -153,8 +132,8 @@ impl PagerProxy {
                 continue;
             }
 
-            let owner = Self::read_payload_owner_root_page(&page.data);
-            if owner != owner_root_page || !Self::is_payload_page_deprecated(&page.data) {
+            let owner = Serializer::get_payload_owner_root_page(&page.data);
+            if owner != owner_root_page || !Serializer::is_payload_page_deprecated(&page.data) {
                 continue;
             }
 
@@ -177,14 +156,14 @@ impl PagerProxy {
             return Ok(false);
         }
 
-        let marker_ok = field_bytes[Self::EXTERNAL_MARKER_OFFSET] == Self::EXTERNAL_MARKER;
-        let ptr_slice = &field_bytes[Self::EXTERNAL_PTR_OFFSET..Self::EXTERNAL_PTR_OFFSET + POSITION_SIZE];
+        let marker_ok = field_bytes[EXTERNAL_MARKER_OFFSET] == EXTERNAL_MARKER;
+        let ptr_slice = &field_bytes[EXTERNAL_PTR_OFFSET..EXTERNAL_PTR_OFFSET + POSITION_SIZE];
         let ptr = Serializer::bytes_to_position(
             <&[u8; POSITION_SIZE]>::try_from(ptr_slice).expect("slice length checked"),
         );
         let tail_len = u16::from_be_bytes([
-            field_bytes[Self::EXTERNAL_LEN_OFFSET],
-            field_bytes[Self::EXTERNAL_LEN_OFFSET + 1],
+            field_bytes[EXTERNAL_LEN_OFFSET],
+            field_bytes[EXTERNAL_LEN_OFFSET + 1],
         ]) as usize;
 
         Ok(marker_ok && !ptr.is_empty() && tail_len > 0)
@@ -219,18 +198,19 @@ impl PagerProxy {
                 let page = p.access_page_write(&pos)?;
                 page.data = [0u8; PAGE_SIZE];
 
-                page.data[0..2].copy_from_slice(&(next_page_index as u16).to_be_bytes());
-                page.data[2..4].copy_from_slice(&(chunk.len() as u16).to_be_bytes());
-                page.data[Self::EXTERNAL_DEPRECATED_OFFSET] = 0;
-                page.data[Self::EXTERNAL_OWNER_ROOT_OFFSET..Self::EXTERNAL_OWNER_ROOT_OFFSET + 2]
-                    .copy_from_slice(&(owner_root_page as u16).to_be_bytes());
-                page.data[Self::EXTERNAL_MAGIC_OFFSET] = Self::EXTERNAL_PAGE_MAGIC;
-                page.data[Self::EXTERNAL_PAGE_HEADER_SIZE
-                    ..Self::EXTERNAL_PAGE_HEADER_SIZE + chunk.len()]
+                Serializer::set_payload_next_page_index(&mut page.data, next_page_index);
+                Serializer::set_payload_chunk_len(&mut page.data, chunk.len());
+                Serializer::set_payload_page_deprecated(&mut page.data, false);
+                Serializer::set_payload_owner_root_page(&mut page.data, owner_root_page);
+                Serializer::set_payload_magic(&mut page.data);
+                page.data[PAYLOAD_HEADER_SIZE
+                    ..PAYLOAD_HEADER_SIZE + chunk.len()]
                     .copy_from_slice(chunk);
 
                 Serializer::set_is_data_page(page, is_data_page)?;
                 Serializer::set_is_overflow_page(page, !is_data_page)?;
+                Serializer::set_is_deleted(page, false)?;
+                Self::update_payload_page_free_space(page);
                 Ok(())
             })?;
 
@@ -260,17 +240,17 @@ impl PagerProxy {
 
             let pos = Position::new(current_page, 0);
             let page = pager_interface.access_pager_write(|p| p.access_page_read(&pos))?;
-            let is_new_header = page.data[Self::EXTERNAL_MAGIC_OFFSET] == Self::EXTERNAL_PAGE_MAGIC;
+            let is_new_header = Serializer::has_payload_magic(&page.data);
             let header_size = if is_new_header {
-                Self::EXTERNAL_PAGE_HEADER_SIZE
+                PAYLOAD_HEADER_SIZE
             } else {
                 4
             };
 
-            if is_new_header && Self::is_payload_page_deprecated(&page.data) {
+            if is_new_header && Serializer::is_payload_page_deprecated(&page.data) {
                 return Err(Status::InternalExceptionPageCorrupted);
             }
-            let chunk_len = u16::from_be_bytes([page.data[2], page.data[3]]) as usize;
+            let chunk_len = Serializer::get_payload_chunk_len(&page.data);
             if chunk_len > PAGE_SIZE.saturating_sub(header_size) {
                 return Err(Status::InternalExceptionPageCorrupted);
             }
@@ -279,10 +259,89 @@ impl PagerProxy {
             let chunk_end = chunk_start + chunk_len;
             payload.extend_from_slice(&page.data[chunk_start..chunk_end]);
 
-            current_page = Self::read_next_page_index_from_payload_page(&page.data);
+            current_page = Serializer::get_payload_next_page_index(&page.data);
         }
 
         Ok(payload)
+    }
+
+    fn collect_payload_chain_pages_from_head(
+        pager_interface: &PagerAccessor,
+        start_page: usize,
+        referenced_pages: &mut HashSet<usize>,
+    ) -> Result<(), Status> {
+        let mut current_page = start_page;
+        let mut guard = 0usize;
+
+        while current_page > 0 {
+            if guard > 1024 {
+                return Err(Status::InternalExceptionPageCorrupted);
+            }
+            guard += 1;
+
+            if !referenced_pages.insert(current_page) {
+                break;
+            }
+
+            let pos = Position::new(current_page, 0);
+            let page = pager_interface.access_pager_write(|p| p.access_page_read(&pos))?;
+
+            if !Self::is_payload_page_candidate(&page)? {
+                break;
+            }
+
+            current_page = Serializer::get_payload_next_page_index(&page.data);
+        }
+
+        Ok(())
+    }
+
+    /// Marks payload pages (data/overflow) that are not reachable from the given
+    /// external payload heads as `deleted` in pager flags and `deprecated` in payload-header flags.
+    ///
+    /// Returns the number of pages newly marked.
+    pub fn mark_unreferenced_payload_pages_as_deleted(
+        pager_interface: PagerAccessor,
+        referenced_head_pages: &HashSet<usize>,
+    ) -> Result<usize, Status> {
+        let mut referenced_pages = HashSet::new();
+        for head in referenced_head_pages {
+            Self::collect_payload_chain_pages_from_head(
+                &pager_interface,
+                *head,
+                &mut referenced_pages,
+            )?;
+        }
+
+        let next_page_idx = pager_interface.get_next_page_index();
+        let mut marked = 0usize;
+
+        for page_idx in 1..next_page_idx {
+            if referenced_pages.contains(&page_idx) {
+                continue;
+            }
+
+            let pos = Position::new(page_idx, 0);
+            let page = pager_interface.access_pager_write(|p| p.access_page_read(&pos))?;
+            if !Self::is_payload_page_candidate(&page)? {
+                continue;
+            }
+
+            pager_interface.access_pager_write(|p| {
+                let page = p.access_page_write(&pos)?;
+                let already_deprecated = Serializer::is_payload_page_deprecated(&page.data);
+                let already_deleted = Serializer::is_deleted(page)?;
+
+                if !already_deprecated || !already_deleted {
+                    Serializer::set_payload_page_deprecated(&mut page.data, true);
+                    Serializer::set_is_deleted(page, true)?;
+                    marked += 1;
+                }
+                Ok(())
+            })?;
+        }
+
+        Ok(marked)
     }
 
     fn encode_row_for_external_storage(
@@ -303,30 +362,30 @@ impl PagerProxy {
                 }
 
                 let payload_len = Self::field_string_payload_len(field_bytes);
-                if payload_len <= Self::INLINE_STRING_PREFIX_LEN {
+                if payload_len <= INLINE_STRING_PREFIX_LEN {
                     return Ok(field_bytes.to_vec());
                 }
 
                 let tail =
-                    &field_bytes[Self::INLINE_STRING_PREFIX_LEN..payload_len.min(field_bytes.len())];
+                    &field_bytes[INLINE_STRING_PREFIX_LEN..payload_len.min(field_bytes.len())];
                 let external_pos = Self::write_payload_to_data_pages(
                     node.pager_accessor.clone(),
                     tail,
                     node.table_schema.root.page(),
                 )?;
                 let mut out = vec![0u8; field_bytes.len()];
-                out[..Self::INLINE_STRING_PREFIX_LEN]
-                    .copy_from_slice(&field_bytes[..Self::INLINE_STRING_PREFIX_LEN]);
-                out[Self::INLINE_STRING_PREFIX_LEN] = 0;
+                out[..INLINE_STRING_PREFIX_LEN]
+                    .copy_from_slice(&field_bytes[..INLINE_STRING_PREFIX_LEN]);
+                out[INLINE_STRING_PREFIX_LEN] = 0;
                 out[field_bytes.len() - 1] = field_bytes[field_bytes.len() - 1];
 
                 let ptr_bytes = Serializer::position_to_bytes(external_pos);
-                out[Self::EXTERNAL_PTR_OFFSET..Self::EXTERNAL_PTR_OFFSET + POSITION_SIZE]
+                out[EXTERNAL_PTR_OFFSET..EXTERNAL_PTR_OFFSET + POSITION_SIZE]
                     .copy_from_slice(&ptr_bytes);
-                out[Self::EXTERNAL_LEN_OFFSET..Self::EXTERNAL_LEN_OFFSET + 2]
+                out[EXTERNAL_LEN_OFFSET..EXTERNAL_LEN_OFFSET + 2]
                     .copy_from_slice(&(tail.len() as u16).to_be_bytes());
-                out[Self::EXTERNAL_MARKER_OFFSET] = Self::EXTERNAL_MARKER;
-                out[Self::EXTERNAL_ORIG_FLAG_OFFSET] = field_bytes[field_bytes.len() - 1];
+                out[EXTERNAL_MARKER_OFFSET] = EXTERNAL_MARKER;
+                out[EXTERNAL_ORIG_FLAG_OFFSET] = field_bytes[field_bytes.len() - 1];
 
                 Serializer::set_is_external(&mut out, true, field_type)?;
                 used_external = true;
@@ -348,17 +407,17 @@ impl PagerProxy {
             }
 
             let encoded = field_bytes.to_vec();
-            if encoded.len() <= Self::EXTERNAL_MARKER_OFFSET || !Self::can_externalize_field(field_bytes.len()) {
+            if encoded.len() <= EXTERNAL_MARKER_OFFSET || !Self::can_externalize_field(field_bytes.len()) {
                 return Ok(field_bytes.to_vec());
             }
 
-            let ptr_slice = &field_bytes[Self::EXTERNAL_PTR_OFFSET..Self::EXTERNAL_PTR_OFFSET + POSITION_SIZE];
+            let ptr_slice = &field_bytes[EXTERNAL_PTR_OFFSET..EXTERNAL_PTR_OFFSET + POSITION_SIZE];
             let ptr = Serializer::bytes_to_position(
                 <&[u8; POSITION_SIZE]>::try_from(ptr_slice).expect("slice length checked"),
             );
             let tail_len = u16::from_be_bytes([
-                field_bytes[Self::EXTERNAL_LEN_OFFSET],
-                field_bytes[Self::EXTERNAL_LEN_OFFSET + 1],
+                field_bytes[EXTERNAL_LEN_OFFSET],
+                field_bytes[EXTERNAL_LEN_OFFSET + 1],
             ]) as usize;
 
             let mut tail = match Self::read_payload_from_pages(node.pager_accessor.clone(), ptr) {
@@ -372,7 +431,7 @@ impl PagerProxy {
             let mut out = vec![0u8; field_bytes.len()];
             let payload_capacity = out.len().saturating_sub(1);
 
-            let inline_len = Self::INLINE_STRING_PREFIX_LEN.min(payload_capacity);
+            let inline_len = INLINE_STRING_PREFIX_LEN.min(payload_capacity);
             out[..inline_len].copy_from_slice(&field_bytes[..inline_len]);
 
             let tail_copy_start = inline_len;
@@ -385,7 +444,7 @@ impl PagerProxy {
             }
 
             let out_last_idx = out.len() - 1;
-            out[out_last_idx] = field_bytes[Self::EXTERNAL_ORIG_FLAG_OFFSET];
+            out[out_last_idx] = field_bytes[EXTERNAL_ORIG_FLAG_OFFSET];
             Ok(out)
         })
     }
@@ -577,6 +636,7 @@ impl PagerProxy {
             page.data[0..blob.len()].copy_from_slice(blob);
             return node.pager_accessor.access_page_write(node, |d| {
                 d.data = page.data;
+                d.free_space = PAGE_SIZE.saturating_sub(blob.len());
                 Ok(())
             });
         }
@@ -599,6 +659,14 @@ impl PagerProxy {
                 }
                 Serializer::set_is_overflow_page(page, i > 0)?;
                 Serializer::set_is_data_page(page, false)?;
+                let bytes_on_page = if i < pages {
+                    let start = i * PAGE_SIZE;
+                    let end = std::cmp::min(start + PAGE_SIZE, blob.len());
+                    end - start
+                } else {
+                    0
+                };
+                page.free_space = PAGE_SIZE - bytes_on_page;
                 Ok(())
             })?;
         }
@@ -631,6 +699,38 @@ impl PagerProxy {
         Ok(count)
     }
 
+    fn apply_btree_page_free_space_delta(
+        page_container: &mut PageContainer,
+        used_bytes_delta: isize,
+    ) -> Result<(), Status> {
+        if used_bytes_delta >= 0 {
+            let delta = used_bytes_delta as usize;
+            if page_container.free_space < delta {
+                return Err(Status::InternalExceptionIndexOutOfRange);
+            }
+            page_container.free_space -= delta;
+        } else {
+            let delta = (-used_bytes_delta) as usize;
+            page_container.free_space = std::cmp::min(PAGE_SIZE, page_container.free_space + delta);
+        }
+        Ok(())
+    }
+
+    fn update_payload_page_free_space(page_container: &mut PageContainer) {
+        let header_size = if Serializer::has_payload_magic(&page_container.data) {
+            PAYLOAD_HEADER_SIZE
+        } else {
+            4
+        };
+        let chunk_len = Serializer::get_payload_chunk_len(&page_container.data);
+        let used = std::cmp::min(PAGE_SIZE, header_size.saturating_add(chunk_len));
+        page_container.free_space = PAGE_SIZE - used;
+    }
+}
+
+pub struct PagerProxy {}
+
+impl PagerProxy {
     pub fn clear_table_root(
         table_schema: &TableSchema,
         pager_interface: PagerAccessor,
@@ -650,6 +750,7 @@ impl PagerProxy {
                 &mut pc.data,
                 &src_page,
             )?;
+            pc.free_space = PAGE_SIZE - table_schema.get_node_size_in_bytes()?;
             Ok(())
         })
     }
@@ -673,6 +774,7 @@ impl PagerProxy {
                 &mut pc.data,
                 &src_page.data,
             )?;
+            pc.free_space = PAGE_SIZE - schema.get_node_size_in_bytes()?;
             Ok(())
         })
     }
@@ -680,8 +782,8 @@ impl PagerProxy {
         schema: &TableSchema,
         pager_interface: PagerAccessor,
     ) -> Result<BTreeNode, Status> {
-        if Self::is_large_node_mode(schema)? {
-            let reserved = Self::reserved_pages_for_node(schema)?;
+        if PageManager::is_large_node_mode(schema)? {
+            let reserved = PageManager::reserved_pages_for_node(schema)?;
             let first_page = pager_interface.access_pager_write(|p| p.create_page())?;
             for _ in 1..reserved {
                 let _ = pager_interface.access_pager_write(|p| p.create_page())?;
@@ -706,8 +808,8 @@ impl PagerProxy {
             table_schema: schema.clone(),
         };
 
-        if Self::is_large_node_mode(schema)? {
-            let blob = Self::encode_node_blob(
+        if PageManager::is_large_node_mode(schema)? {
+            let blob = PageManager::encode_node_blob(
                 schema,
                 0,
                 Serializer::create_node_flag(true),
@@ -715,7 +817,7 @@ impl PagerProxy {
                 &vec![],
                 &vec![],
             )?;
-            Self::write_node_blob(&node, &blob)?;
+            PageManager::write_node_blob(&node, &blob)?;
             return Ok(node);
         }
 
@@ -723,6 +825,10 @@ impl PagerProxy {
         pager_interface.access_page_write(&node, |d| {
             let node_offset = Serializer::find_position_offset(&d.data, &node.position, schema)?;
             d.data[node_offset + 1] = Serializer::create_node_flag(true);
+            PageManager::apply_btree_page_free_space_delta(
+                d,
+                schema.get_node_size_in_bytes()? as isize,
+            )?;
             Ok(())
         })?;
         Ok(node)
@@ -737,11 +843,11 @@ impl PagerProxy {
         node1: &BTreeNode,
         node2: &BTreeNode,
     ) -> Result<(), Status> {
-        if Self::is_large_node_mode(schema)? {
-            let blob1 = Self::read_node_blob(node1)?;
-            let blob2 = Self::read_node_blob(node2)?;
-            Self::write_node_blob(node1, &blob2)?;
-            Self::write_node_blob(node2, &blob1)?;
+        if PageManager::is_large_node_mode(schema)? {
+            let blob1 = PageManager::read_node_blob(node1)?;
+            let blob2 = PageManager::read_node_blob(node2)?;
+            PageManager::write_node_blob(node1, &blob2)?;
+            PageManager::write_node_blob(node2, &blob1)?;
         } else {
         let switch_on_same_page = node1.position.page() == node2.position.page();
         if switch_on_same_page {
@@ -812,13 +918,14 @@ impl PagerProxy {
         children: Vec<Position>,
         data: Vec<Row>,
     ) -> Result<BTreeNode, Status> {
-        if Self::is_large_node_mode(&schema)? {
+        if PageManager::is_large_node_mode(&schema)? {
             let new_node = Self::create_empty_node_on_new_page(&schema, pager_interface.clone())?;
             Self::set_keys_and_children_as_positions(&new_node, keys, children)?;
             Self::set_data(&new_node, data)?;
             return Ok(new_node);
         }
 
+        //faster
         if !children.is_empty() {
             let new_node = Self::create_empty_node_on_new_page(&schema, pager_interface.clone())?;
             Self::set_keys_and_children_as_positions(&new_node, keys, children)?;
@@ -826,21 +933,29 @@ impl PagerProxy {
             return Ok(new_node);
         }
 
+        let required_node_bytes = schema.get_node_size_in_bytes()?;
         let page_capacity = schema.max_nodes_per_page()?;
 
         let mut chosen_position: Option<Position> = None;
-        for (page, advertised_free_slots) in &schema.free_list {
-            if *advertised_free_slots == 0 {
+        for (page, advertised_free_bytes) in &schema.free_list {
+            if *advertised_free_bytes < required_node_bytes {
                 continue;
             }
-            let used_slots = pager_interface
-                .access_pager_write(|p| p.access_page_read(&Position::new(*page, 0)))
-                .and_then(|pc| Self::count_nodes_on_page(&schema, &pc.data))?;
 
-            if used_slots < page_capacity {
-                chosen_position = Some(Position::new(*page, used_slots));
-                break;
+            let page_container =
+                pager_interface.access_pager_write(|p| p.access_page_read(&Position::new(*page, 0)))?;
+            if page_container.free_space < required_node_bytes {
+                continue;
             }
+
+            let used_slots = PageManager::count_nodes_on_page(&schema, &page_container.data)?;
+
+            if used_slots >= page_capacity {
+                continue;
+            }
+
+            chosen_position = Some(Position::new(*page, used_slots));
+            break;
         }
 
         let new_node = if let Some(position) = chosen_position {
@@ -882,7 +997,7 @@ impl PagerProxy {
     }
 
     pub fn get_keys_count(node: &BTreeNode) -> Result<usize, Status> {
-        if Self::is_large_node_mode(&node.table_schema)? {
+        if PageManager::is_large_node_mode(&node.table_schema)? {
             return Self::get_keys_encoded(node).map(|(k, _)| k.len());
         }
         //TODO this is very suboptimal
@@ -898,7 +1013,7 @@ impl PagerProxy {
     }
 
     pub fn get_children_count(node: &BTreeNode) -> Result<usize, Status> {
-        if Self::is_large_node_mode(&node.table_schema)? {
+        if PageManager::is_large_node_mode(&node.table_schema)? {
             return Self::get_children(node).map(|v| v.len());
         }
         node.pager_accessor
@@ -926,7 +1041,7 @@ impl PagerProxy {
     }
 
     pub fn get_child(index: usize, parent: &BTreeNode) -> Result<BTreeNode, Status> {
-        if Self::is_large_node_mode(&parent.table_schema)? {
+        if PageManager::is_large_node_mode(&parent.table_schema)? {
             let children = Self::get_children(parent)?;
             if children.is_empty() {
                 return Err(Status::InternalExceptionIndexOutOfRange);
@@ -974,10 +1089,10 @@ impl PagerProxy {
     }
 
     pub fn set_child(index: usize, parent: &BTreeNode, child: BTreeNode) -> Result<(), Status> {
-        if Self::is_large_node_mode(&parent.table_schema)? {
-            let blob = Self::read_node_blob(parent)?;
+        if PageManager::is_large_node_mode(&parent.table_schema)? {
+            let blob = PageManager::read_node_blob(parent)?;
             let (num_keys, mut flag, keys, mut children, rows) =
-                Self::decode_node_blob(&parent.table_schema, &blob)?;
+                PageManager::decode_node_blob(&parent.table_schema, &blob)?;
 
             if index >= children.len() {
                 return Err(Status::InternalExceptionIndexOutOfRange);
@@ -988,7 +1103,7 @@ impl PagerProxy {
                 Serializer::write_byte_at_position(&mut flag, 1, false);
             }
 
-            let new_blob = Self::encode_node_blob(
+            let new_blob = PageManager::encode_node_blob(
                 &parent.table_schema,
                 num_keys as usize,
                 flag,
@@ -996,7 +1111,7 @@ impl PagerProxy {
                 &children,
                 &rows,
             )?;
-            return Self::write_node_blob(parent, &new_blob);
+            return PageManager::write_node_blob(parent, &new_blob);
         }
 
         let mut page = parent
@@ -1024,9 +1139,9 @@ impl PagerProxy {
     }
 
     pub fn get_children(parent: &BTreeNode) -> Result<Vec<BTreeNode>, Status> {
-        if Self::is_large_node_mode(&parent.table_schema)? {
-            let blob = Self::read_node_blob(parent)?;
-            let (_, _, _, children, _) = Self::decode_node_blob(&parent.table_schema, &blob)?;
+        if PageManager::is_large_node_mode(&parent.table_schema)? {
+            let blob = PageManager::read_node_blob(parent)?;
+            let (_, _, _, children, _) = PageManager::decode_node_blob(&parent.table_schema, &blob)?;
             return Ok(children
                 .into_iter()
                 .map(|position| BTreeNode {
@@ -1065,14 +1180,14 @@ impl PagerProxy {
         parent: &BTreeNode,
         children: Vec<Position>,
     ) -> Result<(), Status> {
-        if Self::is_large_node_mode(&parent.table_schema)? {
-            let blob = Self::read_node_blob(parent)?;
+        if PageManager::is_large_node_mode(&parent.table_schema)? {
+            let blob = PageManager::read_node_blob(parent)?;
             let (num_keys, mut flag, keys, _, rows) =
-                Self::decode_node_blob(&parent.table_schema, &blob)?;
+                PageManager::decode_node_blob(&parent.table_schema, &blob)?;
             if !children.is_empty() {
                 Serializer::write_byte_at_position(&mut flag, 1, false);
             }
-            let new_blob = Self::encode_node_blob(
+            let new_blob = PageManager::encode_node_blob(
                 &parent.table_schema,
                 num_keys as usize,
                 flag,
@@ -1080,7 +1195,7 @@ impl PagerProxy {
                 &children,
                 &rows,
             )?;
-            return Self::write_node_blob(parent, &new_blob);
+            return PageManager::write_node_blob(parent, &new_blob);
         }
 
         let mut page = parent
@@ -1094,7 +1209,7 @@ impl PagerProxy {
             &parent.table_schema,
         )?;
 
-        parent.pager_accessor.access_page_write(parent, |mut d| {
+        parent.pager_accessor.access_page_write(parent, |d| {
             d.data = page.data;
             Ok(())
         })
@@ -1105,15 +1220,15 @@ impl PagerProxy {
 
         let mut data = Vec::with_capacity(data_encoded.len());
         for row in data_encoded {
-            data.push(Self::decode_row_from_external_storage(parent, &row)?);
+            data.push(PageManager::decode_row_from_external_storage(parent, &row)?);
         }
         Ok((keys, data))
     }
 
     pub fn get_keys_encoded(parent: &BTreeNode) -> Result<(Vec<Key>, Vec<Row>), Status> {
-        if Self::is_large_node_mode(&parent.table_schema)? {
-            let blob = Self::read_node_blob(parent)?;
-            let (_, _, keys, _, rows) = Self::decode_node_blob(&parent.table_schema, &blob)?;
+        if PageManager::is_large_node_mode(&parent.table_schema)? {
+            let blob = PageManager::read_node_blob(parent)?;
+            let (_, _, keys, _, rows) = PageManager::decode_node_blob(&parent.table_schema, &blob)?;
             return Ok((keys, rows));
         }
         parent.pager_accessor.access_page_read(parent, |page| {
@@ -1128,23 +1243,23 @@ impl PagerProxy {
     pub fn set_keys(parent: &BTreeNode, keys: Vec<Key>, data: Vec<Row>) -> Result<(), Status> {
         let mut encoded_data = Vec::with_capacity(data.len());
         for row in data.iter() {
-            encoded_data.push(Self::encode_row_for_external_storage(parent, row)?.0);
+            encoded_data.push(PageManager::encode_row_for_external_storage(parent, row)?.0);
         }
         Self::set_keys_encoded(parent, keys, encoded_data)
     }
 
     pub fn set_keys_encoded(parent: &BTreeNode, keys: Vec<Key>, encoded_data: Vec<Row>) -> Result<(), Status> {
-        if Self::is_large_node_mode(&parent.table_schema)? {
-            let blob = Self::read_node_blob(parent)?;
+        if PageManager::is_large_node_mode(&parent.table_schema)? {
+            let blob = PageManager::read_node_blob(parent)?;
             let (_, mut flag, _, mut children, _) =
-                Self::decode_node_blob(&parent.table_schema, &blob)?;
+                PageManager::decode_node_blob(&parent.table_schema, &blob)?;
             if children.len() > keys.len() + 1 {
                 children.truncate(keys.len() + 1);
             }
             if children.is_empty() {
                 Serializer::write_byte_at_position(&mut flag, 1, true);
             }
-            let new_blob = Self::encode_node_blob(
+            let new_blob = PageManager::encode_node_blob(
                 &parent.table_schema,
                 keys.len(),
                 flag,
@@ -1152,7 +1267,7 @@ impl PagerProxy {
                 &children,
                 &encoded_data,
             )?;
-            return Self::write_node_blob(parent, &new_blob);
+            return PageManager::write_node_blob(parent, &new_blob);
         }
 
         let mut page = parent
@@ -1183,11 +1298,9 @@ impl PagerProxy {
             )?;
         }
 
-        Self::update_node_external_flag(&mut page.data, parent, &encoded_data)?;
+        PageManager::update_node_external_flag(&mut page.data, parent, &encoded_data)?;
 
         parent.pager_accessor.access_page_write(parent, |d| {
-            d.free_space = PAGE_SIZE
-                - (parent.table_schema.get_key_and_row_length()? + NODE_METADATA_SIZE) * keys.len();
             d.data = page.data;
             Ok(())
         })?;
@@ -1198,12 +1311,12 @@ impl PagerProxy {
     pub fn get_key(index: usize, parent: &BTreeNode) -> Result<(Key, Row), Status> {
         let (key, data_encoded) = Self::get_key_encoded(index, parent)?;
 
-        let data = Self::decode_row_from_external_storage(parent, &data_encoded)?;
+        let data = PageManager::decode_row_from_external_storage(parent, &data_encoded)?;
         Ok((key, data))
     }
 
     pub fn get_key_encoded(index: usize, parent: &BTreeNode) -> Result<(Key, Row), Status> {
-        if Self::is_large_node_mode(&parent.table_schema)? {
+        if PageManager::is_large_node_mode(&parent.table_schema)? {
             let (keys, rows) = Self::get_keys_encoded(parent)?;
             if index >= keys.len() || index >= rows.len() {
                 return Err(Status::InternalExceptionIndexOutOfRange);
@@ -1225,12 +1338,12 @@ impl PagerProxy {
     }
 
     pub fn set_key(index: usize, parent: &BTreeNode, key: Key, data: Row) -> Result<(), Status> {
-        let encoded_data = Self::encode_row_for_external_storage(parent, &data)?.0;
+        let encoded_data = PageManager::encode_row_for_external_storage(parent, &data)?.0;
         Self::set_key_encoded(index, parent, key, encoded_data)
     }
 
     pub fn set_key_encoded(index: usize, parent: &BTreeNode, key: Key, encoded_data: Row) -> Result<(), Status> {
-        if Self::is_large_node_mode(&parent.table_schema)? {
+        if PageManager::is_large_node_mode(&parent.table_schema)? {
             let (mut keys, mut rows) = Self::get_keys_encoded(parent)?;
             if index >= keys.len() || index >= rows.len() {
                 return Err(Status::InternalExceptionIndexOutOfRange);
@@ -1264,14 +1377,14 @@ impl PagerProxy {
 
         let rows_now =
             Serializer::read_data_as_vec(&page.data, &parent.position, &parent.table_schema)?;
-        Self::update_node_external_flag(&mut page.data, parent, &rows_now)?;
+        PageManager::update_node_external_flag(&mut page.data, parent, &rows_now)?;
 
         parent.pager_accessor.access_page_write(parent, |d| {
             d.data = page.data;
             Ok(())
         })?;
 
-        Self::deprecate_removed_payload_chains(
+        PageManager::deprecate_removed_payload_chains(
             parent.pager_accessor.clone(),
             &parent.table_schema,
             &old_rows,
@@ -1323,7 +1436,7 @@ impl PagerProxy {
         keys: Vec<Key>,
         children: Vec<Position>,
     ) -> Result<(), Status> {
-        if Self::is_large_node_mode(&parent.table_schema)? {
+        if PageManager::is_large_node_mode(&parent.table_schema)? {
             let mut rows = Self::get_data_encoded(parent)?;
             if rows.len() > keys.len() {
                 rows.truncate(keys.len());
@@ -1335,7 +1448,7 @@ impl PagerProxy {
             if !children.is_empty() {
                 Serializer::write_byte_at_position(&mut flag, 1, false);
             }
-            let new_blob = Self::encode_node_blob(
+            let new_blob = PageManager::encode_node_blob(
                 &parent.table_schema,
                 keys.len(),
                 flag,
@@ -1343,7 +1456,7 @@ impl PagerProxy {
                 &children,
                 &rows,
             )?;
-            return Self::write_node_blob(parent, &new_blob);
+            return PageManager::write_node_blob(parent, &new_blob);
         }
 
         let mut page = parent
@@ -1362,8 +1475,6 @@ impl PagerProxy {
             &parent.table_schema,
         )?;
         parent.pager_accessor.access_page_write(parent, |d| {
-            d.free_space = PAGE_SIZE
-                - (parent.table_schema.get_key_and_row_length()? + NODE_METADATA_SIZE) * keys.len();
             d.data = page.data;
             Ok(())
         })?;
@@ -1375,15 +1486,15 @@ impl PagerProxy {
 
         let mut decoded = Vec::with_capacity(encoded.len());
         for row in encoded {
-            decoded.push(Self::decode_row_from_external_storage(node, &row)?);
+            decoded.push(PageManager::decode_row_from_external_storage(node, &row)?);
         }
         Ok(decoded)
     }
 
     pub fn get_data_encoded(node: &BTreeNode) -> Result<Vec<Row>, Status> {
-        if Self::is_large_node_mode(&node.table_schema)? {
-            let blob = Self::read_node_blob(node)?;
-            let (_, _, _, _, rows) = Self::decode_node_blob(&node.table_schema, &blob)?;
+        if PageManager::is_large_node_mode(&node.table_schema)? {
+            let blob = PageManager::read_node_blob(node)?;
+            let (_, _, _, _, rows) = PageManager::decode_node_blob(&node.table_schema, &blob)?;
             return Ok(rows);
         }
 
@@ -1395,20 +1506,20 @@ impl PagerProxy {
     pub fn set_data(node: &BTreeNode, data: Vec<Row>) -> Result<(), Status> {
         let mut encoded_data = Vec::with_capacity(data.len());
         for row in data.iter() {
-            encoded_data.push(Self::encode_row_for_external_storage(node, row)?.0);
+            encoded_data.push(PageManager::encode_row_for_external_storage(node, row)?.0);
         }
         Self::set_data_encoded(node, encoded_data)
     }
 
     pub fn set_data_encoded(node: &BTreeNode, encoded_data: Vec<Row>) -> Result<(), Status> {
-        if Self::is_large_node_mode(&node.table_schema)? {
-            let blob = Self::read_node_blob(node)?;
+        if PageManager::is_large_node_mode(&node.table_schema)? {
+            let blob = PageManager::read_node_blob(node)?;
             let (num_keys, flag, keys, children, old_rows) =
-                Self::decode_node_blob(&node.table_schema, &blob)?;
+                PageManager::decode_node_blob(&node.table_schema, &blob)?;
             if encoded_data.len() != num_keys as usize {
                 return Err(Status::InternalExceptionInvalidColCount);
             }
-            let new_blob = Self::encode_node_blob(
+            let new_blob = PageManager::encode_node_blob(
                 &node.table_schema,
                 num_keys as usize,
                 flag,
@@ -1416,8 +1527,8 @@ impl PagerProxy {
                 &children,
                 &encoded_data,
             )?;
-            Self::write_node_blob(node, &new_blob)?;
-            Self::deprecate_removed_payload_chains(
+            PageManager::write_node_blob(node, &new_blob)?;
+            PageManager::deprecate_removed_payload_chains(
                 node.pager_accessor.clone(),
                 &node.table_schema,
                 &old_rows,
@@ -1433,13 +1544,13 @@ impl PagerProxy {
             Serializer::read_data_as_vec(&page.data, &node.position, &node.table_schema)?;
 
         Serializer::write_data_by_vec(&mut page.data, &node.position, &encoded_data, &node.table_schema)?;
-        Self::update_node_external_flag(&mut page.data, node, &encoded_data)?;
+        PageManager::update_node_external_flag(&mut page.data, node, &encoded_data)?;
         node.pager_accessor.access_page_write(node, |d| {
             d.data = page.data;
             Ok(())
         })?;
 
-        Self::deprecate_removed_payload_chains(
+        PageManager::deprecate_removed_payload_chains(
             node.pager_accessor.clone(),
             &node.table_schema,
             &old_rows,

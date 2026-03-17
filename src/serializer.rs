@@ -1,15 +1,20 @@
 //also look at pager.rs for comments
 
 use crate::executor::Field;
+use crate::constants::{
+    PAYLOAD_CHUNK_LEN_OFFSET, PAYLOAD_FLAG_DEPRECATED, PAYLOAD_HEADER_FLAGS_OFFSET,
+    PAYLOAD_MAGIC, PAYLOAD_MAGIC_OFFSET, PAYLOAD_NEXT_PAGE_OFFSET, PAYLOAD_OWNER_ROOT_OFFSET,
+    FieldMeta, KeyMeta, NodeFlag, PageFlag
+};
 use crate::pager::{
-    BOOLEAN_SIZE, DATE_SIZE, FieldMeta, Flag, INTEGER_SIZE, Key, KeyMeta, NODE_METADATA_SIZE,
-    NULL_SIZE, NodeFlag, PAGE_SIZE, POSITION_SIZE, PageContainer, PageData, PageFlag, Position,
+    BOOLEAN_SIZE, DATE_SIZE, Flag, INTEGER_SIZE, Key, NODE_METADATA_SIZE,
+    NULL_SIZE, PAGE_SIZE, POSITION_SIZE, PageContainer, PageData, Position,
     Row, STRING_SIZE, Type,
 };
 use crate::planner::SqlStatementComparisonOperator;
 use crate::schema::TableSchema;
-use crate::status::Status;
-use crate::status::Status::{
+use crate::debug::Status;
+use crate::debug::Status::{
     InternalExceptionIndexOutOfRange, InternalExceptionInvalidColCount,
     InternalExceptionInvalidRowLength, InternalExceptionInvalidSchema,
     InternalExceptionKeyNotFound, InternalExceptionTypeMismatch,
@@ -24,6 +29,33 @@ use crate::status::Status::{
 pub struct Serializer {}
 
 impl Serializer {
+    pub fn format_condition_op(op: &SqlStatementComparisonOperator) -> &'static str {
+        match op {
+            SqlStatementComparisonOperator::None => "NONE",
+            SqlStatementComparisonOperator::Lesser => "<",
+            SqlStatementComparisonOperator::Greater => ">",
+            SqlStatementComparisonOperator::Equal => "=",
+            SqlStatementComparisonOperator::GreaterOrEqual => ">=",
+            SqlStatementComparisonOperator::LesserOrEqual => "<=",
+        }
+    }
+
+    pub fn format_value_preview(bytes: &[u8]) -> String {
+        if bytes.is_empty() {
+            return "[]".to_string();
+        }
+        let preview_len = bytes.len().min(12);
+        let mut s = bytes[..preview_len]
+            .iter()
+            .map(|b| format!("{:02X}", b))
+            .collect::<Vec<String>>()
+            .join(" ");
+        if bytes.len() > preview_len {
+            s.push_str(" …");
+        }
+        format!("[{}] ({} bytes)", s, bytes.len())
+    }
+
     fn node_size_for_num_keys(
         num_keys: usize,
         key_length: usize,
@@ -288,6 +320,65 @@ impl Serializer {
     ) -> Result<(), Status> {
         Self::write_byte_at_position(&mut page_container.flag, PageFlag::Deleted as u8, new_value);
         Ok(())
+    }
+
+    pub fn get_payload_next_page_index(page_data: &[u8; PAGE_SIZE]) -> usize {
+        u16::from_be_bytes([
+            page_data[PAYLOAD_NEXT_PAGE_OFFSET],
+            page_data[PAYLOAD_NEXT_PAGE_OFFSET + 1],
+        ]) as usize
+    }
+
+    pub fn set_payload_next_page_index(page_data: &mut [u8; PAGE_SIZE], next_page_index: usize) {
+        page_data[PAYLOAD_NEXT_PAGE_OFFSET..PAYLOAD_NEXT_PAGE_OFFSET + 2]
+            .copy_from_slice(&(next_page_index as u16).to_be_bytes());
+    }
+
+    pub fn get_payload_chunk_len(page_data: &[u8; PAGE_SIZE]) -> usize {
+        u16::from_be_bytes([
+            page_data[PAYLOAD_CHUNK_LEN_OFFSET],
+            page_data[PAYLOAD_CHUNK_LEN_OFFSET + 1],
+        ]) as usize
+    }
+
+    pub fn set_payload_chunk_len(page_data: &mut [u8; PAGE_SIZE], chunk_len: usize) {
+        page_data[PAYLOAD_CHUNK_LEN_OFFSET..PAYLOAD_CHUNK_LEN_OFFSET + 2]
+            .copy_from_slice(&(chunk_len as u16).to_be_bytes());
+    }
+
+    pub fn get_payload_owner_root_page(page_data: &[u8; PAGE_SIZE]) -> usize {
+        u16::from_be_bytes([
+            page_data[PAYLOAD_OWNER_ROOT_OFFSET],
+            page_data[PAYLOAD_OWNER_ROOT_OFFSET + 1],
+        ]) as usize
+    }
+
+    pub fn set_payload_owner_root_page(page_data: &mut [u8; PAGE_SIZE], owner_root_page: usize) {
+        page_data[PAYLOAD_OWNER_ROOT_OFFSET..PAYLOAD_OWNER_ROOT_OFFSET + 2]
+            .copy_from_slice(&(owner_root_page as u16).to_be_bytes());
+    }
+
+    pub fn has_payload_magic(page_data: &[u8; PAGE_SIZE]) -> bool {
+        page_data[PAYLOAD_MAGIC_OFFSET] == PAYLOAD_MAGIC
+    }
+
+    pub fn set_payload_magic(page_data: &mut [u8; PAGE_SIZE]) {
+        page_data[PAYLOAD_MAGIC_OFFSET] = PAYLOAD_MAGIC;
+    }
+
+    pub fn is_payload_page_deprecated(page_data: &[u8; PAGE_SIZE]) -> bool {
+        Self::byte_to_bool_at_position(
+            page_data[PAYLOAD_HEADER_FLAGS_OFFSET],
+            PAYLOAD_FLAG_DEPRECATED,
+        )
+    }
+
+    pub fn set_payload_page_deprecated(page_data: &mut [u8; PAGE_SIZE], deprecated: bool) {
+        Self::write_byte_at_position(
+            &mut page_data[PAYLOAD_HEADER_FLAGS_OFFSET],
+            PAYLOAD_FLAG_DEPRECATED,
+            deprecated,
+        );
     }
     pub fn has_external_data(
         page_data: &PageData,

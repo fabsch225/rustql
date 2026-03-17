@@ -1,6 +1,7 @@
 #![allow(warnings)]
 
 pub mod btree;
+pub mod constants;
 pub mod crypto;
 pub mod cursor;
 pub mod dataframe;
@@ -12,4 +13,4 @@ pub mod planner;
 pub mod schema;
 pub mod serializer;
 pub mod server;
-pub mod status;
+pub mod debug;

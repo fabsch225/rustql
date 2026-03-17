@@ -2,7 +2,7 @@ use crate::pager::{Key, PagerAccessor, Position, Row};
 use crate::pager_proxy::PagerProxy;
 use crate::schema::TableSchema;
 use crate::serializer::Serializer;
-use crate::status::Status;
+use crate::debug::Status;
 use std::fmt::Display;
 use std::fmt::{Debug, Formatter};
 
@@ -307,7 +307,7 @@ impl Btree {
             //TODO: should this be here? the BTree should call BTreeNode methods !?
             self.table_schema.clone(),
             y.pager_accessor.clone(),
-            None,//Some(x), //TODO the hint-functionality is wrong!!! (Also the Whole PagerProxy + Serializer..............)
+            None,//Some(x), //TODO the hint-functionality is wrong!!! 
             keys_and_rows.0,
             vec![],
             keys_and_rows.1,
@@ -498,60 +498,6 @@ impl Btree {
             child.push_child(sc)?;
         }
 
-        Ok(())
-    }
-}
-
-impl Display for Btree {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        if let Some(ref root) = self.root {
-            let mut queue = std::collections::VecDeque::new();
-            let schema = &self.table_schema;
-            queue.push_back(root.clone());
-
-            writeln!(f, "Btree Level-Order Traversal:")?;
-            while !queue.is_empty() {
-                let level_size = queue.len();
-                let mut level = Vec::new();
-
-                for _ in 0..level_size {
-                    if let Some(node) = queue.pop_front() {
-                        let keys = node.get_keys().unwrap();
-                        let children = node.get_children().unwrap();
-                        level.push((keys.0, keys.1, children.clone()));
-
-                        if !node.is_leaf() {
-                            for child in children {
-                                queue.push_back(child);
-                            }
-                        }
-                    }
-                }
-                for (keys, rows, children) in level {
-                    write!(f, "{{")?;
-                    for (key, row) in keys.iter().zip(rows.iter()) {
-                        write!(f, "[")?;
-                        if Serializer::is_tomb(key, &schema).unwrap() {
-                            write!(f, "X")?;
-                        }
-                        write!(f, "{}", Serializer::format_key(key, &schema).unwrap())?;
-                        write!(f, " :: ")?;
-                        write!(f, "{}", Serializer::format_row(row, &schema).unwrap())?;
-                        write!(f, "]")?;
-                    }
-                    write!(f, "[")?;
-                    for (child) in children {
-                        write!(f, "{:?}", child.position)?;
-                        write!(f, " , ")?;
-                    }
-                    write!(f, "]")?;
-                    write!(f, "}}")?;
-                }
-                writeln!(f, "")?;
-            }
-        } else {
-            writeln!(f, "Tree is empty")?;
-        }
         Ok(())
     }
 }

@@ -86,12 +86,20 @@ pub struct ParsedDeleteQuery {
 }
 
 #[derive(Debug)]
+pub struct ParsedUpdateQuery {
+    pub table_name: String,
+    pub assignments: Vec<(String, String)>,
+    pub conditions: Vec<(String, String, String)>,
+}
+
+#[derive(Debug)]
 pub enum ParsedQuery {
     CreateTable(ParsedCreateTableQuery),
     DropTable(ParsedDropQuery),
     Select(ParsedQueryTreeNode),
     Insert(ParsedInsertQuery),
     Delete(ParsedDeleteQuery),
+    Update(ParsedUpdateQuery),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -198,6 +206,7 @@ impl Parser {
             }
             "INSERT" => self.parse_insert(),
             "DELETE" => self.parse_delete(),
+            "UPDATE" => self.parse_update(),
             _ => Err(format!("Unknown statement type: {}", statement_type)),
         }
     }
@@ -463,6 +472,50 @@ impl Parser {
 
         Ok(ParsedQuery::Delete(ParsedDeleteQuery {
             table_name,
+            conditions,
+        }))
+    }
+
+    pub fn parse_update(&mut self) -> Result<ParsedQuery, String> {
+        let table_name = self
+            .lexer
+            .next_token()
+            .ok_or_else(|| "Expected table name".to_string())?;
+        self.expect_token("SET")?;
+
+        let mut assignments = Vec::new();
+        loop {
+            let field_name = self
+                .lexer
+                .next_token()
+                .ok_or_else(|| "Expected field name in SET clause".to_string())?;
+            self.expect_token("=")?;
+            let value = self
+                .lexer
+                .next_token()
+                .ok_or_else(|| "Expected value in SET clause".to_string())?;
+
+            assignments.push((field_name, value));
+
+            match self.peek_token().as_deref() {
+                Some(",") => {
+                    self.expect_token(",")?;
+                    continue;
+                }
+                _ => break,
+            }
+        }
+
+        if assignments.is_empty() {
+            return Err("Expected at least one assignment in SET clause".to_string());
+        }
+
+        let mut conditions = Vec::new();
+        self.parse_where_conditions(&mut conditions)?;
+
+        Ok(ParsedQuery::Update(ParsedUpdateQuery {
+            table_name,
+            assignments,
             conditions,
         }))
     }

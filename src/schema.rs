@@ -1,7 +1,7 @@
 use crate::pager::{Position, TableName, Type, NODE_METADATA_SIZE, PAGE_SIZE, POSITION_SIZE};
 use crate::parser::JoinOp;
 use crate::serializer::Serializer;
-use crate::status::Status;
+use crate::debug::Status;
 
 #[derive(Debug, Clone)]
 pub struct Field {
@@ -41,7 +41,7 @@ pub struct TableSchema {
     pub entry_count: i32,
     pub name: String,
     pub btree_order: usize,
-    /// (page_id, free_slots)
+    /// (page_id, free_space_bytes)
     pub free_list: Vec<(usize, usize)>,
 }
 
@@ -115,7 +115,7 @@ impl TableSchema {
     pub fn free_list_to_string(&self) -> String {
         self.free_list
             .iter()
-            .map(|(page, slots)| format!("{}:{}", page, slots))
+            .map(|(page, free_space)| format!("{}:{}", page, free_space))
             .collect::<Vec<String>>()
             .join(",")
     }
@@ -128,9 +128,9 @@ impl TableSchema {
                 continue;
             }
             if let Some((p, s)) = trimmed.split_once(':')
-                && let (Ok(page), Ok(slots)) = (p.parse::<usize>(), s.parse::<usize>())
+                && let (Ok(page), Ok(free_space)) = (p.parse::<usize>(), s.parse::<usize>())
             {
-                list.push((page, slots));
+                list.push((page, free_space));
             }
         }
         list

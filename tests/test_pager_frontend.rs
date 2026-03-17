@@ -2,9 +2,10 @@
 mod tests {
     use rustql::btree::BTreeNode;
     use rustql::pager::{Key, PagerAccessor, PagerCore, Position, Row, Type, PAGE_SIZE};
-    use rustql::pager_proxy::PagerProxy;
+    use rustql::pager_proxy::{PageManager, PagerProxy};
     use rustql::schema::{Field, TableSchema};
     use rustql::serializer::Serializer;
+    use std::collections::HashSet;
 
     fn get_schema() -> TableSchema {
         TableSchema {
@@ -233,11 +234,11 @@ mod tests {
         let pager_interface = PagerCore::init_from_file("./default.db.bin").unwrap();
         let payload = vec![42u8; PAGE_SIZE + 128];
 
-        let start = PagerProxy::write_payload_to_data_pages(pager_interface.clone(), &payload, 0)
+        let start = PageManager::write_payload_to_data_pages(pager_interface.clone(), &payload, 0)
             .unwrap();
         assert!(!start.is_empty());
 
-        let restored = PagerProxy::read_payload_from_pages(pager_interface.clone(), start.clone())
+        let restored = PageManager::read_payload_from_pages(pager_interface.clone(), start.clone())
             .unwrap();
         assert_eq!(restored, payload);
 
@@ -289,5 +290,63 @@ mod tests {
             <&[u8; 4]>::try_from(&raw_second[13..17]).expect("invalid pointer bytes"),
         );
         assert_eq!(first_ptr.page(), second_ptr.page());
+    }
+
+    #[test]
+    fn test_mark_unreferenced_payload_pages_as_deleted_marks_data_and_overflow() {
+        let pager_interface = PagerCore::init_from_file("./default.db.bin").unwrap();
+        let node = create_and_insert_mock_btree_node(1, pager_interface.clone());
+
+        // referenced chain (kept)
+        let referenced_long = Serializer::parse_string(&("R".repeat(64))).to_vec();
+        PagerProxy::set_data(&node, vec![referenced_long]).unwrap();
+        let raw_referenced = pager_interface
+            .access_page_read(&node, |pc| {
+                Serializer::read_data_by_index(0, &pc.data, &node.position, &node.table_schema)
+            })
+            .unwrap();
+        let referenced_head = Serializer::bytes_to_position(
+            <&[u8; 4]>::try_from(&raw_referenced[13..17]).expect("invalid pointer bytes"),
+        );
+
+        // orphan chain (to be deleted+deprecated), create with overflow page as well
+        let orphan_payload = vec![0xAB; PAGE_SIZE + 64];
+        let orphan_head =
+            PageManager::write_payload_to_data_pages(pager_interface.clone(), &orphan_payload, 0)
+                .unwrap();
+        let orphan_first = pager_interface
+            .access_pager_write(|p| p.access_page_read(&orphan_head))
+            .unwrap();
+        let orphan_next_page = u16::from_be_bytes([orphan_first.data[0], orphan_first.data[1]]) as usize;
+        assert!(orphan_next_page > 0);
+
+        let mut referenced_heads = HashSet::new();
+        referenced_heads.insert(referenced_head.page());
+
+        let marked = PageManager::mark_unreferenced_payload_pages_as_deleted(
+            pager_interface.clone(),
+            &referenced_heads,
+        )
+        .unwrap();
+        assert!(marked >= 2);
+
+        // orphan chain is now deprecated+deleted
+        assert!(
+            PageManager::read_payload_from_pages(pager_interface.clone(), orphan_head.clone())
+                .is_err()
+        );
+
+        let orphan_data_page = pager_interface
+            .access_pager_write(|p| p.access_page_read(&Position::new(orphan_head.page(), 0)))
+            .unwrap();
+        assert!(Serializer::is_deleted(&orphan_data_page).unwrap());
+
+        let orphan_overflow_page = pager_interface
+            .access_pager_write(|p| p.access_page_read(&Position::new(orphan_next_page, 0)))
+            .unwrap();
+        assert!(Serializer::is_deleted(&orphan_overflow_page).unwrap());
+
+        // referenced chain remains readable
+        assert!(PageManager::read_payload_from_pages(pager_interface.clone(), referenced_head).is_ok());
     }
 }

@@ -6,7 +6,7 @@ use crate::planner::SqlStatementComparisonOperator::{Equal, Greater, GreaterOrEq
 use crate::planner::{SqlConditionOpCode, SqlStatementComparisonOperator};
 use crate::schema::{Field, TableSchema};
 use crate::serializer::Serializer;
-use crate::status::Status;
+use crate::debug::Status;
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::fmt::{Display, Formatter};

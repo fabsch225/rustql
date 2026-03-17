@@ -1,6 +1,6 @@
 use crate::btree::{BTreeNode, Btree};
 use crate::pager::{Key, Position, Row};
-use crate::status::Status;
+use crate::debug::Status;
 
 #[derive(Debug, Clone)]
 pub struct BTreeCursor {

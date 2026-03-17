@@ -1,8 +1,13 @@
 use crate::btree::BTreeNode;
+pub use crate::constants::{
+    BOOLEAN_SIZE, DATE_SIZE, INTEGER_SIZE, INTEGER_SIZE_WITHOUT_FLAG, NODE_METADATA_SIZE,
+    NULL_SIZE, PAGES_START_AT, PAGE_SIZE, PAGE_SIZE_WITH_META, POSITION_SIZE, ROW_NAME_SIZE,
+    STRING_SIZE, TABLE_NAME_SIZE, TYPE_SIZE,
+};
 use crate::crypto::generate_random_hash;
 use crate::serializer::Serializer;
-use crate::status::Status;
-use crate::status::Status::{
+use crate::debug::Status;
+use crate::debug::Status::{
     InternalExceptionInvalidColCount, InternalExceptionInvalidSchema,
     InternalExceptionPagerMismatch, InternalSuccess,
 };
@@ -15,81 +20,6 @@ use std::io::{ErrorKind, Read, Seek, SeekFrom, Write};
 use std::os::unix::fs::FileExt;
 use std::sync::{Arc, RwLock};
 use std::{fmt, usize};
-
-//in bytes
-pub const PAGE_SIZE: usize = 4093; //PAGE_SIZE_WITH_META should be 4096
-pub const PAGE_SIZE_WITH_META: usize = PAGE_SIZE + 3; //<2 for free space on page>, <1 for flag>
-pub const NODE_METADATA_SIZE: usize = 2; //<number of keys> <flag> -- the number of keys is used to skip through the nodes on a page
-pub const STRING_SIZE: usize = 256; //len: 255
-pub const INTEGER_SIZE: usize = 5;
-pub const DATE_SIZE: usize = 5;
-pub const BOOLEAN_SIZE: usize = 1; //bit 8 is NULL-Flag
-pub const NULL_SIZE: usize = 1;
-pub const TYPE_SIZE: usize = 1;
-pub const POSITION_SIZE: usize = 4;
-pub const ROW_NAME_SIZE: usize = 16;
-pub const INTEGER_SIZE_WITHOUT_FLAG: usize = INTEGER_SIZE - 1;
-pub const TABLE_NAME_SIZE: usize = 32;
-
-// File Structure V2
-
-// 2 byte: next page index
-// [Pages {Free-Space, Flag, PAGE_SIZE}] fyi (0,0) is an invalid position. the cells officially start at 1
-//                     (of course, the location in the page starts at zero)
-
-// Currently, there are no overflow pages. On a page, there can exist a fixed number of rows
-// (they are assumed to have full length, although in practice they are still shifted around, because in the future there will be overflow pages)
-// so, we calculate free-space as PAGE_SIZE - (Number of Rows * Row Length), and create a new page if there is not enough space
-
-pub const PAGES_START_AT: usize = 2; //TODO: can we change this? Pages should start at 0!!!!!!!!!
-
-// Node Layout
-// - 8 Bits: Number of Keys (n)
-// - 8 Bits: Flag
-// - n Keys: Each key is the length of the ID type read earlier.
-// - n+1 Child/Page Pointers: Each pointer is [POSITION] bytes long.
-// - Next There is the Data, According to the Schema Definition
-
-// - so the size of a Node's Header (until the rows) is: n * (Number Of Keys) + (n + 1) * POSITION_SIZE
-
-// ## Each Flag is a Byte =>
-// Page-Flag Definition
-// - Bit 0: Indicates if the page is dirty (needs to be written to disk)
-// - Bit 2: Indicates if a page is deleted (marked for vacuum)
-// - Bit 4: Lock
-
-// Node-Flag Definition
-// - Bit 1: Indicates if the Btree Node is a Leaf
-
-// Key-Flag Definition
-// - Bit 0: Indicates if the Key is marked for deletion
-// (keys cannot be null)
-
-#[repr(u8)]
-pub enum PageFlag {
-    Dirty = 0,
-    Deleted = 2,
-    Lock = 4,
-    Data = 5,
-    Overflow = 6,
-}
-
-#[repr(u8)]
-pub enum NodeFlag {
-    Leaf = 1,
-    HasExternalData = 2,
-}
-
-#[repr(u8)]
-pub enum KeyMeta {
-    Tomb = 0,
-}
-
-#[repr(u8)]
-pub enum FieldMeta {
-    Null = 0,
-    External = 1,
-}
 
 #[derive(PartialEq, Clone)]
 pub enum Type {
@@ -140,7 +70,6 @@ pub type Key = Vec<u8>;
 
 pub type Flag = u8;
 
-//TODO if this throws errors if i change it, i must abstract every implementation :) not **every** implementation
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Position {
     page: usize,

@@ -469,4 +469,48 @@ mod tests {
         assert!(result.is_err());
         assert_eq!(result.unwrap_err(), "Expected table name");
     }
+
+    #[test]
+    fn test_parse_update_with_where() {
+        let query = "UPDATE users SET name = 'Jane', age = 31 WHERE id = 1".to_string();
+        let mut parser = Parser::new(query);
+        let result = parser.parse_query();
+
+        assert!(result.is_ok());
+        if let ParsedQuery::Update(update_query) = result.unwrap() {
+            assert_eq!(update_query.table_name, "users");
+            assert_eq!(
+                update_query.assignments,
+                vec![
+                    ("name".to_string(), "Jane".to_string()),
+                    ("age".to_string(), "31".to_string())
+                ]
+            );
+            assert_eq!(
+                update_query.conditions,
+                vec![("id".to_string(), "=".to_string(), "1".to_string())]
+            );
+        } else {
+            panic!("Expected UpdateQuery");
+        }
+    }
+
+    #[test]
+    fn test_parse_update_without_where() {
+        let query = "UPDATE users SET active = true".to_string();
+        let mut parser = Parser::new(query);
+        let result = parser.parse_query();
+
+        assert!(result.is_ok());
+        if let ParsedQuery::Update(update_query) = result.unwrap() {
+            assert_eq!(update_query.table_name, "users");
+            assert_eq!(
+                update_query.assignments,
+                vec![("active".to_string(), "true".to_string())]
+            );
+            assert!(update_query.conditions.is_empty());
+        } else {
+            panic!("Expected UpdateQuery");
+        }
+    }
 }

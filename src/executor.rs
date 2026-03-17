@@ -14,12 +14,13 @@ use crate::planner::SqlStatementComparisonOperator::{
 };
 use crate::planner::{
     CompiledCreateTableQuery, CompiledDeleteQuery, CompiledInsertQuery, CompiledQuery,
-    CompiledSelectQuery, PlanNode, Planner, SqlConditionOpCode, SqlStatementComparisonOperator,
+    CompiledSelectQuery, CompiledUpdateQuery, PlanNode, Planner, SqlConditionOpCode,
+    SqlStatementComparisonOperator,
 };
 pub(crate) use crate::schema::{Field, Schema, TableIndex, TableSchema};
 use crate::serializer::Serializer;
-use crate::status::Status;
-use crate::status::Status::ExceptionQueryMisformed;
+use crate::debug::Status;
+use crate::debug::Status::ExceptionQueryMisformed;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::fmt;
@@ -108,21 +109,13 @@ pub struct QueryExecutor {
 }
 
 impl QueryExecutor {
-    fn tree_order_for(schema: &TableSchema, fallback: usize) -> usize {
-        if schema.btree_order == 0 {
-            fallback
-        } else {
-            schema.btree_order
-        }
-    }
-
     fn encode_free_list_top_10(table: &TableSchema) -> String {
         let mut entries = table.free_list.clone();
         entries.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
         entries.truncate(10);
         entries
             .iter()
-            .map(|(page, slots)| format!("{}:{}", page, slots))
+            .map(|(page, free_space)| format!("{}:{}", page, free_space))
             .collect::<Vec<String>>()
             .join(",")
     }
@@ -171,65 +164,6 @@ impl QueryExecutor {
         bootstrap_executor
     }
 
-    pub fn debug_lite(&self, table: Option<&str>) {
-        if table.is_none() {
-            println!(
-                "System Table: {}",
-                Btree::init(
-                    Self::tree_order_for(&self.schema.tables[0], self.btree_node_width),
-                    self.pager_accessor.clone(),
-                    self.schema.tables[0].clone()
-                )
-                .unwrap()
-            );
-        } else {
-            let table_name = table.unwrap();
-            let table_id = Planner::find_table_id(&self.schema, table_name).unwrap();
-            let table_schema = self.schema.tables[table_id].clone();
-            let btree = Btree::init(
-                Self::tree_order_for(&table_schema, self.btree_node_width),
-                self.pager_accessor.clone(),
-                table_schema.clone(),
-            )
-            .unwrap();
-            println!("Table: {}", btree);
-        }
-    }
-
-    pub fn debug(&mut self, table: Option<&str>) {
-        if table.is_none() {
-            println!("Cached Schema: {:?}", self.schema);
-            println!(
-                "System Table: {}",
-                Btree::init(
-                    Self::tree_order_for(&self.schema.tables[0], self.btree_node_width),
-                    self.pager_accessor.clone(),
-                    self.schema.tables[0].clone()
-                )
-                .unwrap()
-            );
-        } else {
-            let table_name = table.unwrap();
-            let table_id = Planner::find_table_id(&self.schema, table_name).unwrap();
-            let table_schema = self.schema.tables[table_id].clone();
-            let btree = Btree::init(
-                Self::tree_order_for(&table_schema, self.btree_node_width),
-                self.pager_accessor.clone(),
-                table_schema.clone(),
-            )
-            .unwrap();
-            println!("Table: {}", btree);
-        }
-        println!(
-            "Checking Integrity... Is {}",
-            self.check_integrity().is_ok()
-        );
-        println!(
-            "System Table Data: \n {}",
-            self.prepare("SELECT * FROM rustsql_master".to_string())
-        );
-    }
-
     pub fn exit(&self) {
         self.pager_accessor
             .access_pager_write(|p| p.flush())
@@ -239,7 +173,7 @@ impl QueryExecutor {
     pub fn prepare(&mut self, query: String) -> QueryResult {
         self.request_counter += 1;
         self.last_write_table_id = None;
-        let result = self.execute_compiled_query(query, false);
+        let result = self.execute(query, false);
 
         // Keep free-lists fresh in memory, but do not rewrite the whole system table periodically.
         // Rewriting every 30 requests caused repeated re-encoding of long SQL strings
@@ -272,7 +206,7 @@ impl QueryExecutor {
         Ok(Planner::is_readonly_query(&compiled_query))
     }
 
-    fn compile_query(&self, query: &str) -> Result<CompiledQuery, QueryResult> {
+    pub fn compile_query(&self, query: &str) -> Result<CompiledQuery, QueryResult> {
         let mut parser = Parser::new(query.to_string());
         let parsed_query = parser
             .parse_query()
@@ -280,13 +214,13 @@ impl QueryExecutor {
         Planner::plan(&self.schema, parsed_query)
     }
 
-    fn execute_compiled_query(
+    fn execute(
         &mut self,
         query: String,
         allow_modification_to_system_table: bool,
     ) -> Result<QueryResult, QueryResult> {
         let compiled_query = self.compile_query(&query)?;
-        self.exec_compiled(
+        self.execute_compiled(
             compiled_query,
             query,
             allow_modification_to_system_table,
@@ -308,7 +242,7 @@ impl QueryExecutor {
         }
     }
 
-    fn exec_compiled(
+    fn execute_compiled(
         &mut self,
         compiled_query: CompiledQuery,
         query: String,
@@ -326,7 +260,12 @@ impl QueryExecutor {
                 }
 
                 let mut table_schema = q.schema.clone();
-                table_schema.btree_order = self.btree_node_width;
+
+                if table_schema.get_node_size_in_bytes().map_err(QueryResult::err)? > PAGE_SIZE {
+                    return Err(QueryResult::user_input_wrong(
+                        "Table schema is too wide to fit into a B-Tree page".to_string(),
+                    ));
+                }
 
                 let root_page = PagerProxy::create_empty_node_on_new_page(
                     &table_schema,
@@ -337,11 +276,12 @@ impl QueryExecutor {
                     return node.position.page();
                 })?;
 
-                let page_capacity = table_schema
-                    .max_nodes_per_page()
-                    .map_err(QueryResult::err)?;
-                let initial_free = page_capacity.saturating_sub(1);
-                table_schema.free_list = vec![(root_page, initial_free)];
+                let root_free_space = self
+                    .pager_accessor
+                    .access_pager_write(|p| p.access_page_read(&Position::new(root_page, 0)))
+                    .map_err(QueryResult::err)?
+                    .free_space;
+                table_schema.free_list = vec![(root_page, root_free_space)];
                 let free_list_encoded = Self::encode_free_list_top_10(&table_schema);
 
                 let insert_query = format!(
@@ -353,7 +293,7 @@ impl QueryExecutor {
                     query.replace("'", "''"),
                     free_list_encoded.replace("'", "''")
                 );
-                self.execute_compiled_query(insert_query, true)?;
+                self.execute(insert_query, true)?;
                 let result = self.reload_schema()?;
                 if !allow_modification_to_system_table {
                     let created_table_id = Planner::find_table_id(&self.schema, &q.table_name)?;
@@ -380,7 +320,7 @@ impl QueryExecutor {
                     schema.free_list.clear();
                 }
                 let mut btree = Btree::init(
-                    Self::tree_order_for(&schema, self.btree_node_width),
+                    schema.btree_order,
                     self.pager_accessor.clone(),
                     schema,
                 )
@@ -434,7 +374,7 @@ impl QueryExecutor {
                 }
 
                 let mut btree = Btree::init(
-                    Self::tree_order_for(&btree_schema, self.btree_node_width),
+                    btree_schema.btree_order,
                     self.pager_accessor.clone(),
                     btree_schema,
                 )
@@ -445,7 +385,86 @@ impl QueryExecutor {
                 }
                 Ok(QueryResult::went_fine())
             }
+            CompiledQuery::Update(q) => {
+                if !allow_modification_to_system_table && q.table_id == 0 {
+                    return Err(QueryResult::msg("You are not allowed to modify this table."));
+                }
+
+                self.execute_update(q, allow_modification_to_system_table)
+            }
         }
+    }
+
+    fn execute_update(
+        &mut self,
+        q: CompiledUpdateQuery,
+        allow_modification_to_system_table: bool,
+    ) -> Result<QueryResult, QueryResult> {
+        let schema = self.schema.tables[q.table_id].clone();
+        let key_len = Serializer::get_size_of_type(&schema.fields[schema.key_position].field_type)
+            .map_err(QueryResult::err)?;
+
+        let mut source = self
+            .create_scan_source(q.table_id, q.operation.clone(), q.conditions.clone())
+            .map_err(QueryResult::err)?;
+
+        let mut updates_to_apply: Vec<(Vec<u8>, Vec<u8>, Vec<u8>)> = Vec::new();
+
+        source.reset().map_err(QueryResult::err)?;
+        while let Some(row) = source.next().map_err(QueryResult::err)? {
+            let mut updated_fields = Vec::with_capacity(schema.fields.len());
+            for field_idx in 0..schema.fields.len() {
+                updated_fields.push(
+                    Serializer::get_field_on_row(&row, field_idx, &schema).map_err(QueryResult::err)?,
+                );
+            }
+
+            let original_key = updated_fields[schema.key_position].clone();
+
+            for (field_idx, new_value) in &q.assignments {
+                updated_fields[*field_idx] = new_value.clone();
+            }
+
+            let new_key = updated_fields[schema.key_position].clone();
+            if new_key.len() != key_len {
+                return Err(QueryResult::err(Status::InternalExceptionTypeMismatch));
+            }
+
+            let mut new_row = Vec::new();
+            for (idx, field_bytes) in updated_fields.into_iter().enumerate() {
+                if idx != schema.key_position {
+                    new_row.extend(field_bytes);
+                }
+            }
+
+            updates_to_apply.push((original_key, new_key, new_row));
+        }
+
+        let mut btree_schema = schema.clone();
+        if allow_modification_to_system_table && q.table_id == 0 {
+            btree_schema.free_list.clear();
+        }
+
+        let mut btree = Btree::init(
+            btree_schema.btree_order,
+            self.pager_accessor.clone(),
+            btree_schema,
+        )
+        .map_err(QueryResult::err)?;
+
+        for (original_key, _, _) in &updates_to_apply {
+            btree.delete(original_key.clone()).map_err(QueryResult::err)?;
+        }
+
+        for (_, new_key, new_row) in updates_to_apply {
+            btree.insert(new_key, new_row).map_err(QueryResult::err)?;
+        }
+
+        if !allow_modification_to_system_table {
+            self.last_write_table_id = Some(q.table_id);
+        }
+
+        Ok(QueryResult::went_fine())
     }
 
     fn exec_planned_tree(&self, plan: &PlanNode) -> Result<DataFrame, Status> {
@@ -458,7 +477,7 @@ impl QueryExecutor {
             } => {
                 let schema = self.schema.tables[*table_id].clone();
                 let btree = Btree::init(
-                    Self::tree_order_for(&schema, self.btree_node_width),
+                    schema.btree_order,
                     self.pager_accessor.clone(),
                     schema.clone(),
                 )?;
@@ -526,7 +545,7 @@ impl QueryExecutor {
                     JoinStrategy::Hash
                 };
 
-                println!(
+                /*println!(
                     "[JOIN] strategy={:?}, left_op={:?}, right_op={:?}, on={}.{}={}.{}",
                     strategy,
                     left_join_op,
@@ -535,7 +554,7 @@ impl QueryExecutor {
                     left_col.name,
                     right_col.table_name,
                     right_col.name
-                );
+                );*/
 
                 Ok(left_df.join(right_df, l_idx, r_idx, strategy)?)
             }
@@ -557,51 +576,12 @@ impl QueryExecutor {
     ) -> Result<BTreeScanSource, Status> {
         let schema = self.schema.tables[table_id].clone();
         let btree = Btree::init(
-            Self::tree_order_for(&schema, self.btree_node_width),
+            schema.btree_order,
             self.pager_accessor.clone(),
             schema.clone(),
         )?;
 
         Ok(BTreeScanSource::new(btree, schema, operation, conditions))
-    }
-
-    fn count_nodes_on_page(&self, schema: &TableSchema, page_data: &[u8; PAGE_SIZE]) -> Result<usize, Status> {
-        let mut effective_schema = schema.clone();
-        if effective_schema.btree_order == 0 {
-            effective_schema.btree_order = self.btree_node_width;
-        }
-
-        let has_varchar = schema
-            .fields
-            .iter()
-            .any(|f| matches!(f.field_type, Type::Varchar(_)));
-        if has_varchar && effective_schema.get_node_size_in_bytes()? > PAGE_SIZE {
-            return Ok(if page_data[0] == 0 && page_data[1] == 0 { 0 } else { 1 });
-        }
-
-        let mut count = 0usize;
-        let mut offset = 0usize;
-        let key_length = schema.get_key_length()?;
-        let row_length = schema.get_row_length()?;
-
-        while offset + 2 <= PAGE_SIZE {
-            let num_keys = page_data[offset] as usize;
-            let flag = page_data[offset + 1];
-
-            if num_keys == 0 && flag == 0 {
-                break;
-            }
-
-            let node_size = 2 + num_keys * (key_length + row_length) + (num_keys + 1) * 4;
-            if offset + node_size > PAGE_SIZE {
-                return Err(Status::InternalExceptionIndexOutOfRange);
-            }
-
-            count += 1;
-            offset += node_size;
-        }
-
-        Ok(count)
     }
 
     fn collect_btree_pages(&self, node: &crate::btree::BTreeNode, pages: &mut HashSet<usize>) -> Result<(), Status> {
@@ -620,7 +600,7 @@ impl QueryExecutor {
         }
         let table_schema = self.schema.tables[table_id].clone();
         let btree = Btree::init(
-            Self::tree_order_for(&table_schema, self.btree_node_width),
+            table_schema.btree_order,
             self.pager_accessor.clone(),
             table_schema.clone(),
         )?;
@@ -629,16 +609,13 @@ impl QueryExecutor {
         let mut pages = HashSet::new();
         self.collect_btree_pages(&root, &mut pages)?;
 
-        let capacity = table_schema.max_nodes_per_page()?;
         let mut free_list = Vec::new();
 
         for page in pages {
             let page_data = self
                 .pager_accessor
                 .access_pager_write(|p| p.access_page_read(&Position::new(page, 0)))?;
-            let used = self.count_nodes_on_page(&table_schema, &page_data.data)?;
-            let free = capacity.saturating_sub(used);
-            free_list.push((page, free));
+            free_list.push((page, page_data.free_space));
         }
 
         free_list.sort_by_key(|(page, _)| *page);
@@ -675,7 +652,7 @@ impl QueryExecutor {
     }
 
     fn persist_free_lists_to_system_table(&mut self) -> Result<(), QueryResult> {
-        self.execute_compiled_query(format!("DELETE FROM {}", MASTER_TABLE_NAME), true)?;
+        self.execute(format!("DELETE FROM {}", MASTER_TABLE_NAME), true)?;
 
         let tables_to_persist: Vec<TableSchema> = self.schema.tables.iter().skip(1).cloned().collect();
         for table in tables_to_persist {
@@ -689,7 +666,7 @@ impl QueryExecutor {
                 create_sql.replace("'", "''"),
                 Self::encode_free_list_top_10(&table).replace("'", "''")
             );
-            self.execute_compiled_query(insert_query, true)?;
+            self.execute(insert_query, true)?;
         }
 
         self.reload_schema()?;
@@ -713,7 +690,7 @@ impl QueryExecutor {
             create_sql.replace("'", "''"),
             Self::encode_free_list_top_10(&table).replace("'", "''")
         );
-        self.execute_compiled_query(insert_query, true)?;
+        self.execute(insert_query, true)?;
         Ok(())
     }
 
@@ -734,7 +711,7 @@ impl QueryExecutor {
                 create_sql.replace("'", "''"),
                 Self::encode_free_list_top_10(&table).replace("'", "''")
             );
-            self.execute_compiled_query(insert_query, true)?;
+            self.execute(insert_query, true)?;
         }
 
         Ok(())
@@ -742,7 +719,7 @@ impl QueryExecutor {
 
     pub fn check_integrity(&self) -> Result<(), Status> {
         let btree = Btree::init(
-            Self::tree_order_for(&self.schema.tables[0], self.btree_node_width),
+            self.schema.tables[0].btree_order,
             self.pager_accessor.clone(),
             self.schema.tables[0].clone(),
         )?;
