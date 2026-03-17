@@ -529,8 +529,8 @@ mod tests {
         let query = "SELECT users.id FROM users INNER JOIN orders2 ON users.name = orders2.user";
         assert_join_plan_ops(&exec, query, JoinOp::Index, JoinOp::Index);
 
-        assert_success(exec.prepare("DROP TABLE _users_name".into()));
-        assert_success(exec.prepare("DROP TABLE _orders2_user".into()));
+        assert_success(exec.prepare("DROP INDEX idx_users_name".into()));
+        assert_success(exec.prepare("DROP INDEX idx_orders2_user".into()));
 
         assert_join_plan_ops(&exec, query, JoinOp::Scan, JoinOp::Scan);
     }

@@ -807,7 +807,7 @@ mod tests {
         executor.prepare("INSERT INTO people (id, name) VALUES (1, 'Alice')".to_string());
         executor.prepare("INSERT INTO people (id, name) VALUES (2, 'Bob')".to_string());
 
-        let before_idx = executor.prepare("SELECT * FROM _people_name".to_string());
+        let before_idx = executor.prepare("SELECT * FROM idx_people_name".to_string());
         assert!(!before_idx.success);
 
         let create_idx = executor.prepare("CREATE INDEX idx_people_name ON people (name)".to_string());
@@ -817,14 +817,14 @@ mod tests {
             .prepare("CREATE TABLE _people_name (idx_value String, base_pk Integer)".to_string());
         assert!(!manual_index_table.success);
 
-        let index_read = executor.prepare("SELECT * FROM _people_name WHERE idx_value = 'Alice'".to_string());
+        let index_read = executor.prepare("SELECT * FROM idx_people_name WHERE idx_value = 'Alice'".to_string());
         assert!(index_read.success);
         assert_eq!(index_read.data.fetch().unwrap().len(), 1);
 
-        let drop_idx = executor.prepare("DROP TABLE _people_name".to_string());
+        let drop_idx = executor.prepare("DROP INDEX idx_people_name".to_string());
         assert!(drop_idx.success);
 
-        let after_idx = executor.prepare("SELECT * FROM _people_name".to_string());
+        let after_idx = executor.prepare("SELECT * FROM idx_people_name".to_string());
         assert!(!after_idx.success);
 
         let compiled = executor

@@ -72,6 +72,11 @@ pub struct ParsedDropQuery {
 }
 
 #[derive(Debug)]
+pub struct ParsedDropIndexQuery {
+    pub index_name: String,
+}
+
+#[derive(Debug)]
 pub struct ParsedCreateTableQuery {
     pub table_name: String,
     pub table_fields: Vec<String>,
@@ -104,6 +109,7 @@ pub enum ParsedQuery {
     CreateTable(ParsedCreateTableQuery),
     CreateIndex(ParsedCreateIndexQuery),
     DropTable(ParsedDropQuery),
+    DropIndex(ParsedDropIndexQuery),
     Select(ParsedQueryTreeNode),
     Insert(ParsedInsertQuery),
     Delete(ParsedDeleteQuery),
@@ -206,7 +212,7 @@ impl Parser {
             .ok_or_else(|| "Expected a query type".to_string())?;
         match statement_type.to_uppercase().as_str() {
             "CREATE" => self.parse_create(),
-            "DROP" => self.parse_drop_table(),
+            "DROP" => self.parse_drop(),
             "SELECT" => Ok(ParsedQuery::Select(self.parse_select()?)),
             "(" => {
                 self.expect_token("SELECT")?;
@@ -367,13 +373,31 @@ impl Parser {
         Ok(base_type)
     }
 
-    fn parse_drop_table(&mut self) -> Result<ParsedQuery, String> {
-        self.expect_token("TABLE")?;
-        let table_name = self
+    fn parse_drop(&mut self) -> Result<ParsedQuery, String> {
+        let object_type = self
             .lexer
             .next_token()
-            .ok_or_else(|| "Expected table name".to_string())?;
-        Ok(ParsedQuery::DropTable(ParsedDropQuery { table_name }))
+            .ok_or_else(|| "Expected object type after DROP".to_string())?;
+
+        match object_type.to_uppercase().as_str() {
+            "TABLE" => {
+                let table_name = self
+                    .lexer
+                    .next_token()
+                    .ok_or_else(|| "Expected table name".to_string())?;
+                Ok(ParsedQuery::DropTable(ParsedDropQuery { table_name }))
+            }
+            "INDEX" => {
+                let index_name = self
+                    .lexer
+                    .next_token()
+                    .ok_or_else(|| "Expected index name".to_string())?;
+                Ok(ParsedQuery::DropIndex(ParsedDropIndexQuery {
+                    index_name,
+                }))
+            }
+            _ => Err(format!("Expected 'TABLE' or 'INDEX', but found '{}'", object_type)),
+        }
     }
 
     fn parse_select(&mut self) -> Result<ParsedQueryTreeNode, String> {

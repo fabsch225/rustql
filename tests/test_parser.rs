@@ -98,6 +98,20 @@ mod tests {
     }
 
     #[test]
+    fn test_drop_index_valid() {
+        let query = "DROP INDEX idx_users_name";
+        let mut parser = Parser::new(query.to_string());
+        let result = parser.parse_query();
+        assert!(result.is_ok());
+
+        if let ParsedQuery::DropIndex(drop_query) = result.unwrap() {
+            assert_eq!(drop_query.index_name, "idx_users_name");
+        } else {
+            panic!("Expected DropIndex query");
+        }
+    }
+
+    #[test]
     fn test_select_with_conditions() {
         let query = "SELECT id, name FROM users WHERE id = 10 AND name = 'John'";
         let mut parser = Parser::new(query.to_string());

@@ -4,11 +4,11 @@ use crate::dataframe::{
     BTreeScanSource, DataFrame, JoinStrategy, MemorySource, RowSource, SetOpStrategy, Source,
 };
 use crate::pager::{
-    Key, PAGE_SIZE, PAGE_SIZE_WITH_META, PagerAccessor, PagerCore, Position, Row, TableName, Type,
+    Key, PAGE_SIZE, PAGE_SIZE_WITH_META, PageData, PagerAccessor, PagerCore, Position, Row, TableName, Type
 };
 use crate::pager_proxy::PagerProxy;
 use crate::parser::JoinType::Natural;
-use crate::parser::{JoinOp, JoinType, ParsedSetOperator, Parser};
+use crate::parser::{JoinOp, JoinType, ParsedQuery, ParsedSetOperator, Parser};
 use crate::planner::SqlStatementComparisonOperator::{
     Equal, Greater, GreaterOrEqual, Lesser, LesserOrEqual,
 };
@@ -17,7 +17,7 @@ use crate::planner::{
     CompiledSelectQuery, CompiledUpdateQuery, PlanNode, Planner, SqlConditionOpCode,
     SqlStatementComparisonOperator,
 };
-pub(crate) use crate::schema::{Field, Schema, TableIndex, TableSchema};
+pub(crate) use crate::schema::{Field, IndexDefinition, Schema, TableIndex, TableSchema};
 use crate::serializer::Serializer;
 use crate::debug::Status;
 use crate::debug::Status::ExceptionQueryMisformed;
@@ -154,6 +154,7 @@ impl QueryExecutor {
                     index: vec![TableName::from(MASTER_TABLE_NAME.to_string())],
                 },
                 tables: vec![Self::make_master_table_schema()],
+                index_definitions: vec![],
             },
             btree_node_width: t,
             request_counter: 0,
@@ -250,11 +251,9 @@ impl QueryExecutor {
     ) -> Result<QueryResult, QueryResult> {
         match compiled_query {
             CompiledQuery::CreateIndex(q) => {
-                let create_internal_table_sql = format!(
-                    "CREATE TABLE {} (idx_value {}, base_pk {})",
-                    q.schema.name,
-                    q.schema.fields[0].field_type.to_sql(),
-                    q.schema.fields[1].field_type.to_sql()
+                let create_index_sql = format!(
+                    "CREATE INDEX {} ON {} ({})",
+                    q.index_name, q.base_table_name, q.column_name
                 );
 
                 self.execute_compiled(
@@ -262,7 +261,7 @@ impl QueryExecutor {
                         table_name: q.schema.name.clone(),
                         schema: q.schema,
                     }),
-                    create_internal_table_sql,
+                    create_index_sql,
                     true,
                 )?;
 
@@ -274,7 +273,6 @@ impl QueryExecutor {
                 Ok(QueryResult::went_fine())
             }
             CompiledQuery::CreateTable(q) => {
-                let mut created_index_base_table: Option<String> = None;
                 if !allow_modification_to_system_table && q.table_name.starts_with('_') {
                     return Err(QueryResult::user_input_wrong(
                         "Manual index tables are not allowed. Use CREATE INDEX <name> ON <table> (<column>)"
@@ -325,12 +323,15 @@ impl QueryExecutor {
                     let created_table_id = Planner::find_table_id(&self.schema, &q.table_name)?;
                     self.last_write_table_id = Some(created_table_id);
                 }
-                if let Some(base_table_name) = created_index_base_table {
-                    let base_table_id = Planner::find_table_id(&self.schema, &base_table_name)?;
-                    self.rebuild_indices_for_table_id(base_table_id)?;
-                }
                 Ok(result)
             }
+            CompiledQuery::DropIndex(q) => self.execute_compiled(
+                CompiledQuery::DropTable(crate::planner::CompiledDropTableQuery {
+                    table_id: q.table_id,
+                }),
+                query,
+                allow_modification_to_system_table,
+            ),
             CompiledQuery::DropTable(q) => {
                 if !allow_modification_to_system_table && q.table_id == 0 {
                     return Err(QueryResult::msg("You are not allowed to modify this table."));
@@ -741,6 +742,16 @@ impl QueryExecutor {
         Some((base.to_string(), col.to_string()))
     }
 
+    fn find_index_table_id_for_base_column(&self, base_table: &str, column: &str) -> Option<usize> {
+        let index_name = self
+            .schema
+            .index_definitions
+            .iter()
+            .find(|idx| idx.base_table == base_table && idx.column_name == column)
+            .map(|idx| idx.index_name.clone())?;
+        Planner::find_table_id(&self.schema, &index_name).ok()
+    }
+
     fn should_index_field(field_type: &Type) -> bool {
         matches!(
             field_type,
@@ -770,10 +781,9 @@ impl QueryExecutor {
                 continue;
             }
 
-            let index_name = Self::index_table_name(&base.name, &field.name);
-            let index_table_id = match Planner::find_table_id(&self.schema, &index_name) {
-                Ok(id) => id,
-                Err(_) => continue,
+            let index_table_id = match self.find_index_table_id_for_base_column(&base.name, &field.name) {
+                Some(id) => id,
+                None => continue,
             };
 
             let index_schema = self.schema.tables[index_table_id].clone();
@@ -811,10 +821,9 @@ impl QueryExecutor {
                 continue;
             }
 
-            let index_name = Self::index_table_name(&base.name, &field.name);
-            let index_table_id = match Planner::find_table_id(&self.schema, &index_name) {
-                Ok(id) => id,
-                Err(_) => continue,
+            let index_table_id = match self.find_index_table_id_for_base_column(&base.name, &field.name) {
+                Some(id) => id,
+                None => continue,
             };
 
             let index_schema = self.schema.tables[index_table_id].clone();
@@ -845,7 +854,7 @@ impl QueryExecutor {
         Ok(())
     }
 
-    fn count_nodes_on_page(&self, schema: &TableSchema, page_data: &[u8; PAGE_SIZE]) -> Result<usize, Status> {
+    fn count_nodes_on_page(&self, schema: &TableSchema, page_data: PageData) -> Result<usize, Status> {
         let mut effective_schema = schema.clone();
         if effective_schema.btree_order == 0 {
             effective_schema.btree_order = self.btree_node_width;
@@ -927,7 +936,7 @@ impl QueryExecutor {
             let page_data = self
                 .pager_accessor
                 .access_pager_write(|p| p.access_page_read(&Position::new(page, 0)))?;
-            let used = self.count_nodes_on_page(&table_schema, &page_data.data)?;
+            let used = self.count_nodes_on_page(&table_schema, page_data.data)?;
             let free = capacity.saturating_sub(used);
             free_list.push((page, free));
         }
@@ -1103,7 +1112,9 @@ impl QueryExecutor {
                 index: vec![TableName::from(MASTER_TABLE_NAME)],
             },
             tables: vec![master_table_schema.clone()],
+            index_definitions: vec![],
         };
+        let mut pending_indices: Vec<(String, i32, String, crate::parser::ParsedCreateIndexQuery)> = vec![];
         let select_query = CompiledSelectQuery {
             plan: PlanNode::Project {
                 source: Box::new(PlanNode::SeqScan {
@@ -1162,12 +1173,20 @@ impl QueryExecutor {
             );
             let free_list_encoded = Serializer::format_field_on_row(entry, 4, &master_table_schema)
                 .expect("Failed to format field: free_list");
-            let mut parser = Parser::new(sql);
+            let mut parser = Parser::new(sql.clone());
             let parsed_query = parser.parse_query().expect("Failed to parse query");
-            let compiled_query = Planner::plan(&Schema::make_empty(), parsed_query)
-                .expect("Failed to compile query");
-            match compiled_query {
-                CompiledQuery::CreateTable(mut table) => {
+            match parsed_query {
+                ParsedQuery::CreateTable(create_table_query) => {
+                    let compiled_query = Planner::plan(
+                        &Schema::make_empty(),
+                        ParsedQuery::CreateTable(create_table_query),
+                    )
+                    .expect("Failed to compile query");
+
+                    let mut table = match compiled_query {
+                        CompiledQuery::CreateTable(table) => table,
+                        _ => panic!("in the system table expected compiled create table"),
+                    };
                     let strip_pos = name.iter().rposition(|&x| x != 0).expect("cant be empty");
                     let table_name = name[0..strip_pos + 1].to_vec();
                     table.schema.root = Position::new(rootpage as usize, 0);
@@ -1185,11 +1204,73 @@ impl QueryExecutor {
                         schema.tables.push(table.schema);
                     }
                 }
+                ParsedQuery::CreateIndex(idx) => {
+                    pending_indices.push((idx.index_name.clone(), rootpage, free_list_encoded, idx));
+                }
                 _ => {
-                    panic!("in the system table should only be create table queries")
+                    panic!("in the system table should only be create table or create index queries")
                 }
             }
         });
+
+        for (index_name, rootpage, free_list_encoded, idx) in pending_indices {
+            let base_table_id = Planner::find_table_id(&schema, &idx.table_name)
+                .expect("Base table not found while loading index");
+            let base_schema = &schema.tables[base_table_id];
+            let column_name = idx
+                .columns
+                .first()
+                .expect("Index should contain at least one column")
+                .clone();
+            let base_column = base_schema
+                .fields
+                .iter()
+                .find(|f| f.name == column_name)
+                .expect("Index column not found in base table");
+
+            let index_schema = TableSchema {
+                next_position: Position::make_empty(),
+                root: Position::new(rootpage as usize, 0),
+                has_key: true,
+                key_position: 0,
+                fields: vec![
+                    Field {
+                        field_type: base_column.field_type.clone(),
+                        name: "idx_value".to_string(),
+                        table_name: index_name.clone(),
+                    },
+                    Field {
+                        field_type: base_schema.fields[base_schema.key_position].field_type.clone(),
+                        name: "base_pk".to_string(),
+                        table_name: index_name.clone(),
+                    },
+                ],
+                table_type: 0,
+                entry_count: 0,
+                name: index_name.clone(),
+                btree_order: self.btree_node_width,
+                free_list: TableSchema::free_list_from_string(&free_list_encoded),
+            };
+
+            let table_name: TableName = index_name.as_bytes().to_vec();
+            if let Some(existing_idx) = schema
+                .table_index
+                .index
+                .iter()
+                .position(|t| t == &table_name)
+            {
+                schema.tables[existing_idx] = index_schema;
+            } else {
+                schema.table_index.index.push(table_name);
+                schema.tables.push(index_schema);
+            }
+
+            schema.index_definitions.push(IndexDefinition {
+                index_name,
+                base_table: idx.table_name,
+                column_name,
+            });
+        }
         schema
     }
 
@@ -1210,4 +1291,5 @@ impl QueryExecutor {
             }
         }
     }
+
 }

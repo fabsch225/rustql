@@ -265,6 +265,9 @@ impl Planner {
             CompiledQuery::DropTable(q) => {
                 format!("CompiledQuery::DropTable\n└─ table_id={}", q.table_id)
             }
+            CompiledQuery::DropIndex(q) => {
+                format!("CompiledQuery::DropIndex\n└─ table_id={}", q.table_id)
+            }
         }
     }
 }

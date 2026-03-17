@@ -14,6 +14,7 @@ pub struct Field {
 pub struct Schema {
     pub table_index: TableIndex,
     pub tables: Vec<TableSchema>,
+    pub index_definitions: Vec<IndexDefinition>,
 }
 
 impl Schema {
@@ -21,8 +22,16 @@ impl Schema {
         Schema {
             table_index: TableIndex { index: vec![] },
             tables: vec![],
+            index_definitions: vec![],
         }
     }
+}
+
+#[derive(Clone, Debug)]
+pub struct IndexDefinition {
+    pub index_name: String,
+    pub base_table: String,
+    pub column_name: String,
 }
 
 #[derive(Clone, Debug)]

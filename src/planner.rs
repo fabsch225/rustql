@@ -155,10 +155,16 @@ pub struct CompiledDropTableQuery {
 }
 
 #[derive(Debug)]
+pub struct CompiledDropIndexQuery {
+    pub table_id: usize,
+}
+
+#[derive(Debug)]
 pub enum CompiledQuery {
     CreateTable(CompiledCreateTableQuery),
     CreateIndex(CompiledCreateIndexQuery),
     DropTable(CompiledDropTableQuery),
+    DropIndex(CompiledDropIndexQuery),
     Select(CompiledSelectQuery),
     Insert(CompiledInsertQuery),
     Delete(CompiledDeleteQuery),
@@ -310,8 +316,7 @@ impl Planner {
                 }
 
                 let pk_type = table_schema.fields[table_schema.key_position].field_type.clone();
-                let index_table_name =
-                    Self::index_table_name(&create_index_query.table_name, &column_name);
+                let index_table_name = create_index_query.index_name.clone();
 
                 let index_schema = TableSchema {
                     root: Position::make_empty(),
@@ -349,6 +354,23 @@ impl Planner {
             ParsedQuery::DropTable(drop_table_query) => {
                 let table_id = Self::find_table_id(schema, &drop_table_query.table_name)?;
                 Ok(CompiledQuery::DropTable(CompiledDropTableQuery {
+                    table_id,
+                }))
+            }
+
+            ParsedQuery::DropIndex(drop_index_query) => {
+                let table_id = Self::find_table_id(schema, &drop_index_query.index_name)?;
+                let is_index = schema
+                    .index_definitions
+                    .iter()
+                    .any(|idx| idx.index_name == drop_index_query.index_name);
+                if !is_index {
+                    return Err(QueryResult::user_input_wrong(format!(
+                        "Index '{}' not found",
+                        drop_index_query.index_name
+                    )));
+                }
+                Ok(CompiledQuery::DropIndex(CompiledDropIndexQuery {
                     table_id,
                 }))
             }
@@ -1265,21 +1287,17 @@ impl Planner {
         }
     }
 
-    fn index_table_name(base_table: &str, column: &str) -> String {
-        format!("_{}_{}", base_table, column)
-    }
-
     fn find_index_table_id(
         schema: &Schema,
         base_table: &str,
         column: &str,
     ) -> Option<usize> {
-        let index_name = Self::index_table_name(base_table, column);
-        schema
-            .table_index
-            .index
+        let index_name = schema
+            .index_definitions
             .iter()
-            .position(|t| t == &TableName::from(index_name.as_str()))
+            .find(|idx| idx.base_table == base_table && idx.column_name == column)
+            .map(|idx| idx.index_name.clone())?;
+        schema.table_index.index.iter().position(|t| t == &TableName::from(index_name.as_str()))
     }
 }
 
