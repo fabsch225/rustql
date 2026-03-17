@@ -46,6 +46,33 @@ impl DataFrame {
         }
     }
 
+    pub fn from_index_lookup(
+        identifier: String,
+        header: Vec<Field>,
+        index_btree: Btree,
+        index_schema: TableSchema,
+        base_btree: Btree,
+        base_schema: TableSchema,
+        index_operation: SqlConditionOpCode,
+        index_conditions: Vec<(SqlStatementComparisonOperator, Vec<u8>)>,
+        base_conditions: Vec<(SqlStatementComparisonOperator, Vec<u8>)>,
+    ) -> DataFrame {
+        DataFrame {
+            identifier,
+            header,
+            row_source: Source::IndexLookup(IndexLookupSource::new(
+                index_btree,
+                index_schema,
+                base_btree,
+                base_schema,
+                index_operation,
+                index_conditions,
+                base_conditions,
+            )),
+            cursor_started: false,
+        }
+    }
+
     //TODO fix when there is a varchar--this is wrong, a string longer than 256 would be cut off
     pub fn msg(message: &str) -> DataFrame {
         DataFrame {
@@ -233,6 +260,7 @@ impl Display for DataFrame {
 pub enum Source {
     Memory(MemorySource),
     BTree(BTreeScanSource),
+    IndexLookup(IndexLookupSource),
     NestedLoopJoin(NestedLoopJoinSource),
     HashJoin(HashJoinSource),
     SortMergeJoin(SortMergeJoinSource),
@@ -251,6 +279,7 @@ impl RowSource for Source {
         match self {
             Source::Memory(s) => s.next(),
             Source::BTree(s) => s.next(),
+            Source::IndexLookup(s) => s.next(),
             Source::NestedLoopJoin(s) => s.next(),
             Source::HashJoin(s) => s.next(),
             Source::SortMergeJoin(s) => s.next(),
@@ -264,6 +293,7 @@ impl RowSource for Source {
         match self {
             Source::Memory(s) => s.reset(),
             Source::BTree(s) => s.reset(),
+            Source::IndexLookup(s) => s.reset(),
             Source::NestedLoopJoin(s) => s.reset(),
             Source::HashJoin(s) => s.reset(),
             Source::SortMergeJoin(s) => s.reset(),
@@ -530,6 +560,70 @@ impl BTreeScanSource {
             }
             _ => cursor.move_to_start(),
         }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct IndexLookupSource {
+    index_source: BTreeScanSource,
+    base_cursor: BTreeCursor,
+    base_schema: TableSchema,
+    base_conditions: Vec<(SqlStatementComparisonOperator, Vec<u8>)>,
+}
+
+impl IndexLookupSource {
+    pub fn new(
+        index_btree: Btree,
+        index_schema: TableSchema,
+        base_btree: Btree,
+        base_schema: TableSchema,
+        index_operation: SqlConditionOpCode,
+        index_conditions: Vec<(SqlStatementComparisonOperator, Vec<u8>)>,
+        base_conditions: Vec<(SqlStatementComparisonOperator, Vec<u8>)>,
+    ) -> Self {
+        Self {
+            index_source: BTreeScanSource::new(
+                index_btree,
+                index_schema,
+                index_operation,
+                index_conditions,
+            ),
+            base_cursor: BTreeCursor::new(base_btree),
+            base_schema,
+            base_conditions,
+        }
+    }
+}
+
+impl RowSource for IndexLookupSource {
+    fn next(&mut self) -> Result<Option<Vec<u8>>, Status> {
+        while let Some(index_row) = self.index_source.next()? {
+            let base_pk = Serializer::get_field_on_row(&index_row, 1, &self.index_source.schema)?;
+            self.base_cursor.go_to(&base_pk)?;
+            if !self.base_cursor.is_valid() {
+                continue;
+            }
+
+            if let Some((base_key, base_row_body)) = self.base_cursor.current()? {
+                let full_row =
+                    Serializer::reconstruct_row(&base_key, &base_row_body, &self.base_schema)?;
+                if Serializer::check_condition_on_bytes(
+                    &full_row,
+                    &self.base_conditions,
+                    &self.base_schema.fields,
+                )? {
+                    return Ok(Some(full_row));
+                }
+            }
+        }
+
+        Ok(None)
+    }
+
+    fn reset(&mut self) -> Result<(), Status> {
+        self.index_source.reset()?;
+        self.base_cursor.move_to_start()?;
+        Ok(())
     }
 }
 
