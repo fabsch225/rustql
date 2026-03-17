@@ -636,7 +636,7 @@ impl PageManager {
             page.data[0..blob.len()].copy_from_slice(blob);
             return node.pager_accessor.access_page_write(node, |d| {
                 d.data = page.data;
-                d.free_space = PAGE_SIZE.saturating_sub(blob.len());
+                Self::update_btree_page_free_space(d, &node.table_schema)?;
                 Ok(())
             });
         }
@@ -699,20 +699,37 @@ impl PageManager {
         Ok(count)
     }
 
-    fn apply_btree_page_free_space_delta(
-        page_container: &mut PageContainer,
-        used_bytes_delta: isize,
-    ) -> Result<(), Status> {
-        if used_bytes_delta >= 0 {
-            let delta = used_bytes_delta as usize;
-            if page_container.free_space < delta {
+    fn used_bytes_on_btree_page(
+        schema: &TableSchema,
+        page_data: &[u8; PAGE_SIZE],
+    ) -> Result<usize, Status> {
+        let mut offset = 0usize;
+
+        while offset + NODE_METADATA_SIZE <= PAGE_SIZE {
+            let num_keys = page_data[offset] as usize;
+            let flag = page_data[offset + 1];
+
+            if num_keys == 0 && flag == 0 {
+                break;
+            }
+
+            let node_size = Self::node_size_for_num_keys(schema, num_keys)?;
+            if offset + node_size > PAGE_SIZE {
                 return Err(Status::InternalExceptionIndexOutOfRange);
             }
-            page_container.free_space -= delta;
-        } else {
-            let delta = (-used_bytes_delta) as usize;
-            page_container.free_space = std::cmp::min(PAGE_SIZE, page_container.free_space + delta);
+
+            offset += node_size;
         }
+
+        Ok(offset)
+    }
+
+    fn update_btree_page_free_space(
+        page_container: &mut PageContainer,
+        schema: &TableSchema,
+    ) -> Result<(), Status> {
+        let used = Self::used_bytes_on_btree_page(schema, &page_container.data)?;
+        page_container.free_space = PAGE_SIZE.saturating_sub(used);
         Ok(())
     }
 
@@ -750,7 +767,7 @@ impl PagerProxy {
                 &mut pc.data,
                 &src_page,
             )?;
-            pc.free_space = PAGE_SIZE - table_schema.get_node_size_in_bytes()?;
+            PageManager::update_btree_page_free_space(pc, table_schema)?;
             Ok(())
         })
     }
@@ -774,7 +791,7 @@ impl PagerProxy {
                 &mut pc.data,
                 &src_page.data,
             )?;
-            pc.free_space = PAGE_SIZE - schema.get_node_size_in_bytes()?;
+            PageManager::update_btree_page_free_space(pc, schema)?;
             Ok(())
         })
     }
@@ -825,10 +842,7 @@ impl PagerProxy {
         pager_interface.access_page_write(&node, |d| {
             let node_offset = Serializer::find_position_offset(&d.data, &node.position, schema)?;
             d.data[node_offset + 1] = Serializer::create_node_flag(true);
-            PageManager::apply_btree_page_free_space_delta(
-                d,
-                schema.get_node_size_in_bytes()? as isize,
-            )?;
+            PageManager::update_btree_page_free_space(d, schema)?;
             Ok(())
         })?;
         Ok(node)
@@ -859,6 +873,7 @@ impl PagerProxy {
                     &mut p.data,
                     None,
                 )?;
+                PageManager::update_btree_page_free_space(p, schema)?;
                 Ok(())
             })?;
         } else {
@@ -872,8 +887,10 @@ impl PagerProxy {
                     &mut page1.data,
                     Some(&mut page2.data),
                 )?;
+                PageManager::update_btree_page_free_space(page2, schema)?;
                 let mut page1_write = p.access_page_write(&node1.position)?;
                 page1_write.data = page1.data;
+                PageManager::update_btree_page_free_space(page1_write, schema)?;
                 Ok(())
             })?;
         }
@@ -933,29 +950,21 @@ impl PagerProxy {
             return Ok(new_node);
         }
 
-        let required_node_bytes = schema.get_node_size_in_bytes()?;
         let page_capacity = schema.max_nodes_per_page()?;
 
         let mut chosen_position: Option<Position> = None;
-        for (page, advertised_free_bytes) in &schema.free_list {
-            if *advertised_free_bytes < required_node_bytes {
+        for (page, advertised_free_slots) in &schema.free_list {
+            if *advertised_free_slots == 0 {
                 continue;
             }
+            let used_slots = pager_interface
+                .access_pager_write(|p| p.access_page_read(&Position::new(*page, 0)))
+                .and_then(|pc| PageManager::count_nodes_on_page(&schema, &pc.data))?;
 
-            let page_container =
-                pager_interface.access_pager_write(|p| p.access_page_read(&Position::new(*page, 0)))?;
-            if page_container.free_space < required_node_bytes {
-                continue;
+            if used_slots < page_capacity {
+                chosen_position = Some(Position::new(*page, used_slots));
+                break;
             }
-
-            let used_slots = PageManager::count_nodes_on_page(&schema, &page_container.data)?;
-
-            if used_slots >= page_capacity {
-                continue;
-            }
-
-            chosen_position = Some(Position::new(*page, used_slots));
-            break;
         }
 
         let new_node = if let Some(position) = chosen_position {
@@ -1134,6 +1143,7 @@ impl PagerProxy {
 
         parent.pager_accessor.access_page_write(parent, |d| {
             d.data = page.data;
+            PageManager::update_btree_page_free_space(d, &parent.table_schema)?;
             Ok(())
         })
     }
@@ -1211,6 +1221,7 @@ impl PagerProxy {
 
         parent.pager_accessor.access_page_write(parent, |d| {
             d.data = page.data;
+            PageManager::update_btree_page_free_space(d, &parent.table_schema)?;
             Ok(())
         })
     }
@@ -1302,6 +1313,7 @@ impl PagerProxy {
 
         parent.pager_accessor.access_page_write(parent, |d| {
             d.data = page.data;
+            PageManager::update_btree_page_free_space(d, &parent.table_schema)?;
             Ok(())
         })?;
 
@@ -1381,6 +1393,7 @@ impl PagerProxy {
 
         parent.pager_accessor.access_page_write(parent, |d| {
             d.data = page.data;
+            PageManager::update_btree_page_free_space(d, &parent.table_schema)?;
             Ok(())
         })?;
 
@@ -1476,6 +1489,7 @@ impl PagerProxy {
         )?;
         parent.pager_accessor.access_page_write(parent, |d| {
             d.data = page.data;
+            PageManager::update_btree_page_free_space(d, &parent.table_schema)?;
             Ok(())
         })?;
         Ok(())
@@ -1547,6 +1561,7 @@ impl PagerProxy {
         PageManager::update_node_external_flag(&mut page.data, node, &encoded_data)?;
         node.pager_accessor.access_page_write(node, |d| {
             d.data = page.data;
+            PageManager::update_btree_page_free_space(d, &node.table_schema)?;
             Ok(())
         })?;
 

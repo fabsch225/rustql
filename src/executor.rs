@@ -115,7 +115,7 @@ impl QueryExecutor {
         entries.truncate(10);
         entries
             .iter()
-            .map(|(page, free_space)| format!("{}:{}", page, free_space))
+            .map(|(page, slots)| format!("{}:{}", page, slots))
             .collect::<Vec<String>>()
             .join(",")
     }
@@ -260,12 +260,7 @@ impl QueryExecutor {
                 }
 
                 let mut table_schema = q.schema.clone();
-
-                if table_schema.get_node_size_in_bytes().map_err(QueryResult::err)? > PAGE_SIZE {
-                    return Err(QueryResult::user_input_wrong(
-                        "Table schema is too wide to fit into a B-Tree page".to_string(),
-                    ));
-                }
+                table_schema.btree_order = self.btree_node_width;
 
                 let root_page = PagerProxy::create_empty_node_on_new_page(
                     &table_schema,
@@ -276,12 +271,11 @@ impl QueryExecutor {
                     return node.position.page();
                 })?;
 
-                let root_free_space = self
-                    .pager_accessor
-                    .access_pager_write(|p| p.access_page_read(&Position::new(root_page, 0)))
-                    .map_err(QueryResult::err)?
-                    .free_space;
-                table_schema.free_list = vec![(root_page, root_free_space)];
+                let page_capacity = table_schema
+                    .max_nodes_per_page()
+                    .map_err(QueryResult::err)?;
+                let initial_free = page_capacity.saturating_sub(1);
+                table_schema.free_list = vec![(root_page, initial_free)];
                 let free_list_encoded = Self::encode_free_list_top_10(&table_schema);
 
                 let insert_query = format!(
@@ -584,6 +578,45 @@ impl QueryExecutor {
         Ok(BTreeScanSource::new(btree, schema, operation, conditions))
     }
 
+    fn count_nodes_on_page(&self, schema: &TableSchema, page_data: &[u8; PAGE_SIZE]) -> Result<usize, Status> {
+        let mut effective_schema = schema.clone();
+        if effective_schema.btree_order == 0 {
+            effective_schema.btree_order = self.btree_node_width;
+        }
+
+        let has_varchar = schema
+            .fields
+            .iter()
+            .any(|f| matches!(f.field_type, Type::Varchar(_)));
+        if has_varchar && effective_schema.get_node_size_in_bytes()? > PAGE_SIZE {
+            return Ok(if page_data[0] == 0 && page_data[1] == 0 { 0 } else { 1 });
+        }
+
+        let mut count = 0usize;
+        let mut offset = 0usize;
+        let key_length = schema.get_key_length()?;
+        let row_length = schema.get_row_length()?;
+
+        while offset + 2 <= PAGE_SIZE {
+            let num_keys = page_data[offset] as usize;
+            let flag = page_data[offset + 1];
+
+            if num_keys == 0 && flag == 0 {
+                break;
+            }
+
+            let node_size = 2 + num_keys * (key_length + row_length) + (num_keys + 1) * 4;
+            if offset + node_size > PAGE_SIZE {
+                return Err(Status::InternalExceptionIndexOutOfRange);
+            }
+
+            count += 1;
+            offset += node_size;
+        }
+
+        Ok(count)
+    }
+
     fn collect_btree_pages(&self, node: &crate::btree::BTreeNode, pages: &mut HashSet<usize>) -> Result<(), Status> {
         if !pages.insert(node.position.page()) {
             return Ok(());
@@ -609,13 +642,16 @@ impl QueryExecutor {
         let mut pages = HashSet::new();
         self.collect_btree_pages(&root, &mut pages)?;
 
+        let capacity = table_schema.max_nodes_per_page()?;
         let mut free_list = Vec::new();
 
         for page in pages {
             let page_data = self
                 .pager_accessor
                 .access_pager_write(|p| p.access_page_read(&Position::new(page, 0)))?;
-            free_list.push((page, page_data.free_space));
+            let used = self.count_nodes_on_page(&table_schema, &page_data.data)?;
+            let free = capacity.saturating_sub(used);
+            free_list.push((page, free));
         }
 
         free_list.sort_by_key(|(page, _)| *page);

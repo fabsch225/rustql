@@ -41,7 +41,7 @@ pub struct TableSchema {
     pub entry_count: i32,
     pub name: String,
     pub btree_order: usize,
-    /// (page_id, free_space_bytes)
+    /// (page_id, free_slots)
     pub free_list: Vec<(usize, usize)>,
 }
 
@@ -115,7 +115,7 @@ impl TableSchema {
     pub fn free_list_to_string(&self) -> String {
         self.free_list
             .iter()
-            .map(|(page, free_space)| format!("{}:{}", page, free_space))
+            .map(|(page, slots)| format!("{}:{}", page, slots))
             .collect::<Vec<String>>()
             .join(",")
     }
@@ -128,9 +128,9 @@ impl TableSchema {
                 continue;
             }
             if let Some((p, s)) = trimmed.split_once(':')
-                && let (Ok(page), Ok(free_space)) = (p.parse::<usize>(), s.parse::<usize>())
+                && let (Ok(page), Ok(slots)) = (p.parse::<usize>(), s.parse::<usize>())
             {
-                list.push((page, free_space));
+                list.push((page, slots));
             }
         }
         list
