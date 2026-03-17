@@ -1,9 +1,5 @@
 package com.rustql.jdbc;
 
-import javax.sql.RowSetMetaData;
-import javax.sql.rowset.CachedRowSet;
-import javax.sql.rowset.RowSetMetaDataImpl;
-import javax.sql.rowset.RowSetProvider;
 import java.sql.Connection;
 import java.sql.ResultSet;
 import java.sql.ResultSetMetaData;
@@ -12,6 +8,11 @@ import java.sql.SQLFeatureNotSupportedException;
 import java.sql.SQLWarning;
 import java.sql.Statement;
 import java.util.List;
+
+import javax.sql.RowSetMetaData;
+import javax.sql.rowset.CachedRowSet;
+import javax.sql.rowset.RowSetMetaDataImpl;
+import javax.sql.rowset.RowSetProvider;
 
 final class RustqlStatement implements Statement {
     private static final int DEFAULT_FETCH_SIZE = 256;
@@ -29,13 +30,7 @@ final class RustqlStatement implements Statement {
     @Override
     public ResultSet executeQuery(String sql) throws SQLException {
         ensureOpen();
-        RustqlProtocol.QueryResponse response = RustqlProtocol.execute(
-            connection.host(),
-            connection.port(),
-            connection.timeoutMs(),
-            sql,
-            fetchSize
-        );
+        RustqlProtocol.QueryResponse response = connection.execute(sql, fetchSize);
 
         if (response.status != 0) {
             throw new SQLException(response.message);

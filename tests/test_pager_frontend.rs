@@ -349,4 +349,56 @@ mod tests {
         // referenced chain remains readable
         assert!(PageManager::read_payload_from_pages(pager_interface.clone(), referenced_head).is_ok());
     }
+
+    #[test]
+    fn test_multiple_transactions_allocate_unique_page_ids() {
+        let pager_interface = PagerCore::init_from_file("./default.db.bin").unwrap();
+
+        let tx1 = pager_interface.begin_transaction_with_id().unwrap();
+        let tx2 = pager_interface.begin_transaction_with_id().unwrap();
+
+        pager_interface.set_current_transaction(Some(tx1)).unwrap();
+        let tx1_page_a = pager_interface.access_pager_write(|p| p.create_page()).unwrap();
+        let tx1_page_b = pager_interface.access_pager_write(|p| p.create_page()).unwrap();
+
+        pager_interface.set_current_transaction(Some(tx2)).unwrap();
+        let tx2_page_a = pager_interface.access_pager_write(|p| p.create_page()).unwrap();
+        let tx2_page_b = pager_interface.access_pager_write(|p| p.create_page()).unwrap();
+
+        assert_ne!(tx1_page_a, tx1_page_b);
+        assert_ne!(tx2_page_a, tx2_page_b);
+        assert_ne!(tx1_page_a, tx2_page_a);
+        assert_ne!(tx1_page_a, tx2_page_b);
+        assert_ne!(tx1_page_b, tx2_page_a);
+        assert_ne!(tx1_page_b, tx2_page_b);
+
+        pager_interface.rollback_transaction_by_id(tx1).unwrap();
+        pager_interface.rollback_transaction_by_id(tx2).unwrap();
+        pager_interface.set_current_transaction(None).unwrap();
+    }
+
+    #[test]
+    fn test_table_locks_allow_disjoint_transactions_and_block_overlap() {
+        let pager_interface = PagerCore::init_from_file("./default.db.bin").unwrap();
+
+        let tx1 = pager_interface.begin_transaction_with_id().unwrap();
+        let tx2 = pager_interface.begin_transaction_with_id().unwrap();
+
+        assert!(pager_interface
+            .lock_table_for_transaction_id(tx1, "users")
+            .is_ok());
+        assert!(pager_interface
+            .lock_table_for_transaction_id(tx2, "orders")
+            .is_ok());
+
+        let overlap = pager_interface.lock_table_for_transaction_id(tx2, "users");
+        assert!(overlap.is_err());
+
+        pager_interface.rollback_transaction_by_id(tx1).unwrap();
+        assert!(pager_interface
+            .lock_table_for_transaction_id(tx2, "users")
+            .is_ok());
+
+        pager_interface.rollback_transaction_by_id(tx2).unwrap();
+    }
 }

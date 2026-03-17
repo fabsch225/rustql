@@ -2,7 +2,7 @@ use crate::btree::Btree;
 use crate::dataframe::DataFrame;
 use crate::executor::{QueryExecutor, QueryResult};
 use crate::pager::Position;
-use crate::planner::{CompiledQuery, PlanNode, Planner};
+use crate::planner::{CompiledQuery, CompiledTransactionStatement, PlanNode, Planner};
 use crate::serializer::Serializer;
 use std::cmp::PartialEq;
 use std::fmt::{Debug, Display, Formatter};
@@ -46,6 +46,9 @@ pub enum Status {
     InternalExceptionFileAlreadyExists,
     InternalExceptionFileOpenFailed,
     ExceptionTableAlreadyExists,
+    ExceptionTransactionAlreadyActive,
+    ExceptionNoActiveTransaction,
+    ExceptionTableLocked,
     InternalExceptionDBCreationFailed,
     DataFrameJoinError,
     NotImplemented,
@@ -267,6 +270,14 @@ impl Planner {
             }
             CompiledQuery::DropIndex(q) => {
                 format!("CompiledQuery::DropIndex\n└─ table_id={}", q.table_id)
+            }
+            CompiledQuery::Transaction(tx) => {
+                let action = match tx {
+                    CompiledTransactionStatement::Begin => "BEGIN",
+                    CompiledTransactionStatement::Commit => "COMMIT",
+                    CompiledTransactionStatement::Rollback => "ROLLBACK",
+                };
+                format!("CompiledQuery::Transaction\n└─ {}", action)
             }
         }
     }

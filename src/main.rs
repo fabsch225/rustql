@@ -83,6 +83,9 @@ fn main() {
     for i in 10..=60 {
         exec.prepare(format!("INSERT INTO D VALUES ({}, {})", i, i * 5));
     }
+
+    exec.prepare("CREATE INDEX idx_a_v ON A (v)".into());
+    exec.prepare("CREATE INDEX idx_Lg_age ON Lg (age)".into());
    
     let query = r#"
         SELECT A.id FROM (SELECT A.id FROM A INNER JOIN D ON D.id = A.id UNION SELECT B.id FROM B WHERE B.v > 5) INTERSECT (SELECT C.id FROM C INNER JOIN Lg ON Lg.age = C.id)

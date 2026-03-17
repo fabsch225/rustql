@@ -77,6 +77,61 @@ mod tests {
     }
 
     #[test]
+    fn test_transaction_commit_persists_changes() {
+        let mut executor = QueryExecutor::init("./default.db.bin", BTREE_NODE_SIZE);
+        assert!(executor
+            .prepare("CREATE TABLE test (id Integer, name String)".to_string())
+            .success);
+
+        assert!(executor.prepare("BEGIN TRANSACTION".to_string()).success);
+        assert!(executor
+            .prepare("INSERT INTO test (id, name) VALUES (1, 'Alice')".to_string())
+            .success);
+
+        let in_tx = executor.prepare("SELECT * FROM test".to_string());
+        assert!(in_tx.success);
+        assert_eq!(in_tx.data.fetch().unwrap().len(), 1);
+
+        assert!(executor.prepare("COMMIT".to_string()).success);
+
+        let after_commit = executor.prepare("SELECT * FROM test".to_string());
+        assert!(after_commit.success);
+        assert_eq!(after_commit.data.fetch().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn test_transaction_rollback_discards_changes() {
+        let mut executor = QueryExecutor::init("./default.db.bin", BTREE_NODE_SIZE);
+        assert!(executor
+            .prepare("CREATE TABLE test (id Integer, name String)".to_string())
+            .success);
+
+        assert!(executor.prepare("BEGIN TRANSACTION".to_string()).success);
+        assert!(executor
+            .prepare("INSERT INTO test (id, name) VALUES (1, 'Alice')".to_string())
+            .success);
+
+        let in_tx = executor.prepare("SELECT * FROM test".to_string());
+        assert!(in_tx.success);
+        assert_eq!(in_tx.data.fetch().unwrap().len(), 1);
+
+        assert!(executor.prepare("ROLLBACK".to_string()).success);
+
+        let after_rollback = executor.prepare("SELECT * FROM test".to_string());
+        assert!(after_rollback.success);
+        assert_eq!(after_rollback.data.fetch().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn test_begin_transaction_while_active_fails() {
+        let mut executor = QueryExecutor::init("./default.db.bin", BTREE_NODE_SIZE);
+        assert!(executor.prepare("BEGIN TRANSACTION".to_string()).success);
+        let second = executor.prepare("BEGIN TRANSACTION".to_string());
+        assert!(!second.success);
+        assert!(executor.prepare("ROLLBACK".to_string()).success);
+    }
+
+    #[test]
     fn test_select_all() {
         let mut executor = QueryExecutor::init("./default.db.bin", BTREE_NODE_SIZE);
         executor.prepare("CREATE TABLE test (id Integer, name String)".to_string());

@@ -2,7 +2,7 @@ use crate::executor::{Field, QueryResult};
 use crate::pager::{Key, Position, Row, TableName, Type};
 use crate::parser::{
     JoinOp, JoinType, ParsedJoinCondition, ParsedQuery, ParsedQueryTreeNode, ParsedSetOperator,
-    ParsedSource, ParsedUpdateQuery,
+    ParsedSource, ParsedTransactionStatement, ParsedUpdateQuery,
 };
 use crate::schema::{Schema, TableSchema};
 use crate::serializer::Serializer;
@@ -169,6 +169,14 @@ pub enum CompiledQuery {
     Insert(CompiledInsertQuery),
     Delete(CompiledDeleteQuery),
     Update(CompiledUpdateQuery),
+    Transaction(CompiledTransactionStatement),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum CompiledTransactionStatement {
+    Begin,
+    Commit,
+    Rollback,
 }
 
 impl Planner {
@@ -411,6 +419,17 @@ impl Planner {
                     conditions,
                     assignments,
                 }))
+            }
+
+            ParsedQuery::Transaction(tx) => {
+                let compiled = match tx {
+                    ParsedTransactionStatement::Begin => CompiledTransactionStatement::Begin,
+                    ParsedTransactionStatement::Commit => CompiledTransactionStatement::Commit,
+                    ParsedTransactionStatement::Rollback => {
+                        CompiledTransactionStatement::Rollback
+                    }
+                };
+                Ok(CompiledQuery::Transaction(compiled))
             }
         }
     }

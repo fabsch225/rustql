@@ -112,6 +112,42 @@ mod tests {
     }
 
     #[test]
+    fn test_begin_transaction_valid() {
+        let query = "BEGIN TRANSACTION";
+        let mut parser = Parser::new(query.to_string());
+        let result = parser.parse_query();
+        assert!(result.is_ok());
+        match result.unwrap() {
+            ParsedQuery::Transaction(_) => {}
+            _ => panic!("Expected Transaction query"),
+        }
+    }
+
+    #[test]
+    fn test_commit_valid() {
+        let query = "COMMIT";
+        let mut parser = Parser::new(query.to_string());
+        let result = parser.parse_query();
+        assert!(result.is_ok());
+        match result.unwrap() {
+            ParsedQuery::Transaction(_) => {}
+            _ => panic!("Expected Transaction query"),
+        }
+    }
+
+    #[test]
+    fn test_rollback_valid() {
+        let query = "ROLLBACK";
+        let mut parser = Parser::new(query.to_string());
+        let result = parser.parse_query();
+        assert!(result.is_ok());
+        match result.unwrap() {
+            ParsedQuery::Transaction(_) => {}
+            _ => panic!("Expected Transaction query"),
+        }
+    }
+
+    #[test]
     fn test_select_with_conditions() {
         let query = "SELECT id, name FROM users WHERE id = 10 AND name = 'John'";
         let mut parser = Parser::new(query.to_string());

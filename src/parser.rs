@@ -114,6 +114,14 @@ pub enum ParsedQuery {
     Insert(ParsedInsertQuery),
     Delete(ParsedDeleteQuery),
     Update(ParsedUpdateQuery),
+    Transaction(ParsedTransactionStatement),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum ParsedTransactionStatement {
+    Begin,
+    Commit,
+    Rollback,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -221,8 +229,34 @@ impl Parser {
             "INSERT" => self.parse_insert(),
             "DELETE" => self.parse_delete(),
             "UPDATE" => self.parse_update(),
+            "BEGIN" => self.parse_begin_transaction(),
+            "COMMIT" => self.parse_commit_transaction(),
+            "ROLLBACK" => self.parse_rollback_transaction(),
             _ => Err(format!("Unknown statement type: {}", statement_type)),
         }
+    }
+
+    fn parse_begin_transaction(&mut self) -> Result<ParsedQuery, String> {
+        self.expect_token("TRANSACTION")?;
+        Ok(ParsedQuery::Transaction(ParsedTransactionStatement::Begin))
+    }
+
+    fn parse_commit_transaction(&mut self) -> Result<ParsedQuery, String> {
+        if let Some(token) = self.peek_token()
+            && token.to_uppercase() == "TRANSACTION"
+        {
+            self.expect_token("TRANSACTION")?;
+        }
+        Ok(ParsedQuery::Transaction(ParsedTransactionStatement::Commit))
+    }
+
+    fn parse_rollback_transaction(&mut self) -> Result<ParsedQuery, String> {
+        if let Some(token) = self.peek_token()
+            && token.to_uppercase() == "TRANSACTION"
+        {
+            self.expect_token("TRANSACTION")?;
+        }
+        Ok(ParsedQuery::Transaction(ParsedTransactionStatement::Rollback))
     }
 
     fn parse_create(&mut self) -> Result<ParsedQuery, String> {

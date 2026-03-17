@@ -2,6 +2,7 @@ package com.rustql.jdbc;
 
 import java.io.BufferedInputStream;
 import java.io.BufferedOutputStream;
+import java.io.Closeable;
 import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.io.EOFException;
@@ -30,20 +31,48 @@ final class RustqlProtocol {
     private RustqlProtocol() {
     }
 
-    static QueryResponse execute(String host, int port, int timeoutMs, String sql, int fetchSize) throws SQLException {
-        try (Socket socket = new Socket()) {
-            socket.connect(new InetSocketAddress(host, port), timeoutMs);
-            socket.setSoTimeout(timeoutMs);
-
-            DataOutputStream out = new DataOutputStream(new BufferedOutputStream(socket.getOutputStream()));
-            DataInputStream in = new DataInputStream(new BufferedInputStream(socket.getInputStream()));
-
-            writeRequest(out, sql, fetchSize);
-            out.flush();
-
-            return readResponse(in);
+    static Session openSession(String host, int port, int timeoutMs) throws SQLException {
+        try {
+            return new Session(host, port, timeoutMs);
         } catch (IOException e) {
             throw new SQLException("RustQL network error", e);
+        }
+    }
+
+    static QueryResponse execute(String host, int port, int timeoutMs, String sql, int fetchSize) throws SQLException {
+        try (Session session = openSession(host, port, timeoutMs)) {
+            return session.execute(sql, fetchSize);
+        } catch (IOException e) {
+            throw new SQLException("RustQL network error", e);
+        }
+    }
+
+    static final class Session implements Closeable {
+        private final Socket socket;
+        private final DataOutputStream out;
+        private final DataInputStream in;
+
+        Session(String host, int port, int timeoutMs) throws IOException {
+            this.socket = new Socket();
+            this.socket.connect(new InetSocketAddress(host, port), timeoutMs);
+            this.socket.setSoTimeout(timeoutMs);
+            this.out = new DataOutputStream(new BufferedOutputStream(socket.getOutputStream()));
+            this.in = new DataInputStream(new BufferedInputStream(socket.getInputStream()));
+        }
+
+        QueryResponse execute(String sql, int fetchSize) throws SQLException {
+            try {
+                writeRequest(out, sql, fetchSize);
+                out.flush();
+                return readResponse(in);
+            } catch (IOException e) {
+                throw new SQLException("RustQL network error", e);
+            }
+        }
+
+        @Override
+        public void close() throws IOException {
+            socket.close();
         }
     }
 

@@ -1,5 +1,6 @@
 package com.rustql.jdbc;
 
+import java.io.IOException;
 import java.sql.Array;
 import java.sql.Blob;
 import java.sql.CallableStatement;
@@ -26,6 +27,7 @@ final class RustqlConnection implements Connection {
     private final int port;
     private final int timeoutMs;
     private boolean closed;
+    private RustqlProtocol.Session session;
 
     RustqlConnection(String host, int port, int timeoutMs) {
         this.host = host;
@@ -53,6 +55,13 @@ final class RustqlConnection implements Connection {
 
     @Override
     public void close() {
+        if (session != null) {
+            try {
+                session.close();
+            } catch (IOException ignored) {
+            }
+            session = null;
+        }
         closed = true;
     }
 
@@ -65,6 +74,14 @@ final class RustqlConnection implements Connection {
         if (closed) {
             throw new SQLException("Connection is closed");
         }
+    }
+
+    synchronized RustqlProtocol.QueryResponse execute(String sql, int fetchSize) throws SQLException {
+        ensureOpen();
+        if (session == null) {
+            session = RustqlProtocol.openSession(host, port, timeoutMs);
+        }
+        return session.execute(sql, fetchSize);
     }
 
     @Override

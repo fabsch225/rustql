@@ -14,7 +14,7 @@ use crate::planner::SqlStatementComparisonOperator::{
 };
 use crate::planner::{
     CompiledCreateIndexQuery, CompiledCreateTableQuery, CompiledDeleteQuery, CompiledInsertQuery, CompiledQuery,
-    CompiledSelectQuery, CompiledUpdateQuery, PlanNode, Planner, SqlConditionOpCode,
+    CompiledSelectQuery, CompiledTransactionStatement, CompiledUpdateQuery, PlanNode, Planner, SqlConditionOpCode,
     SqlStatementComparisonOperator,
 };
 pub(crate) use crate::schema::{Field, IndexDefinition, Schema, TableIndex, TableSchema};
@@ -250,7 +250,35 @@ impl QueryExecutor {
         allow_modification_to_system_table: bool,
     ) -> Result<QueryResult, QueryResult> {
         match compiled_query {
+            CompiledQuery::Transaction(tx) => {
+                match tx {
+                    CompiledTransactionStatement::Begin => {
+                        self.pager_accessor
+                            .begin_transaction()
+                            .map_err(QueryResult::err)?;
+                        Ok(QueryResult::went_fine())
+                    }
+                    CompiledTransactionStatement::Commit => {
+                        self.pager_accessor
+                            .commit_transaction()
+                            .map_err(QueryResult::err)?;
+                        self.reload_schema()
+                    }
+                    CompiledTransactionStatement::Rollback => {
+                        self.pager_accessor
+                            .rollback_transaction()
+                            .map_err(QueryResult::err)?;
+                        self.reload_schema()
+                    }
+                }
+            }
             CompiledQuery::CreateIndex(q) => {
+                if !allow_modification_to_system_table {
+                    self.lock_table_if_needed(MASTER_TABLE_NAME)?;
+                    self.lock_table_if_needed(&q.base_table_name)?;
+                    self.lock_table_if_needed(&q.index_name)?;
+                }
+
                 let create_index_sql = format!(
                     "CREATE INDEX {} ON {} ({})",
                     q.index_name, q.base_table_name, q.column_name
@@ -273,6 +301,11 @@ impl QueryExecutor {
                 Ok(QueryResult::went_fine())
             }
             CompiledQuery::CreateTable(q) => {
+                if !allow_modification_to_system_table {
+                    self.lock_table_if_needed(MASTER_TABLE_NAME)?;
+                    self.lock_table_if_needed(&q.table_name)?;
+                }
+
                 if !allow_modification_to_system_table && q.table_name.starts_with('_') {
                     return Err(QueryResult::user_input_wrong(
                         "Manual index tables are not allowed. Use CREATE INDEX <name> ON <table> (<column>)"
@@ -341,6 +374,12 @@ impl QueryExecutor {
                     return Err(QueryResult::user_input_wrong("Table not found".to_string()));
                 }
 
+                if !allow_modification_to_system_table {
+                    self.lock_table_if_needed(MASTER_TABLE_NAME)?;
+                    let dropped_name = self.schema.tables[q.table_id].name.clone();
+                    self.lock_table_if_needed(&dropped_name)?;
+                }
+
                 let dropped_table = self.schema.tables[q.table_id].clone();
                 let dropped_btree = Btree::init(
                     dropped_table.btree_order,
@@ -382,6 +421,11 @@ impl QueryExecutor {
                     return Err(QueryResult::msg("You are not allowed to modify this table."));
                 }
 
+                if !allow_modification_to_system_table {
+                    let table_name = self.schema.tables[q.table_id].name.clone();
+                    self.lock_table_if_needed(&table_name)?;
+                }
+
                 let mut schema = self.schema.tables[q.table_id].clone();
                 if allow_modification_to_system_table && q.table_id == 0 {
                     schema.free_list.clear();
@@ -405,6 +449,11 @@ impl QueryExecutor {
             CompiledQuery::Delete(q) => {
                 if !allow_modification_to_system_table && q.table_id == 0 {
                     return Err(QueryResult::msg("You are not allowed to modify this table."));
+                }
+
+                if !allow_modification_to_system_table {
+                    let table_name = self.schema.tables[q.table_id].name.clone();
+                    self.lock_table_if_needed(&table_name)?;
                 }
 
                 let mut source = self
@@ -462,6 +511,11 @@ impl QueryExecutor {
                     return Err(QueryResult::msg("You are not allowed to modify this table."));
                 }
 
+                if !allow_modification_to_system_table {
+                    let table_name = self.schema.tables[q.table_id].name.clone();
+                    self.lock_table_if_needed(&table_name)?;
+                }
+
                 let table_id = q.table_id;
                 let result = self.execute_update(q, allow_modification_to_system_table)?;
                 if !allow_modification_to_system_table {
@@ -470,6 +524,12 @@ impl QueryExecutor {
                 Ok(result)
             }
         }
+    }
+
+    fn lock_table_if_needed(&self, table_name: &str) -> Result<(), QueryResult> {
+        self.pager_accessor
+            .lock_table_for_transaction(table_name)
+            .map_err(QueryResult::err)
     }
 
     fn execute_update(
@@ -686,7 +746,7 @@ impl QueryExecutor {
                     JoinStrategy::Hash
                 };
 
-                /*println!(
+                println!(
                     "[JOIN] strategy={:?}, left_op={:?}, right_op={:?}, on={}.{}={}.{}",
                     strategy,
                     left_join_op,
@@ -695,7 +755,7 @@ impl QueryExecutor {
                     left_col.name,
                     right_col.table_name,
                     right_col.name
-                );*/
+                );
 
                 Ok(left_df.join(right_df, l_idx, r_idx, strategy)?)
             }
@@ -954,67 +1014,12 @@ impl QueryExecutor {
         }
     }
 
-    fn schema_to_create_sql(schema: &TableSchema) -> String {
-        let fields = schema
-            .fields
-            .iter()
-            .map(|f| format!("{} {}", f.name, f.field_type.to_sql()))
-            .collect::<Vec<String>>()
-            .join(", ");
-        format!("CREATE TABLE {} ({})", schema.name, fields)
-    }
-
     fn persist_free_lists_to_system_table(&mut self) -> Result<(), QueryResult> {
         let tables_to_persist: Vec<TableSchema> = self.schema.tables.iter().skip(1).cloned().collect();
         for table in tables_to_persist {
-            let create_sql = Self::schema_to_create_sql(&table);
             let update_query = format!(
-                "UPDATE {} SET type = '{}', rootpage = {}, sql = '{}', free_list = '{}' WHERE name = '{}'",
+                "UPDATE {} SET free_list = '{}' WHERE name = '{}'",
                 MASTER_TABLE_NAME,
-                "table",
-                table.root.page(),
-                create_sql.replace("'", "''"),
-                Self::encode_free_list_top_10(&table).replace("'", "''"),
-                table.name.replace("'", "''")
-            );
-            self.execute(update_query, true)?;
-        }
-
-        self.reload_schema()?;
-        Ok(())
-    }
-
-    fn persist_table_free_list_to_system_table(&mut self, table_id: usize) -> Result<(), QueryResult> {
-        if table_id == 0 || table_id >= self.schema.tables.len() {
-            return Ok(());
-        }
-
-        let table = self.schema.tables[table_id].clone();
-        let create_sql = Self::schema_to_create_sql(&table);
-
-        let update_query = format!(
-            "UPDATE {} SET type = '{}', rootpage = {}, sql = '{}', free_list = '{}' WHERE name = '{}'",
-            MASTER_TABLE_NAME,
-            "table",
-            table.root.page(),
-            create_sql.replace("'", "''"),
-            Self::encode_free_list_top_10(&table).replace("'", "''"),
-            table.name.replace("'", "''")
-        );
-        self.execute(update_query, true)?;
-        Ok(())
-    }
-
-    fn persist_free_lists_snapshot_to_system_table(&mut self) -> Result<(), QueryResult> {
-        let tables_to_persist: Vec<TableSchema> = self.schema.tables.iter().skip(1).cloned().collect();
-        for table in tables_to_persist {
-            let create_sql = Self::schema_to_create_sql(&table);
-            let update_query = format!(
-                "UPDATE {} SET type = '{}', rootpage = {}, sql = '{}', free_list = '{}' WHERE name = '{}'",
-                MASTER_TABLE_NAME,
-                "table",
-                table.root.page(),
-                create_sql.replace("'", "''"),
                 Self::encode_free_list_top_10(&table).replace("'", "''"),
                 table.name.replace("'", "''")
             );
