@@ -267,8 +267,9 @@ impl QueryExecutor {
                 )?;
 
                 self.reload_schema()?;
-                self.rebuild_indices_for_table_id(q.table_id)?;
-                self.last_write_table_id = Some(q.table_id);
+                let base_table_id = Planner::find_table_id(&self.schema, &q.base_table_name)?;
+                self.rebuild_indices_for_table_id(base_table_id)?;
+                self.last_write_table_id = Some(base_table_id);
 
                 Ok(QueryResult::went_fine())
             }
@@ -279,58 +280,6 @@ impl QueryExecutor {
                         "Manual index tables are not allowed. Use CREATE INDEX <name> ON <table> (<column>)"
                             .to_string(),
                     ));
-                }
-
-                if allow_modification_to_system_table && q.table_name.starts_with('_') {
-                    let (base_table_name, index_column_name) =
-                        Self::parse_index_table_name(&q.table_name).ok_or_else(|| {
-                            QueryResult::user_input_wrong(
-                                "Index table name must match '_<table>_<column>'".to_string(),
-                            )
-                        })?;
-
-                    let base_table_id = Planner::find_table_id(&self.schema, &base_table_name)?;
-                    let base_schema = &self.schema.tables[base_table_id];
-
-                    let base_column_field = base_schema
-                        .fields
-                        .iter()
-                        .find(|f| {
-                            f.table_name == base_table_name && f.name == index_column_name
-                        })
-                        .ok_or_else(|| {
-                            QueryResult::user_input_wrong(format!(
-                                "Column '{}.{}' not found for index table",
-                                base_table_name, index_column_name
-                            ))
-                        })?;
-
-                    if q.schema.fields.len() != 2 {
-                        return Err(QueryResult::user_input_wrong(
-                            "Index table must have exactly two columns: idx_value, base_pk"
-                                .to_string(),
-                        ));
-                    }
-
-                    let expected_pk_type = &base_schema.fields[base_schema.key_position].field_type;
-                    let idx_value_type = &q.schema.fields[0].field_type;
-                    let base_pk_type = &q.schema.fields[1].field_type;
-
-                    if idx_value_type != &base_column_field.field_type {
-                        return Err(QueryResult::user_input_wrong(format!(
-                            "Index key type mismatch: expected {:?}, found {:?}",
-                            base_column_field.field_type, idx_value_type
-                        )));
-                    }
-
-                    if base_pk_type != expected_pk_type {
-                        return Err(QueryResult::user_input_wrong(format!(
-                            "Index base_pk type mismatch: expected {:?}, found {:?}",
-                            expected_pk_type, base_pk_type
-                        )));
-                    }
-
-                    created_index_base_table = Some(base_table_name);
                 }
 
                 //check if the table already exists
@@ -1050,15 +999,23 @@ impl QueryExecutor {
     }
 
     fn persist_free_lists_snapshot_to_system_table(&mut self) -> Result<(), QueryResult> {
+        let master_schema = self.schema.tables[0].clone();
+        PagerProxy::clear_table_root(&master_schema, self.pager_accessor.clone())
+            .map_err(QueryResult::err)?;
+
         let tables_to_persist: Vec<TableSchema> = self.schema.tables.iter().skip(1).cloned().collect();
         for table in tables_to_persist {
-            let update_query = format!(
-                "UPDATE {} SET free_list = '{}' WHERE name = '{}'",
+            let create_sql = Self::schema_to_create_sql(&table);
+            let insert_query = format!(
+                "INSERT INTO {} (name, type, rootpage, sql, free_list) VALUES ('{}', '{}', {}, '{}', '{}')",
                 MASTER_TABLE_NAME,
-                Self::encode_free_list_top_10(&table).replace("'", "''"),
-                table.name.replace("'", "''")
+                table.name.replace("'", "''"),
+                "table",
+                table.root.page(),
+                create_sql.replace("'", "''"),
+                Self::encode_free_list_top_10(&table).replace("'", "''")
             );
-            self.execute(update_query, true)?;
+            self.execute(insert_query, true)?;
         }
 
         Ok(())
