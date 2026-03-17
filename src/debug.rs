@@ -122,10 +122,12 @@ impl Planner {
                 table_name,
                 operation,
                 conditions,
+                index_table_id,
+                index_on_column,
             } => {
                 out.push_str(&format!(
-                    "{}{} SeqScan table='{}' id={} op={:?}\n",
-                    prefix, branch, table_name, table_id, operation
+                    "{}{} SeqScan table='{}' id={} op={:?} index_table_id={:?} index_col={:?}\n",
+                    prefix, branch, table_name, table_id, operation, index_table_id, index_on_column
                 ));
                 if conditions.is_empty() {
                     out.push_str(&format!("{}  conditions: []\n", next_prefix));
@@ -252,6 +254,13 @@ impl Planner {
                 "CompiledQuery::CreateTable\n└─ table='{}' fields={}",
                 q.table_name,
                 q.schema.fields.len()
+            ),
+            CompiledQuery::CreateIndex(q) => format!(
+                "CompiledQuery::CreateIndex\n└─ index='{}' base='{}' column='{}' table='{}'",
+                q.index_name,
+                q.base_table_name,
+                q.column_name,
+                q.schema.name
             ),
             CompiledQuery::DropTable(q) => {
                 format!("CompiledQuery::DropTable\n└─ table_id={}", q.table_id)

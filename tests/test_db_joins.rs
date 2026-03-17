@@ -1,5 +1,8 @@
 mod tests {
     use rustql::executor::{QueryExecutor, QueryResult};
+    use rustql::parser::JoinOp;
+    use rustql::planner::{CompiledQuery, PlanNode};
+    use std::collections::HashSet;
     use std::fs;
     use std::ops::{Deref, DerefMut};
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -34,11 +37,15 @@ mod tests {
     }
 
     fn setup_executor() -> TestExecutor {
+        setup_executor_with_order(BTREE_NODE_SIZE)
+    }
+
+    fn setup_executor_with_order(btree_node_size: usize) -> TestExecutor {
         let idx = DB_COUNTER.fetch_add(1, Ordering::Relaxed);
         let path = format!("./default.db.joins.{}.{}.bin", std::process::id(), idx);
         let _ = fs::remove_file(&path);
         TestExecutor {
-            inner: QueryExecutor::init(&path, BTREE_NODE_SIZE),
+            inner: QueryExecutor::init(&path, btree_node_size),
             db_path: path,
         }
     }
@@ -57,6 +64,35 @@ mod tests {
             expected,
             "Row count mismatch"
         );
+    }
+
+    fn assert_join_plan_ops(exec: &TestExecutor, query: &str, expected_left: JoinOp, expected_right: JoinOp) {
+        let compiled = exec.compile_query(query).unwrap();
+
+        fn find_join(plan: &PlanNode) -> Option<(&JoinOp, &JoinOp)> {
+            match plan {
+                PlanNode::Join {
+                    left_join_op,
+                    right_join_op,
+                    ..
+                } => Some((left_join_op, right_join_op)),
+                PlanNode::Project { source, .. } => find_join(source),
+                PlanNode::Filter { source, .. } => find_join(source),
+                PlanNode::SetOperation { left, right, .. } => {
+                    find_join(left).or_else(|| find_join(right))
+                }
+                _ => None,
+            }
+        }
+
+        match compiled {
+            CompiledQuery::Select(select) => {
+                let (left_op, right_op) = find_join(&select.plan).expect("expected join in plan");
+                assert_eq!(*left_op, expected_left);
+                assert_eq!(*right_op, expected_right);
+            }
+            _ => panic!("expected compiled select"),
+        }
     }
 
     #[test]
@@ -342,6 +378,231 @@ mod tests {
         let result = exec.prepare(query.into());
 
         assert_row_count(result, 3);
+    }
+
+    #[test]
+    fn test_join_plan_marks_index_ops_when_available() {
+        let mut exec = setup_executor();
+
+        assert_success(exec.prepare("CREATE TABLE users (id Integer, name String)".into()));
+        assert_success(exec.prepare("CREATE TABLE orders (id Integer, user_name String)".into()));
+        assert_success(exec.prepare("CREATE INDEX idx_users_name ON users (name)".into()));
+        assert_success(exec.prepare("CREATE INDEX idx_orders_user_name ON orders (user_name)".into()));
+
+        let compiled = exec
+            .compile_query(
+                "SELECT users.id FROM users INNER JOIN orders ON users.name = orders.user_name",
+            )
+            .unwrap();
+
+        fn find_join(plan: &PlanNode) -> Option<(&JoinOp, &JoinOp)> {
+            match plan {
+                PlanNode::Join {
+                    left_join_op,
+                    right_join_op,
+                    ..
+                } => Some((left_join_op, right_join_op)),
+                PlanNode::Project { source, .. } => find_join(source),
+                PlanNode::Filter { source, .. } => find_join(source),
+                PlanNode::SetOperation { left, right, .. } => {
+                    find_join(left).or_else(|| find_join(right))
+                }
+                _ => None,
+            }
+        }
+
+        match compiled {
+            CompiledQuery::Select(select) => {
+                let (left_op, right_op) = find_join(&select.plan).expect("expected join in plan");
+                assert_eq!(*left_op, JoinOp::Index);
+                assert_eq!(*right_op, JoinOp::Index);
+            }
+            _ => panic!("expected compiled select"),
+        }
+    }
+
+    #[test]
+    fn test_join_execution_uses_manual_indices() {
+        let mut exec = setup_executor();
+
+        assert_success(exec.prepare("CREATE TABLE users (id Integer, name String)".into()));
+        assert_success(exec.prepare("CREATE TABLE orders (id Integer, user_name String)".into()));
+
+        assert_success(exec.prepare("INSERT INTO users VALUES (1, 'alice')".into()));
+        assert_success(exec.prepare("INSERT INTO users VALUES (2, 'bob')".into()));
+        assert_success(exec.prepare("INSERT INTO users VALUES (3, 'carol')".into()));
+
+        assert_success(exec.prepare("INSERT INTO orders VALUES (10, 'alice')".into()));
+        assert_success(exec.prepare("INSERT INTO orders VALUES (11, 'alice')".into()));
+        assert_success(exec.prepare("INSERT INTO orders VALUES (12, 'carol')".into()));
+
+        assert_success(exec.prepare("CREATE INDEX idx_users_name ON users (name)".into()));
+        assert_success(exec.prepare("CREATE INDEX idx_orders_user_name ON orders (user_name)".into()));
+
+        let query = "SELECT users.id FROM users INNER JOIN orders ON users.name = orders.user_name";
+        let result = exec.prepare(query.into());
+        assert_row_count(result, 3);
+
+        let compiled = exec.compile_query(query).unwrap();
+        match compiled {
+            CompiledQuery::Select(select) => {
+                fn find_join(plan: &PlanNode) -> Option<(&JoinOp, &JoinOp)> {
+                    match plan {
+                        PlanNode::Join {
+                            left_join_op,
+                            right_join_op,
+                            ..
+                        } => Some((left_join_op, right_join_op)),
+                        PlanNode::Project { source, .. } => find_join(source),
+                        PlanNode::Filter { source, .. } => find_join(source),
+                        PlanNode::SetOperation { left, right, .. } => {
+                            find_join(left).or_else(|| find_join(right))
+                        }
+                        _ => None,
+                    }
+                }
+
+                let (left_op, right_op) = find_join(&select.plan).expect("expected join in plan");
+                assert_eq!(*left_op, JoinOp::Index);
+                assert_eq!(*right_op, JoinOp::Index);
+            }
+            _ => panic!("expected compiled select"),
+        }
+    }
+
+    #[test]
+    fn test_indexed_join_with_150_inserts_and_deletes_during_process() {
+        let mut exec = setup_executor();
+
+        assert_success(exec.prepare("CREATE TABLE a (id Integer, k Integer)".into()));
+        assert_success(exec.prepare("CREATE TABLE b (id Integer, k Integer)".into()));
+        assert_success(exec.prepare("CREATE INDEX idx_a_k ON a (k)".into()));
+        assert_success(exec.prepare("CREATE INDEX idx_b_k ON b (k)".into()));
+
+        let query = "SELECT a.id FROM a INNER JOIN b ON a.k = b.k";
+        assert_join_plan_ops(&exec, query, JoinOp::Index, JoinOp::Index);
+
+        let mut a_active = HashSet::new();
+        let mut b_active = HashSet::new();
+
+        for i in 1..=150 {
+            assert_success(exec.prepare(format!("INSERT INTO a VALUES ({}, {})", i, i)));
+            assert_success(exec.prepare(format!("INSERT INTO b VALUES ({}, {})", i, i)));
+            a_active.insert(i);
+            b_active.insert(i);
+
+            if i % 4 == 0 {
+                let del_k = i - 2;
+                if b_active.remove(&del_k) {
+                    assert_success(exec.prepare(format!("DELETE FROM b WHERE id = {}", del_k)));
+                }
+            }
+
+            if i % 5 == 0 {
+                let del_k = i - 3;
+                if a_active.remove(&del_k) {
+                    assert_success(exec.prepare(format!("DELETE FROM a WHERE id = {}", del_k)));
+                }
+            }
+
+            if i % 25 == 0 {
+                let expected = a_active.intersection(&b_active).count();
+                let result = exec.prepare(query.into());
+                assert_row_count(result, expected);
+            }
+        }
+
+        let expected = a_active.intersection(&b_active).count();
+        let result = exec.prepare(query.into());
+        assert_row_count(result, expected);
+    }
+
+    #[test]
+    fn test_drop_index_reverts_join_plan_to_default_scan() {
+        let mut exec = setup_executor();
+
+        assert_success(exec.prepare("CREATE TABLE users (id Integer, name String)".into()));
+        assert_success(exec.prepare("CREATE TABLE orders2 (id Integer, user String)".into()));
+        assert_success(exec.prepare("CREATE INDEX idx_users_name ON users (name)".into()));
+        assert_success(exec.prepare("CREATE INDEX idx_orders2_user ON orders2 (user)".into()));
+
+        let query = "SELECT users.id FROM users INNER JOIN orders2 ON users.name = orders2.user";
+        assert_join_plan_ops(&exec, query, JoinOp::Index, JoinOp::Index);
+
+        assert_success(exec.prepare("DROP TABLE _users_name".into()));
+        assert_success(exec.prepare("DROP TABLE _orders2_user".into()));
+
+        assert_join_plan_ops(&exec, query, JoinOp::Scan, JoinOp::Scan);
+    }
+
+    #[test]
+    fn test_large_date_indexed_join_plan_and_results() {
+        let mut exec = setup_executor();
+
+        assert_success(exec.prepare("CREATE TABLE events (id Integer, d Date)".into()));
+        assert_success(exec.prepare("CREATE TABLE calendar (id Integer, d Date)".into()));
+        assert_success(exec.prepare("CREATE INDEX idx_events_d ON events (d)".into()));
+        assert_success(exec.prepare("CREATE INDEX idx_calendar_d ON calendar (d)".into()));
+
+        for i in 0..150 {
+            let month = (i / 28) + 1;
+            let day = (i % 28) + 1;
+            let date = format!("2026-{:02}-{:02}", month, day);
+
+            assert_success(exec.prepare(format!(
+                "INSERT INTO events VALUES ({}, '{}')",
+                i + 1,
+                date
+            )));
+            assert_success(exec.prepare(format!(
+                "INSERT INTO calendar VALUES ({}, '{}')",
+                i + 1000,
+                date
+            )));
+        }
+
+        let query = "SELECT events.id FROM events INNER JOIN calendar ON events.d = calendar.d";
+        assert_join_plan_ops(&exec, query, JoinOp::Index, JoinOp::Index);
+
+        let result = exec.prepare(query.into());
+        assert_row_count(result, 150);
+    }
+
+    #[test]
+    fn test_large_string_and_varchar_indexed_joins() {
+        let mut exec = setup_executor_with_order(3);
+
+        // String join
+        assert_success(exec.prepare("CREATE TABLE s_left (id Integer, k String)".into()));
+        assert_success(exec.prepare("CREATE TABLE s_right (id Integer, k2 String)".into()));
+        assert_success(exec.prepare("CREATE INDEX idx_s_left_k ON s_left (k)".into()));
+        assert_success(exec.prepare("CREATE INDEX idx_s_right_k2 ON s_right (k2)".into()));
+
+        for i in 1..=40 {
+            let val = format!("S{:03}_{}", i, "x".repeat(80));
+            assert_success(exec.prepare(format!("INSERT INTO s_left VALUES ({}, '{}')", i, val)));
+            assert_success(exec.prepare(format!("INSERT INTO s_right VALUES ({}, '{}')", i + 1000, val)));
+        }
+
+        let string_join = "SELECT s_left.id FROM s_left INNER JOIN s_right ON s_left.k = s_right.k2";
+        assert_join_plan_ops(&exec, string_join, JoinOp::Index, JoinOp::Index);
+        assert_row_count(exec.prepare(string_join.into()), 40);
+
+        // Varchar join
+        assert_success(exec.prepare("CREATE TABLE v_left (id Integer, k VARCHAR(128))".into()));
+        assert_success(exec.prepare("CREATE TABLE v_right (id Integer, k2 VARCHAR(128))".into()));
+        assert_success(exec.prepare("CREATE INDEX idx_v_left_k ON v_left (k)".into()));
+        assert_success(exec.prepare("CREATE INDEX idx_v_right_k2 ON v_right (k2)".into()));
+
+        for i in 1..=40 {
+            let val = format!("V{:03}_{}", i, "y".repeat(90));
+            assert_success(exec.prepare(format!("INSERT INTO v_left VALUES ({}, '{}')", i, val)));
+            assert_success(exec.prepare(format!("INSERT INTO v_right VALUES ({}, '{}')", i + 2000, val)));
+        }
+
+        let varchar_join = "SELECT v_left.id FROM v_left INNER JOIN v_right ON v_left.k = v_right.k2";
+        assert_join_plan_ops(&exec, varchar_join, JoinOp::Index, JoinOp::Index);
+        assert_row_count(exec.prepare(varchar_join.into()), 40);
     }
 
     #[test]

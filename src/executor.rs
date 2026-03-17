@@ -13,7 +13,7 @@ use crate::planner::SqlStatementComparisonOperator::{
     Equal, Greater, GreaterOrEqual, Lesser, LesserOrEqual,
 };
 use crate::planner::{
-    CompiledCreateTableQuery, CompiledDeleteQuery, CompiledInsertQuery, CompiledQuery,
+    CompiledCreateIndexQuery, CompiledCreateTableQuery, CompiledDeleteQuery, CompiledInsertQuery, CompiledQuery,
     CompiledSelectQuery, CompiledUpdateQuery, PlanNode, Planner, SqlConditionOpCode,
     SqlStatementComparisonOperator,
 };
@@ -249,7 +249,90 @@ impl QueryExecutor {
         allow_modification_to_system_table: bool,
     ) -> Result<QueryResult, QueryResult> {
         match compiled_query {
+            CompiledQuery::CreateIndex(q) => {
+                let create_internal_table_sql = format!(
+                    "CREATE TABLE {} (idx_value {}, base_pk {})",
+                    q.schema.name,
+                    q.schema.fields[0].field_type.to_sql(),
+                    q.schema.fields[1].field_type.to_sql()
+                );
+
+                self.execute_compiled(
+                    CompiledQuery::CreateTable(CompiledCreateTableQuery {
+                        table_name: q.schema.name.clone(),
+                        schema: q.schema,
+                    }),
+                    create_internal_table_sql,
+                    true,
+                )?;
+
+                self.reload_schema()?;
+                self.rebuild_indices_for_table_id(q.table_id)?;
+                self.last_write_table_id = Some(q.table_id);
+
+                Ok(QueryResult::went_fine())
+            }
             CompiledQuery::CreateTable(q) => {
+                let mut created_index_base_table: Option<String> = None;
+                if !allow_modification_to_system_table && q.table_name.starts_with('_') {
+                    return Err(QueryResult::user_input_wrong(
+                        "Manual index tables are not allowed. Use CREATE INDEX <name> ON <table> (<column>)"
+                            .to_string(),
+                    ));
+                }
+
+                if allow_modification_to_system_table && q.table_name.starts_with('_') {
+                    let (base_table_name, index_column_name) =
+                        Self::parse_index_table_name(&q.table_name).ok_or_else(|| {
+                            QueryResult::user_input_wrong(
+                                "Index table name must match '_<table>_<column>'".to_string(),
+                            )
+                        })?;
+
+                    let base_table_id = Planner::find_table_id(&self.schema, &base_table_name)?;
+                    let base_schema = &self.schema.tables[base_table_id];
+
+                    let base_column_field = base_schema
+                        .fields
+                        .iter()
+                        .find(|f| {
+                            f.table_name == base_table_name && f.name == index_column_name
+                        })
+                        .ok_or_else(|| {
+                            QueryResult::user_input_wrong(format!(
+                                "Column '{}.{}' not found for index table",
+                                base_table_name, index_column_name
+                            ))
+                        })?;
+
+                    if q.schema.fields.len() != 2 {
+                        return Err(QueryResult::user_input_wrong(
+                            "Index table must have exactly two columns: idx_value, base_pk"
+                                .to_string(),
+                        ));
+                    }
+
+                    let expected_pk_type = &base_schema.fields[base_schema.key_position].field_type;
+                    let idx_value_type = &q.schema.fields[0].field_type;
+                    let base_pk_type = &q.schema.fields[1].field_type;
+
+                    if idx_value_type != &base_column_field.field_type {
+                        return Err(QueryResult::user_input_wrong(format!(
+                            "Index key type mismatch: expected {:?}, found {:?}",
+                            base_column_field.field_type, idx_value_type
+                        )));
+                    }
+
+                    if base_pk_type != expected_pk_type {
+                        return Err(QueryResult::user_input_wrong(format!(
+                            "Index base_pk type mismatch: expected {:?}, found {:?}",
+                            expected_pk_type, base_pk_type
+                        )));
+                    }
+
+                    created_index_base_table = Some(base_table_name);
+                }
+
                 //check if the table already exists
                 //this could be achieved using a unique / pk constraint on the system table.
                 //but there are no constraints implemented ;D
@@ -293,10 +376,50 @@ impl QueryExecutor {
                     let created_table_id = Planner::find_table_id(&self.schema, &q.table_name)?;
                     self.last_write_table_id = Some(created_table_id);
                 }
+                if let Some(base_table_name) = created_index_base_table {
+                    let base_table_id = Planner::find_table_id(&self.schema, &base_table_name)?;
+                    self.rebuild_indices_for_table_id(base_table_id)?;
+                }
                 Ok(result)
             }
             CompiledQuery::DropTable(q) => {
-                todo!()
+                if !allow_modification_to_system_table && q.table_id == 0 {
+                    return Err(QueryResult::msg("You are not allowed to modify this table."));
+                }
+
+                if q.table_id >= self.schema.tables.len() {
+                    return Err(QueryResult::user_input_wrong("Table not found".to_string()));
+                }
+
+                let dropped_table = self.schema.tables[q.table_id].clone();
+                let dropped_btree = Btree::init(
+                    dropped_table.btree_order,
+                    self.pager_accessor.clone(),
+                    dropped_table.clone(),
+                )
+                .map_err(QueryResult::err)?;
+
+                let mut dropped_pages = HashSet::new();
+                if let Some(root) = dropped_btree.root {
+                    self.collect_btree_pages(&root, &mut dropped_pages)
+                        .map_err(QueryResult::err)?;
+                } else {
+                    dropped_pages.insert(dropped_table.root.page());
+                }
+                self.mark_pages_as_deleted(&dropped_pages)
+                    .map_err(QueryResult::err)?;
+
+                PagerProxy::clear_table_root(&dropped_table, self.pager_accessor.clone())
+                    .map_err(QueryResult::err)?;
+
+                let delete_master_row = format!(
+                    "DELETE FROM {} WHERE name = '{}'",
+                    MASTER_TABLE_NAME,
+                    dropped_table.name.replace("'", "''")
+                );
+                self.execute(delete_master_row, true)?;
+
+                self.reload_schema()
             }
             CompiledQuery::Select(q) => {
                 let result_df = self
@@ -319,11 +442,13 @@ impl QueryExecutor {
                     schema,
                 )
                 .map_err(|s| QueryResult::err(s))?;
+                let (insert_key, insert_row) = q.data;
                 btree
-                    .insert(q.data.0, q.data.1)
+                    .insert(insert_key.clone(), insert_row.clone())
                     .map_err(|s| QueryResult::err(s))?;
                 if !allow_modification_to_system_table {
                     self.last_write_table_id = Some(q.table_id);
+                    self.insert_row_into_indices(q.table_id, &insert_key, &insert_row)?;
                 }
                 Ok(QueryResult::went_fine())
             }
@@ -377,6 +502,9 @@ impl QueryExecutor {
                 for key in keys_to_delete {
                     btree.delete(key).map_err(|s| QueryResult::err(s))?;
                 }
+                if !allow_modification_to_system_table {
+                    self.rebuild_indices_for_table_id(q.table_id)?;
+                }
                 Ok(QueryResult::went_fine())
             }
             CompiledQuery::Update(q) => {
@@ -384,7 +512,12 @@ impl QueryExecutor {
                     return Err(QueryResult::msg("You are not allowed to modify this table."));
                 }
 
-                self.execute_update(q, allow_modification_to_system_table)
+                let table_id = q.table_id;
+                let result = self.execute_update(q, allow_modification_to_system_table)?;
+                if !allow_modification_to_system_table {
+                    self.rebuild_indices_for_table_id(table_id)?;
+                }
+                Ok(result)
             }
         }
     }
@@ -468,7 +601,71 @@ impl QueryExecutor {
                 table_name,
                 operation,
                 conditions,
+                index_table_id,
+                index_on_column,
             } => {
+                if matches!(
+                    operation,
+                    SqlConditionOpCode::SelectIndexUnique | SqlConditionOpCode::SelectIndexRange
+                ) && index_table_id.is_some() && index_on_column.is_some()
+                {
+                    let base_schema = self.schema.tables[*table_id].clone();
+                    let index_schema = self.schema.tables[index_table_id.unwrap()].clone();
+                    let idx_col = index_on_column.unwrap();
+
+                    if idx_col >= conditions.len() {
+                        return Ok(DataFrame::from_memory(
+                            table_name.clone(),
+                            plan.get_header(&self.schema)?,
+                            vec![],
+                        ));
+                    }
+
+                    let (idx_cmp, idx_val) = conditions[idx_col].clone();
+                    if idx_cmp == SqlStatementComparisonOperator::None {
+                        return Ok(DataFrame::from_memory(
+                            table_name.clone(),
+                            plan.get_header(&self.schema)?,
+                            vec![],
+                        ));
+                    }
+
+                    let index_op = match operation {
+                        SqlConditionOpCode::SelectIndexUnique => SqlConditionOpCode::SelectKeyUnique,
+                        SqlConditionOpCode::SelectIndexRange => SqlConditionOpCode::SelectFTS,
+                        _ => SqlConditionOpCode::SelectFTS,
+                    };
+
+                    let mut index_conditions = vec![
+                        (SqlStatementComparisonOperator::None, Vec::new());
+                        index_schema.fields.len()
+                    ];
+                    index_conditions[0] = (idx_cmp, idx_val);
+
+                    let index_btree = Btree::init(
+                        index_schema.btree_order,
+                        self.pager_accessor.clone(),
+                        index_schema.clone(),
+                    )?;
+                    let base_btree = Btree::init(
+                        base_schema.btree_order,
+                        self.pager_accessor.clone(),
+                        base_schema.clone(),
+                    )?;
+
+                    return Ok(DataFrame::from_index_lookup(
+                        table_name.clone(),
+                        plan.get_header(&self.schema)?,
+                        index_btree,
+                        index_schema,
+                        base_btree,
+                        base_schema,
+                        index_op,
+                        index_conditions,
+                        conditions.clone(),
+                    ));
+                }
+
                 let schema = self.schema.tables[*table_id].clone();
                 let btree = Btree::init(
                     schema.btree_order,
@@ -578,6 +775,127 @@ impl QueryExecutor {
         Ok(BTreeScanSource::new(btree, schema, operation, conditions))
     }
 
+    fn index_table_name(base_table: &str, column: &str) -> String {
+        format!("_{}_{}", base_table, column)
+    }
+
+    fn parse_index_table_name(index_table_name: &str) -> Option<(String, String)> {
+        if !index_table_name.starts_with('_') {
+            return None;
+        }
+
+        let rest = &index_table_name[1..];
+        let (base, col) = rest.rsplit_once('_')?;
+        if base.is_empty() || col.is_empty() {
+            return None;
+        }
+        Some((base.to_string(), col.to_string()))
+    }
+
+    fn should_index_field(field_type: &Type) -> bool {
+        matches!(
+            field_type,
+            Type::Integer | Type::String | Type::Varchar(_) | Type::Date
+        )
+    }
+
+    fn insert_row_into_indices(
+        &mut self,
+        table_id: usize,
+        key: &Key,
+        row: &Row,
+    ) -> Result<(), QueryResult> {
+        if table_id == 0 || table_id >= self.schema.tables.len() {
+            return Ok(());
+        }
+
+        let base = self.schema.tables[table_id].clone();
+        if base.name.starts_with('_') {
+            return Ok(());
+        }
+
+        let full_row = Serializer::reconstruct_row(key, row, &base).map_err(QueryResult::err)?;
+
+        for (field_idx, field) in base.fields.iter().enumerate() {
+            if field_idx == base.key_position || !Self::should_index_field(&field.field_type) {
+                continue;
+            }
+
+            let index_name = Self::index_table_name(&base.name, &field.name);
+            let index_table_id = match Planner::find_table_id(&self.schema, &index_name) {
+                Ok(id) => id,
+                Err(_) => continue,
+            };
+
+            let index_schema = self.schema.tables[index_table_id].clone();
+            let idx_key = Serializer::get_field_on_row(&full_row, field_idx, &base)
+                .map_err(QueryResult::err)?;
+            let base_pk = Serializer::get_field_on_row(&full_row, base.key_position, &base)
+                .map_err(QueryResult::err)?;
+
+            let mut index_btree = Btree::init(
+                index_schema.btree_order,
+                self.pager_accessor.clone(),
+                index_schema,
+            )
+            .map_err(QueryResult::err)?;
+            index_btree.insert(idx_key, base_pk).map_err(QueryResult::err)?;
+        }
+
+        Ok(())
+    }
+
+    fn rebuild_indices_for_table_id(&mut self, table_id: usize) -> Result<(), QueryResult> {
+        if table_id == 0 || table_id >= self.schema.tables.len() {
+            return Ok(());
+        }
+
+        let base = self.schema.tables[table_id].clone();
+        if base.name.starts_with('_') {
+            return Ok(());
+        }
+
+        let base_key_pos = base.key_position;
+
+        for (field_idx, field) in base.fields.iter().enumerate() {
+            if field_idx == base_key_pos || !Self::should_index_field(&field.field_type) {
+                continue;
+            }
+
+            let index_name = Self::index_table_name(&base.name, &field.name);
+            let index_table_id = match Planner::find_table_id(&self.schema, &index_name) {
+                Ok(id) => id,
+                Err(_) => continue,
+            };
+
+            let index_schema = self.schema.tables[index_table_id].clone();
+            PagerProxy::clear_table_root(&index_schema, self.pager_accessor.clone())
+                .map_err(QueryResult::err)?;
+
+            let mut base_source = self
+                .create_scan_source(table_id, SqlConditionOpCode::SelectFTS, vec![])
+                .map_err(QueryResult::err)?;
+
+            let mut index_btree = Btree::init(
+                index_schema.btree_order,
+                self.pager_accessor.clone(),
+                index_schema.clone(),
+            )
+            .map_err(QueryResult::err)?;
+
+            base_source.reset().map_err(QueryResult::err)?;
+            while let Some(base_row) = base_source.next().map_err(QueryResult::err)? {
+                let idx_key =
+                    Serializer::get_field_on_row(&base_row, field_idx, &base).map_err(QueryResult::err)?;
+                let base_pk =
+                    Serializer::get_field_on_row(&base_row, base_key_pos, &base).map_err(QueryResult::err)?;
+                index_btree.insert(idx_key, base_pk).map_err(QueryResult::err)?;
+            }
+        }
+
+        Ok(())
+    }
+
     fn count_nodes_on_page(&self, schema: &TableSchema, page_data: &[u8; PAGE_SIZE]) -> Result<usize, Status> {
         let mut effective_schema = schema.clone();
         if effective_schema.btree_order == 0 {
@@ -627,6 +945,17 @@ impl QueryExecutor {
         Ok(())
     }
 
+    fn mark_pages_as_deleted(&self, pages: &HashSet<usize>) -> Result<(), Status> {
+        for page in pages {
+            let pos = Position::new(*page, 0);
+            self.pager_accessor.access_pager_write(|p| {
+                let page_container = p.access_page_write(&pos)?;
+                Serializer::set_is_deleted(page_container, true)
+            })?;
+        }
+        Ok(())
+    }
+
     fn refresh_table_free_list(&mut self, table_id: usize) -> Result<(), Status> {
         if table_id >= self.schema.tables.len() {
             return Ok(());
@@ -671,17 +1000,7 @@ impl QueryExecutor {
         let fields = schema
             .fields
             .iter()
-            .map(|f| {
-                let type_str = match f.field_type {
-                    Type::String => "String".to_string(),
-                    Type::Varchar(len) => format!("Varchar({})", len),
-                    Type::Integer => "Integer".to_string(),
-                    Type::Date => "Date".to_string(),
-                    Type::Boolean => "Boolean".to_string(),
-                    Type::Null => "Null".to_string(),
-                };
-                format!("{} {}", f.name, type_str)
-            })
+            .map(|f| format!("{} {}", f.name, f.field_type.to_sql()))
             .collect::<Vec<String>>()
             .join(", ");
         format!("CREATE TABLE {} ({})", schema.name, fields)
@@ -731,23 +1050,15 @@ impl QueryExecutor {
     }
 
     fn persist_free_lists_snapshot_to_system_table(&mut self) -> Result<(), QueryResult> {
-        let master_schema = self.schema.tables[0].clone();
-        PagerProxy::clear_table_root(&master_schema, self.pager_accessor.clone())
-            .map_err(QueryResult::err)?;
-
         let tables_to_persist: Vec<TableSchema> = self.schema.tables.iter().skip(1).cloned().collect();
         for table in tables_to_persist {
-            let create_sql = Self::schema_to_create_sql(&table);
-            let insert_query = format!(
-                "INSERT INTO {} (name, type, rootpage, sql, free_list) VALUES ('{}', '{}', {}, '{}', '{}')",
+            let update_query = format!(
+                "UPDATE {} SET free_list = '{}' WHERE name = '{}'",
                 MASTER_TABLE_NAME,
-                table.name.replace("'", "''"),
-                "table",
-                table.root.page(),
-                create_sql.replace("'", "''"),
-                Self::encode_free_list_top_10(&table).replace("'", "''")
+                Self::encode_free_list_top_10(&table).replace("'", "''"),
+                table.name.replace("'", "''")
             );
-            self.execute(insert_query, true)?;
+            self.execute(update_query, true)?;
         }
 
         Ok(())
@@ -849,6 +1160,8 @@ impl QueryExecutor {
                     table_name: MASTER_TABLE_NAME.to_string(),
                     operation: SqlConditionOpCode::SelectFTS,
                     conditions: vec![],
+                    index_table_id: None,
+                    index_on_column: None,
                 }),
                 fields: vec![
                     Field {

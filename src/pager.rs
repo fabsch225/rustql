@@ -49,6 +49,19 @@ impl Debug for Type {
     }
 }
 
+impl Type {
+    pub fn to_sql(&self) -> String {
+        match self {
+            Type::Null => "Null".to_string(),
+            Type::Integer => "Integer".to_string(),
+            Type::String => "String".to_string(),
+            Type::Varchar(len) => format!("Varchar({})", len),
+            Type::Date => "Date".to_string(),
+            Type::Boolean => "Boolean".to_string(),
+        }
+    }
+}
+
 //represents a whole page except the position i.e. keys, child-position and data
 pub type PageData = [u8; PAGE_SIZE]; //[u8; PAGE_SIZE as usize]; this is possible eventually
 

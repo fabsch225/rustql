@@ -49,6 +49,8 @@ pub enum PlanNode {
         table_name: String,
         operation: SqlConditionOpCode,
         conditions: Vec<(SqlStatementComparisonOperator, Vec<u8>)>,
+        index_table_id: Option<usize>,
+        index_on_column: Option<usize>,
     },
     Filter {
         source: Box<PlanNode>,
@@ -139,6 +141,15 @@ pub struct CompiledCreateTableQuery {
 }
 
 #[derive(Debug)]
+pub struct CompiledCreateIndexQuery {
+    pub index_name: String,
+    pub table_id: usize,
+    pub base_table_name: String,
+    pub column_name: String,
+    pub schema: TableSchema,
+}
+
+#[derive(Debug)]
 pub struct CompiledDropTableQuery {
     pub table_id: usize,
 }
@@ -146,6 +157,7 @@ pub struct CompiledDropTableQuery {
 #[derive(Debug)]
 pub enum CompiledQuery {
     CreateTable(CompiledCreateTableQuery),
+    CreateIndex(CompiledCreateIndexQuery),
     DropTable(CompiledDropTableQuery),
     Select(CompiledSelectQuery),
     Insert(CompiledInsertQuery),
@@ -265,6 +277,75 @@ impl Planner {
                 }))
             }
 
+            ParsedQuery::CreateIndex(create_index_query) => {
+                if create_index_query.columns.len() != 1 {
+                    return Err(QueryResult::user_input_wrong(
+                        "Only single-column indexes are supported".to_string(),
+                    ));
+                }
+
+                let table_id = Self::find_table_id(schema, &create_index_query.table_name)?;
+                let table_schema = &schema.tables[table_id];
+                let column_name = create_index_query.columns[0].clone();
+
+                let field = table_schema
+                    .fields
+                    .iter()
+                    .find(|f| f.name == column_name)
+                    .ok_or_else(|| {
+                        QueryResult::user_input_wrong(format!(
+                            "Column '{}.{}' not found",
+                            create_index_query.table_name, column_name
+                        ))
+                    })?;
+
+                if !matches!(
+                    field.field_type,
+                    Type::Integer | Type::String | Type::Varchar(_) | Type::Date
+                ) {
+                    return Err(QueryResult::user_input_wrong(format!(
+                        "Type '{:?}' is not indexable",
+                        field.field_type
+                    )));
+                }
+
+                let pk_type = table_schema.fields[table_schema.key_position].field_type.clone();
+                let index_table_name =
+                    Self::index_table_name(&create_index_query.table_name, &column_name);
+
+                let index_schema = TableSchema {
+                    root: Position::make_empty(),
+                    next_position: Position::make_empty(),
+                    has_key: true,
+                    key_position: 0,
+                    fields: vec![
+                        Field {
+                            name: "idx_value".to_string(),
+                            field_type: field.field_type.clone(),
+                            table_name: index_table_name.clone(),
+                        },
+                        Field {
+                            name: "base_pk".to_string(),
+                            field_type: pk_type,
+                            table_name: index_table_name.clone(),
+                        },
+                    ],
+                    entry_count: 0,
+                    table_type: 0,
+                    name: index_table_name,
+                    btree_order: 0,
+                    free_list: vec![],
+                };
+
+                Ok(CompiledQuery::CreateIndex(CompiledCreateIndexQuery {
+                    index_name: create_index_query.index_name,
+                    table_id,
+                    base_table_name: create_index_query.table_name,
+                    column_name,
+                    schema: index_schema,
+                }))
+            }
+
             ParsedQuery::DropTable(drop_table_query) => {
                 let table_id = Self::find_table_id(schema, &drop_table_query.table_name)?;
                 Ok(CompiledQuery::DropTable(CompiledDropTableQuery {
@@ -276,8 +357,12 @@ impl Planner {
                 let table_id = Self::find_table_id(schema, &delete_query.table_name)?;
                 let table_schema = &schema.tables[table_id];
 
-                let (operation, conditions) =
-                    Self::compile_conditions(delete_query.conditions, &table_schema)?;
+                let (operation, conditions, _) = Self::compile_conditions(
+                    schema,
+                    delete_query.conditions,
+                    &table_schema,
+                    Some(&table_schema.name),
+                )?;
 
                 Ok(CompiledQuery::Delete(CompiledDeleteQuery {
                     table_id,
@@ -290,8 +375,12 @@ impl Planner {
                 let table_id = Self::find_table_id(schema, &update_query.table_name)?;
                 let table_schema = &schema.tables[table_id];
 
-                let (operation, conditions) =
-                    Self::compile_conditions(update_query.conditions.clone(), table_schema)?;
+                let (operation, conditions, _) = Self::compile_conditions(
+                    schema,
+                    update_query.conditions.clone(),
+                    table_schema,
+                    Some(&table_schema.name),
+                )?;
                 let assignments = Self::compile_update_assignments(&update_query, table_schema)?;
 
                 Ok(CompiledQuery::Update(CompiledUpdateQuery {
@@ -443,6 +532,8 @@ impl Planner {
                     table_name: table_name.clone(),
                     operation: SqlConditionOpCode::SelectFTS,
                     conditions: vec![],
+                    index_table_id: None,
+                    index_on_column: None,
                 })
             }
             ParsedSource::SubQuery(sub_node) => Self::plan_tree_node(schema, *sub_node),
@@ -562,11 +653,33 @@ impl Planner {
                             };
                             vec![(left_field, right_field)]
                         };
-                    let (left_op, right_op) = left_schema
+                    let (mut left_op, mut right_op) = left_schema
                         .get_join_ops(&right_schema, &join_conditions[0].0, &join_conditions[0].1)
                         .map_err(|_| {
                             QueryResult::user_input_wrong("Cannot Get Join Operation".to_string())
                         })?;
+
+                    if left_op == JoinOp::Scan
+                        && Self::find_index_table_id(
+                            schema,
+                            &join_conditions[0].0.table_name,
+                            &join_conditions[0].0.name,
+                        )
+                        .is_some()
+                    {
+                        left_op = JoinOp::Index;
+                    }
+
+                    if right_op == JoinOp::Scan
+                        && Self::find_index_table_id(
+                            schema,
+                            &join_conditions[0].1.table_name,
+                            &join_conditions[0].1.name,
+                        )
+                        .is_some()
+                    {
+                        right_op = JoinOp::Index;
+                    }
 
                     current_plan = PlanNode::Join {
                         left: Box::new(current_plan),
@@ -628,20 +741,25 @@ impl Planner {
     }
 
     fn compile_conditions(
+        global_schema: &Schema,
         source: Vec<(String, String, String)>,
         schema: &TableSchema,
+        scan_table_name: Option<&str>,
     ) -> Result<
         (
             SqlConditionOpCode,
             Vec<(SqlStatementComparisonOperator, Vec<u8>)>,
+            Option<usize>,
         ),
         QueryResult,
     > {
         let mut op = SqlConditionOpCode::SelectFTS;
         let mut compiled_conditions = Vec::new();
-        let mut is_primary_key = true;
+        let mut index_on_column = None;
 
-        for field in &schema.fields {
+        let effective_table_name = scan_table_name.unwrap_or(&schema.name);
+
+        for (field_idx, field) in schema.fields.iter().enumerate() {
             let user_condition = source.iter().find(|(col_name, _, _)| {
                 if let Some((tbl, fld)) = col_name.split_once('.') {
                     field.table_name == tbl && field.name == fld
@@ -655,22 +773,37 @@ impl Planner {
                     let comparison_op = Planner::compile_comparison_operator(op_str)?;
                     let compiled_val = Self::compile_value(val_str, field)?;
 
-                    if is_primary_key {
+                    if field_idx == schema.key_position {
                         if comparison_op == SqlStatementComparisonOperator::Equal {
                             op = SqlConditionOpCode::SelectKeyUnique;
                         } else {
                             op = SqlConditionOpCode::SelectKeyRange;
                         }
+                    } else if op == SqlConditionOpCode::SelectFTS
+                        && index_on_column.is_none()
+                        && Self::find_index_table_id(
+                            global_schema,
+                            effective_table_name,
+                            &field.name,
+                        )
+                        .is_some()
+                    {
+                        index_on_column = Some(field_idx);
+                        if comparison_op == SqlStatementComparisonOperator::Equal {
+                            op = SqlConditionOpCode::SelectIndexUnique;
+                        } else {
+                            op = SqlConditionOpCode::SelectIndexRange;
+                        }
                     }
+
                     compiled_conditions.push((comparison_op, compiled_val));
                 }
                 None => {
                     compiled_conditions.push((SqlStatementComparisonOperator::None, Vec::new()));
                 }
             }
-            is_primary_key = false;
         }
-        Ok((op, compiled_conditions))
+        Ok((op, compiled_conditions, index_on_column))
     }
 
     fn pushdown_filters(
@@ -740,8 +873,8 @@ impl Planner {
         let node_schema = plan
             .get_schema(global_schema)
             .map_err(|_| QueryResult::user_input_wrong("".to_string()))?;
-        let (derived_op, compiled_conditions) =
-            Self::compile_conditions(raw_conditions, &node_schema)?;
+        let (derived_op, compiled_conditions, index_on_column) =
+            Self::compile_conditions(global_schema, raw_conditions, &node_schema, None)?;
 
         if !Self::has_compiled_conditions(&compiled_conditions) {
             return Ok(plan);
@@ -753,6 +886,8 @@ impl Planner {
                 table_name,
                 operation,
                 conditions,
+                index_table_id,
+                index_on_column: existing_index_on_column,
             } => {
                 let has_existing_conditions = Self::has_compiled_conditions(&conditions);
 
@@ -763,15 +898,32 @@ impl Planner {
                             table_name,
                             operation,
                             conditions,
+                            index_table_id,
+                            index_on_column: existing_index_on_column,
                         }),
                         conditions: compiled_conditions,
                     })
                 } else {
+                    let resolved_index_table_id = index_on_column.and_then(|column_idx| {
+                        node_schema
+                            .fields
+                            .get(column_idx)
+                            .and_then(|field| {
+                                Self::find_index_table_id(
+                                    global_schema,
+                                    &table_name,
+                                    &field.name,
+                                )
+                            })
+                    });
+
                     Ok(PlanNode::SeqScan {
                         table_id,
                         table_name,
                         operation: derived_op,
                         conditions: compiled_conditions,
+                        index_table_id: resolved_index_table_id,
+                        index_on_column,
                     })
                 }
             }
@@ -1111,6 +1263,23 @@ impl Planner {
                 token
             ))),
         }
+    }
+
+    fn index_table_name(base_table: &str, column: &str) -> String {
+        format!("_{}_{}", base_table, column)
+    }
+
+    fn find_index_table_id(
+        schema: &Schema,
+        base_table: &str,
+        column: &str,
+    ) -> Option<usize> {
+        let index_name = Self::index_table_name(base_table, column);
+        schema
+            .table_index
+            .index
+            .iter()
+            .position(|t| t == &TableName::from(index_name.as_str()))
     }
 }
 

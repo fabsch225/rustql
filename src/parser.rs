@@ -80,6 +80,13 @@ pub struct ParsedCreateTableQuery {
 }
 
 #[derive(Debug)]
+pub struct ParsedCreateIndexQuery {
+    pub index_name: String,
+    pub table_name: String,
+    pub columns: Vec<String>,
+}
+
+#[derive(Debug)]
 pub struct ParsedDeleteQuery {
     pub table_name: String,
     pub conditions: Vec<(String, String, String)>,
@@ -95,6 +102,7 @@ pub struct ParsedUpdateQuery {
 #[derive(Debug)]
 pub enum ParsedQuery {
     CreateTable(ParsedCreateTableQuery),
+    CreateIndex(ParsedCreateIndexQuery),
     DropTable(ParsedDropQuery),
     Select(ParsedQueryTreeNode),
     Insert(ParsedInsertQuery),
@@ -197,7 +205,7 @@ impl Parser {
             .next_token()
             .ok_or_else(|| "Expected a query type".to_string())?;
         match statement_type.to_uppercase().as_str() {
-            "CREATE" => self.parse_create_table(),
+            "CREATE" => self.parse_create(),
             "DROP" => self.parse_drop_table(),
             "SELECT" => Ok(ParsedQuery::Select(self.parse_select()?)),
             "(" => {
@@ -211,8 +219,20 @@ impl Parser {
         }
     }
 
+    fn parse_create(&mut self) -> Result<ParsedQuery, String> {
+        let object_type = self
+            .lexer
+            .next_token()
+            .ok_or_else(|| "Expected object type after CREATE".to_string())?;
+
+        match object_type.to_uppercase().as_str() {
+            "TABLE" => self.parse_create_table(),
+            "INDEX" => self.parse_create_index(),
+            _ => Err(format!("Expected 'TABLE' or 'INDEX', but found '{}'", object_type)),
+        }
+    }
+
     fn parse_create_table(&mut self) -> Result<ParsedQuery, String> {
-        self.expect_token("TABLE")?;
         let mut if_not_exists = false;
         let table_name = match self.lexer.next_token() {
             Some(token) if token.to_uppercase() == "IF" => {
@@ -261,6 +281,50 @@ impl Parser {
             table_fields: fields,
             table_types: types,
             if_not_exists,
+        }))
+    }
+
+    fn parse_create_index(&mut self) -> Result<ParsedQuery, String> {
+        let index_name = self
+            .lexer
+            .next_token()
+            .ok_or_else(|| "Expected index name".to_string())?;
+        self.expect_token("ON")?;
+        let table_name = self
+            .lexer
+            .next_token()
+            .ok_or_else(|| "Expected table name".to_string())?;
+        self.expect_token("(")?;
+
+        let mut columns = Vec::new();
+        loop {
+            let col = self
+                .lexer
+                .next_token()
+                .ok_or_else(|| "Expected column name or ')'".to_string())?;
+            if col == ")" {
+                break;
+            }
+            if col == "," {
+                return Err("Expected column name".to_string());
+            }
+            columns.push(col);
+
+            match self.lexer.next_token().as_deref() {
+                Some(",") => continue,
+                Some(")") => break,
+                _ => return Err("Expected ',' or ')' in index column list".to_string()),
+            }
+        }
+
+        if columns.is_empty() {
+            return Err("Expected at least one indexed column".to_string());
+        }
+
+        Ok(ParsedQuery::CreateIndex(ParsedCreateIndexQuery {
+            index_name,
+            table_name,
+            columns,
         }))
     }
 

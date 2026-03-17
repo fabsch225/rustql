@@ -1,6 +1,12 @@
 #[cfg(test)]
 mod tests {
+    use rustql::btree::Btree;
     use rustql::executor::QueryExecutor as RustqlQueryExecutor;
+    use rustql::pager::Position;
+    use rustql::pager_proxy::PagerProxy;
+    use rustql::planner::{CompiledQuery, PlanNode, SqlConditionOpCode};
+    use rustql::serializer::Serializer;
+    use std::collections::HashSet;
     use std::fs;
     use std::ops::{Deref, DerefMut};
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -789,5 +795,392 @@ mod tests {
         assert_eq!(all_rows.data.fetch().unwrap().len(), 160);
 
         assert!(executor.check_integrity().is_ok());
+    }
+
+    #[test]
+    fn test_manual_index_create_and_drop_lifecycle() {
+        let mut executor = QueryExecutor::init("./default.db.bin", BTREE_NODE_SIZE);
+
+        let created = executor.prepare("CREATE TABLE people (id Integer, name String)".to_string());
+        assert!(created.success);
+
+        executor.prepare("INSERT INTO people (id, name) VALUES (1, 'Alice')".to_string());
+        executor.prepare("INSERT INTO people (id, name) VALUES (2, 'Bob')".to_string());
+
+        let before_idx = executor.prepare("SELECT * FROM _people_name".to_string());
+        assert!(!before_idx.success);
+
+        let create_idx = executor.prepare("CREATE INDEX idx_people_name ON people (name)".to_string());
+        assert!(create_idx.success);
+
+        let manual_index_table = executor
+            .prepare("CREATE TABLE _people_name (idx_value String, base_pk Integer)".to_string());
+        assert!(!manual_index_table.success);
+
+        let index_read = executor.prepare("SELECT * FROM _people_name WHERE idx_value = 'Alice'".to_string());
+        assert!(index_read.success);
+        assert_eq!(index_read.data.fetch().unwrap().len(), 1);
+
+        let drop_idx = executor.prepare("DROP TABLE _people_name".to_string());
+        assert!(drop_idx.success);
+
+        let after_idx = executor.prepare("SELECT * FROM _people_name".to_string());
+        assert!(!after_idx.success);
+
+        let compiled = executor
+            .compile_query("SELECT id FROM people WHERE name = 'Alice'")
+            .unwrap();
+        match compiled {
+            CompiledQuery::Select(select) => {
+                fn find_scan(plan: &PlanNode) -> Option<&PlanNode> {
+                    match plan {
+                        PlanNode::SeqScan { .. } => Some(plan),
+                        PlanNode::Project { source, .. } => find_scan(source),
+                        PlanNode::Filter { source, .. } => find_scan(source),
+                        _ => None,
+                    }
+                }
+
+                match find_scan(&select.plan) {
+                    Some(PlanNode::SeqScan { operation, .. }) => {
+                        assert_eq!(*operation, SqlConditionOpCode::SelectFTS);
+                    }
+                    _ => panic!("expected SeqScan in plan"),
+                }
+            }
+            _ => panic!("expected compiled SELECT"),
+        }
+    }
+
+    #[test]
+    fn test_drop_table_removes_table() {
+        let mut executor = QueryExecutor::init("./default.db.bin", BTREE_NODE_SIZE);
+        assert!(executor
+            .prepare("CREATE TABLE to_drop (id Integer, name String)".to_string())
+            .success);
+        assert!(executor
+            .prepare("INSERT INTO to_drop (id, name) VALUES (1, 'x')".to_string())
+            .success);
+
+        let dropped = executor.prepare("DROP TABLE to_drop".to_string());
+        assert!(dropped.success);
+
+        let after = executor.prepare("SELECT * FROM to_drop".to_string());
+        assert!(!after.success);
+    }
+
+    #[test]
+    fn test_drop_table_marks_related_pages_deleted() {
+        fn collect_pages(
+            node: &rustql::btree::BTreeNode,
+            pages: &mut HashSet<usize>,
+        ) {
+            if !pages.insert(node.position.page()) {
+                return;
+            }
+            for child in PagerProxy::get_children(node).unwrap() {
+                collect_pages(&child, pages);
+            }
+        }
+
+        let mut executor = QueryExecutor::init("./default.db.bin", BTREE_NODE_SIZE);
+        assert!(executor
+            .prepare("CREATE TABLE to_drop_pages (id Integer, name String)".to_string())
+            .success);
+
+        for i in 1..=200 {
+            let q = format!(
+                "INSERT INTO to_drop_pages (id, name) VALUES ({}, 'user{}')",
+                i, i
+            );
+            assert!(executor.prepare(q).success);
+        }
+
+        let table_id = rustql::planner::Planner::find_table_id(&executor.schema, "to_drop_pages")
+            .expect("table id");
+        let table_schema = executor.schema.tables[table_id].clone();
+        let btree = Btree::init(
+            table_schema.btree_order,
+            executor.pager_accessor.clone(),
+            table_schema.clone(),
+        )
+        .expect("btree init");
+
+        let mut pages = HashSet::new();
+        let root = btree.root.expect("root must exist");
+        collect_pages(&root, &mut pages);
+        assert!(!pages.is_empty());
+
+        let dropped = executor.prepare("DROP TABLE to_drop_pages".to_string());
+        assert!(dropped.success);
+
+        for page in pages {
+            let page_container = executor
+                .pager_accessor
+                .access_pager_write(|p| p.access_page_read(&Position::new(page, 0)))
+                .expect("page read");
+            assert!(Serializer::is_deleted(&page_container).expect("deleted flag"));
+        }
+    }
+
+    #[test]
+    fn test_manual_index_created_after_data_is_used_for_select() {
+        let mut executor = QueryExecutor::init("./default.db.bin", BTREE_NODE_SIZE);
+        assert!(executor
+            .prepare("CREATE TABLE products (id Integer, price Integer, name String)".to_string())
+            .success);
+
+        for i in 1..=40 {
+            let q = format!(
+                "INSERT INTO products (id, price, name) VALUES ({}, {}, 'p{}')",
+                i,
+                100 + i,
+                i
+            );
+            assert!(executor.prepare(q).success);
+        }
+
+        assert!(executor
+            .prepare("CREATE INDEX idx_products_price ON products (price)".to_string())
+            .success);
+
+        let result = executor.prepare("SELECT id FROM products WHERE price = 117".to_string());
+        assert!(result.success);
+        let rows = result.data.fetch().unwrap();
+        assert_eq!(rows.len(), 1);
+
+        let compiled = executor
+            .compile_query("SELECT id FROM products WHERE price = 117")
+            .unwrap();
+        match compiled {
+            CompiledQuery::Select(select) => {
+                fn find_scan(plan: &PlanNode) -> Option<&PlanNode> {
+                    match plan {
+                        PlanNode::SeqScan { .. } => Some(plan),
+                        PlanNode::Project { source, .. } => find_scan(source),
+                        PlanNode::Filter { source, .. } => find_scan(source),
+                        _ => None,
+                    }
+                }
+
+                match find_scan(&select.plan) {
+                    Some(PlanNode::SeqScan {
+                        operation,
+                        index_table_id,
+                        index_on_column,
+                        ..
+                    }) => {
+                        assert_eq!(*operation, SqlConditionOpCode::SelectIndexUnique);
+                        assert!(index_table_id.is_some());
+                        assert_eq!(*index_on_column, Some(1));
+                    }
+                    _ => panic!("expected SeqScan in plan"),
+                }
+            }
+            _ => panic!("expected compiled SELECT"),
+        }
+    }
+
+    #[test]
+    fn test_select_uses_index_when_available() {
+        let mut executor = QueryExecutor::init("./default.db.bin", BTREE_NODE_SIZE);
+        executor.prepare("CREATE TABLE people (id Integer, name String, age Integer)".to_string());
+        assert!(executor
+            .prepare("CREATE INDEX idx_people_name ON people (name)".to_string())
+            .success);
+
+        for i in 1..=30 {
+            let q = format!(
+                "INSERT INTO people (id, name, age) VALUES ({}, 'user{}', {})",
+                i, i, i + 20
+            );
+            assert!(executor.prepare(q).success);
+        }
+
+        let result = executor.prepare("SELECT id FROM people WHERE name = 'user17'".to_string());
+        assert!(result.success);
+        assert_eq!(result.data.fetch().unwrap().len(), 1);
+
+        let compiled = executor
+            .compile_query("SELECT id FROM people WHERE name = 'user17'")
+            .unwrap();
+
+        match compiled {
+            CompiledQuery::Select(select) => {
+                fn find_scan(plan: &PlanNode) -> Option<&PlanNode> {
+                    match plan {
+                        PlanNode::SeqScan { .. } => Some(plan),
+                        PlanNode::Project { source, .. } => find_scan(source),
+                        PlanNode::Filter { source, .. } => find_scan(source),
+                        _ => None,
+                    }
+                }
+
+                match find_scan(&select.plan) {
+                    Some(PlanNode::SeqScan {
+                        operation,
+                        index_table_id,
+                        index_on_column,
+                        ..
+                    }) => {
+                        assert_eq!(*operation, SqlConditionOpCode::SelectIndexUnique);
+                        assert!(index_table_id.is_some());
+                        assert_eq!(*index_on_column, Some(1));
+                    }
+                    _ => panic!("expected SeqScan in plan"),
+                }
+            }
+            _ => panic!("expected compiled SELECT"),
+        }
+    }
+
+    #[test]
+    fn test_date_pk_reinsert() {
+        let mut executor = QueryExecutor::init("./default.db.bin", BTREE_NODE_SIZE);
+        executor.prepare("CREATE TABLE test (id Date, other Integer)".to_string());
+
+        for d in 1..=10 {
+            let res = executor.prepare(format!(
+                "INSERT INTO test (id, other) VALUES ('2026-03-{:02}', {})",
+                d, d
+            ));
+            assert!(res.success);
+        }
+
+        for d in 1..=5 {
+            let res = executor.prepare(format!(
+                "DELETE FROM test WHERE id = '2026-03-{:02}'",
+                d
+            ));
+            assert!(res.success);
+        }
+
+        for d in 1..=5 {
+            let res = executor.prepare(format!(
+                "INSERT INTO test (id, other) VALUES ('2026-03-{:02}', {})",
+                d,
+                d * 10
+            ));
+            assert!(res.success);
+        }
+
+        let result = executor.prepare("SELECT * FROM test".to_string());
+        assert!(result.success);
+        assert_eq!(result.data.fetch().unwrap().len(), 10);
+        assert!(executor.check_integrity().is_ok());
+    }
+
+    #[test]
+    fn test_date_index_usage_in_select_plan_and_execution() {
+        let mut executor = QueryExecutor::init("./default.db.bin", BTREE_NODE_SIZE);
+        executor
+            .prepare("CREATE TABLE events (id Integer, event_date Date, name String)".to_string());
+        assert!(executor
+            .prepare("CREATE INDEX idx_events_event_date ON events (event_date)".to_string())
+            .success);
+
+        assert!(executor
+            .prepare("INSERT INTO events (id, event_date, name) VALUES (1, '2026-03-15', 'A')".to_string())
+            .success);
+        assert!(executor
+            .prepare("INSERT INTO events (id, event_date, name) VALUES (2, '2026-03-16', 'B')".to_string())
+            .success);
+        assert!(executor
+            .prepare("INSERT INTO events (id, event_date, name) VALUES (3, '2026-03-17', 'C')".to_string())
+            .success);
+
+        let result = executor
+            .prepare("SELECT id FROM events WHERE event_date = '2026-03-17'".to_string());
+        assert!(result.success);
+        assert_eq!(result.data.fetch().unwrap().len(), 1);
+
+        let compiled = executor
+            .compile_query("SELECT id FROM events WHERE event_date = '2026-03-17'")
+            .unwrap();
+
+        match compiled {
+            CompiledQuery::Select(select) => {
+                fn find_scan(plan: &PlanNode) -> Option<&PlanNode> {
+                    match plan {
+                        PlanNode::SeqScan { .. } => Some(plan),
+                        PlanNode::Project { source, .. } => find_scan(source),
+                        PlanNode::Filter { source, .. } => find_scan(source),
+                        _ => None,
+                    }
+                }
+
+                match find_scan(&select.plan) {
+                    Some(PlanNode::SeqScan {
+                        operation,
+                        index_table_id,
+                        index_on_column,
+                        ..
+                    }) => {
+                        assert_eq!(*operation, SqlConditionOpCode::SelectIndexUnique);
+                        assert!(index_table_id.is_some());
+                        assert_eq!(*index_on_column, Some(1));
+                    }
+                    _ => panic!("expected SeqScan in plan"),
+                }
+            }
+            _ => panic!("expected compiled SELECT"),
+        }
+    }
+
+    #[test]
+    fn test_date_index_range_usage() {
+        let mut executor = QueryExecutor::init("./default.db.bin", BTREE_NODE_SIZE);
+        executor
+            .prepare("CREATE TABLE events (id Integer, event_date Date, name String)".to_string());
+        assert!(executor
+            .prepare("CREATE INDEX idx_events_event_date ON events (event_date)".to_string())
+            .success);
+
+        for d in 10..=20 {
+            let q = format!(
+                "INSERT INTO events (id, event_date, name) VALUES ({}, '2026-03-{}', 'e{}')",
+                d,
+                d,
+                d
+            );
+            assert!(executor.prepare(q).success);
+        }
+
+        let result = executor
+            .prepare("SELECT id FROM events WHERE event_date >= '2026-03-15'".to_string());
+        assert!(result.success);
+        assert_eq!(result.data.fetch().unwrap().len(), 6);
+
+        let compiled = executor
+            .compile_query("SELECT id FROM events WHERE event_date >= '2026-03-15'")
+            .unwrap();
+
+        match compiled {
+            CompiledQuery::Select(select) => {
+                fn find_scan(plan: &PlanNode) -> Option<&PlanNode> {
+                    match plan {
+                        PlanNode::SeqScan { .. } => Some(plan),
+                        PlanNode::Project { source, .. } => find_scan(source),
+                        PlanNode::Filter { source, .. } => find_scan(source),
+                        _ => None,
+                    }
+                }
+
+                match find_scan(&select.plan) {
+                    Some(PlanNode::SeqScan {
+                        operation,
+                        index_table_id,
+                        index_on_column,
+                        ..
+                    }) => {
+                        assert_eq!(*operation, SqlConditionOpCode::SelectIndexRange);
+                        assert!(index_table_id.is_some());
+                        assert_eq!(*index_on_column, Some(1));
+                    }
+                    _ => panic!("expected SeqScan in plan"),
+                }
+            }
+            _ => panic!("expected compiled SELECT"),
+        }
     }
 }

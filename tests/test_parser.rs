@@ -36,6 +36,36 @@ mod tests {
     }
 
     #[test]
+    fn test_create_index_valid() {
+        let query = "CREATE INDEX idx_users_name ON users (name)";
+        let mut parser = Parser::new(query.to_string());
+        let result = parser.parse_query();
+        assert!(result.is_ok());
+
+        if let ParsedQuery::CreateIndex(create_idx) = result.unwrap() {
+            assert_eq!(create_idx.index_name, "idx_users_name");
+            assert_eq!(create_idx.table_name, "users");
+            assert_eq!(create_idx.columns, vec!["name"]);
+        } else {
+            panic!("Expected CreateIndex query");
+        }
+    }
+
+    #[test]
+    fn test_create_index_multiple_columns_valid() {
+        let query = "CREATE INDEX idx_ab ON t (a, b)";
+        let mut parser = Parser::new(query.to_string());
+        let result = parser.parse_query();
+        assert!(result.is_ok());
+
+        if let ParsedQuery::CreateIndex(create_idx) = result.unwrap() {
+            assert_eq!(create_idx.columns, vec!["a", "b"]);
+        } else {
+            panic!("Expected CreateIndex query");
+        }
+    }
+
+    #[test]
     fn test_create_table_missing_field_type() {
         let query = "CREATE TABLE users (id Integer, name";
         let mut parser = Parser::new(query.to_string());
