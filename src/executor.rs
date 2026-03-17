@@ -956,21 +956,19 @@ impl QueryExecutor {
     }
 
     fn persist_free_lists_to_system_table(&mut self) -> Result<(), QueryResult> {
-        self.execute(format!("DELETE FROM {}", MASTER_TABLE_NAME), true)?;
-
         let tables_to_persist: Vec<TableSchema> = self.schema.tables.iter().skip(1).cloned().collect();
         for table in tables_to_persist {
             let create_sql = Self::schema_to_create_sql(&table);
-            let insert_query = format!(
-                "INSERT INTO {} (name, type, rootpage, sql, free_list) VALUES ('{}', '{}', {}, '{}', '{}')",
+            let update_query = format!(
+                "UPDATE {} SET type = '{}', rootpage = {}, sql = '{}', free_list = '{}' WHERE name = '{}'",
                 MASTER_TABLE_NAME,
-                table.name.replace("'", "''"),
                 "table",
                 table.root.page(),
                 create_sql.replace("'", "''"),
-                Self::encode_free_list_top_10(&table).replace("'", "''")
+                Self::encode_free_list_top_10(&table).replace("'", "''"),
+                table.name.replace("'", "''")
             );
-            self.execute(insert_query, true)?;
+            self.execute(update_query, true)?;
         }
 
         self.reload_schema()?;
@@ -985,37 +983,33 @@ impl QueryExecutor {
         let table = self.schema.tables[table_id].clone();
         let create_sql = Self::schema_to_create_sql(&table);
 
-        let insert_query = format!(
-            "INSERT INTO {} (name, type, rootpage, sql, free_list) VALUES ('{}', '{}', {}, '{}', '{}')",
+        let update_query = format!(
+            "UPDATE {} SET type = '{}', rootpage = {}, sql = '{}', free_list = '{}' WHERE name = '{}'",
             MASTER_TABLE_NAME,
-            table.name.replace("'", "''"),
             "table",
             table.root.page(),
             create_sql.replace("'", "''"),
-            Self::encode_free_list_top_10(&table).replace("'", "''")
+            Self::encode_free_list_top_10(&table).replace("'", "''"),
+            table.name.replace("'", "''")
         );
-        self.execute(insert_query, true)?;
+        self.execute(update_query, true)?;
         Ok(())
     }
 
     fn persist_free_lists_snapshot_to_system_table(&mut self) -> Result<(), QueryResult> {
-        let master_schema = self.schema.tables[0].clone();
-        PagerProxy::clear_table_root(&master_schema, self.pager_accessor.clone())
-            .map_err(QueryResult::err)?;
-
         let tables_to_persist: Vec<TableSchema> = self.schema.tables.iter().skip(1).cloned().collect();
         for table in tables_to_persist {
             let create_sql = Self::schema_to_create_sql(&table);
-            let insert_query = format!(
-                "INSERT INTO {} (name, type, rootpage, sql, free_list) VALUES ('{}', '{}', {}, '{}', '{}')",
+            let update_query = format!(
+                "UPDATE {} SET type = '{}', rootpage = {}, sql = '{}', free_list = '{}' WHERE name = '{}'",
                 MASTER_TABLE_NAME,
-                table.name.replace("'", "''"),
                 "table",
                 table.root.page(),
                 create_sql.replace("'", "''"),
-                Self::encode_free_list_top_10(&table).replace("'", "''")
+                Self::encode_free_list_top_10(&table).replace("'", "''"),
+                table.name.replace("'", "''")
             );
-            self.execute(insert_query, true)?;
+            self.execute(update_query, true)?;
         }
 
         Ok(())
