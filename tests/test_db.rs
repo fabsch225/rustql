@@ -56,7 +56,8 @@ mod tests {
     fn test_insert_single_row() {
         let mut executor = QueryExecutor::init("./default.db.bin", BTREE_NODE_SIZE);
         executor.prepare("CREATE TABLE test (id Integer, name String)".to_string());
-        let result = executor.prepare("INSERT INTO test (id, name) VALUES (1, 'Alice')".to_string());
+        let result =
+            executor.prepare("INSERT INTO test (id, name) VALUES (1, 'Alice')".to_string());
         assert!(result.success);
     }
 
@@ -314,11 +315,126 @@ mod tests {
     }
 
     #[test]
+    fn test_string_pk_reinsert() {
+        let mut executor = QueryExecutor::init("./default.db.bin", BTREE_NODE_SIZE);
+        executor.prepare("CREATE TABLE test (id Varchar(20), other Integer)".to_string());
+
+        for i in 1..=10 {
+            let res = executor.prepare(format!(
+                "INSERT INTO test (id, other) VALUES ('key{}', {})",
+                i, 0
+            ));
+            assert!(res.success);
+        }
+
+        for i in 1..=5 {
+            executor.prepare(format!("DELETE FROM test WHERE id = 'key{}'", i));
+        }
+
+        for i in 1..=5 {
+            executor.prepare(format!(
+                "INSERT INTO test (id, other) VALUES ('key{}', {})",
+                i, 0
+            ));
+        }
+
+        assert!(executor.check_integrity().is_ok());
+    }
+
+    #[test]
+    fn test_string_pk_sparse_reinsert() {
+        let mut executor = QueryExecutor::init("./default.db.bin", BTREE_NODE_SIZE);
+        executor.prepare("CREATE TABLE test (id Varchar(20), other Integer)".to_string());
+
+        let keys = ["a", "c", "e", "g", "i", "k", "m", "o", "q", "s"];
+
+        for (i, k) in keys.iter().enumerate() {
+            let res = executor.prepare(format!(
+                "INSERT INTO test (id, other) VALUES ('{}', {})",
+                k, i
+            ));
+            assert!(res.success);
+        }
+
+        for k in ["c", "g", "k", "o", "s"] {
+            executor.prepare(format!("DELETE FROM test WHERE id = '{}'", k));
+        }
+
+        for k in ["c", "g", "k", "o", "s"] {
+            executor.prepare(format!(
+                "INSERT INTO test (id, other) VALUES ('{}', {})",
+                k, 999
+            ));
+        }
+
+        assert!(executor.check_integrity().is_ok());
+    }
+
+    #[test]
+    fn test_string_pk_prefix_keys() {
+        let mut executor = QueryExecutor::init("./default.db.bin", BTREE_NODE_SIZE);
+        executor.prepare("CREATE TABLE test (id Varchar(20), other Integer)".to_string());
+
+        for i in 1..=10 {
+            let res = executor.prepare(format!(
+                "INSERT INTO test (id, other) VALUES ('user_{:02}', {})",
+                i, i
+            ));
+            assert!(res.success);
+        }
+
+        for i in 3..=7 {
+            executor.prepare(format!("DELETE FROM test WHERE id = 'user_{:02}'", i));
+        }
+
+        for i in 3..=7 {
+            executor.prepare(format!(
+                "INSERT INTO test (id, other) VALUES ('user_{:02}', {})",
+                i, 42
+            ));
+        }
+
+        assert!(executor.check_integrity().is_ok());
+    }
+
+    #[test]
+    fn test_varchar_2000_pk_reinsert() {
+        let mut executor = QueryExecutor::init("./default.db.bin", BTREE_NODE_SIZE);
+        executor.prepare("CREATE TABLE test (id Varchar(2000), other Integer)".to_string());
+
+        // Create long keys (~1500 chars each)
+        for i in 1..=10 {
+            let long_key = "x".repeat(1500) + &i.to_string();
+
+            let res = executor.prepare(format!(
+                "INSERT INTO test (id, other) VALUES ('{}', {})",
+                long_key, 0
+            ));
+            assert!(res.success);
+        }
+
+        for i in 1..=5 {
+            let long_key = "x".repeat(1500) + &i.to_string();
+            executor.prepare(format!("DELETE FROM test WHERE id = '{}'", long_key));
+        }
+
+        for i in 1..=5 {
+            let long_key = "x".repeat(1500) + &i.to_string();
+            executor.prepare(format!(
+                "INSERT INTO test (id, other) VALUES ('{}', {})",
+                long_key, 0
+            ));
+        }
+
+        assert!(executor.check_integrity().is_ok());
+    }
+
+    #[test]
     fn test_modulo() {
         let mut executor = QueryExecutor::init("./default.db.bin", BTREE_NODE_SIZE);
         executor.prepare("CREATE TABLE test (id Integer, other Integer)".to_string());
 
-        let test_sizes = [50, 100, 150];//, 300, 800];
+        let test_sizes = [50, 100, 150]; //, 300, 800];
         let modulos = [2, 3, 4, 5, 6];
 
         for &size in &test_sizes {
@@ -355,10 +471,7 @@ mod tests {
                     modulo,
                     result.data.clone().fetch().unwrap().len()
                 );
-                assert_eq!(
-                    result.data.fetch().unwrap().len(),
-                    size - count_deleted
-                );
+                assert_eq!(result.data.fetch().unwrap().len(), size - count_deleted);
                 assert!(executor.check_integrity().is_ok())
             }
         }
@@ -453,9 +566,10 @@ mod tests {
     #[test]
     fn test_modulo_with_reinserts() {
         let mut executor = QueryExecutor::init("./default.db.bin", BTREE_NODE_SIZE);
-        let result = executor.prepare("CREATE TABLE test (id Integer, other Integer, name String)".to_string());
+        let result = executor
+            .prepare("CREATE TABLE test (id Integer, other Integer, name String)".to_string());
         assert!(result.success);
-        let test_sizes = [50, 100, 150];//, 300, 800];
+        let test_sizes = [50, 100, 150]; //, 300, 800];
         let modulos = [2, 3, 4, 5, 6];
 
         for &size in &test_sizes {
@@ -467,9 +581,11 @@ mod tests {
                 //executor.exec("CREATE TABLE test (id Integer, other Integer)".to_string());
 
                 for i in 1..=size {
-                    let result =executor.prepare(format!(
+                    let result = executor.prepare(format!(
                         "INSERT INTO test (id, other, name) VALUES ({}, {}, '{}')",
-                        i, modulo, format!("Hallo Welt {}", i)
+                        i,
+                        modulo,
+                        format!("Hallo Welt {}", i)
                     ));
                     //println!("{}", result);
                     assert!(result.success)
@@ -490,16 +606,15 @@ mod tests {
                 }
                 let result = executor.prepare("SELECT * FROM test".to_string());
                 //println!("{}", result);
-                assert_eq!(
-                    result.data.fetch().unwrap().len(),
-                    size - count_deleted
-                );
+                assert_eq!(result.data.fetch().unwrap().len(), size - count_deleted);
                 assert!(executor.check_integrity().is_ok());
                 for i in 1..=size {
                     if i % modulo == 0 {
                         let result = executor.prepare(format!(
                             "INSERT INTO test (id, other, name) VALUES ({}, {}, '{}')",
-                            i, modulo, format!("Hallo Welt {}", i)
+                            i,
+                            modulo,
+                            format!("Hallo Welt {}", i)
                         ));
                         assert!(result.success);
                     }
@@ -520,7 +635,8 @@ mod tests {
         for i in 1..=100000 {
             let result = executor.prepare(format!(
                 "INSERT INTO test (id, other) VALUES ({}, {})",
-                i, i * 3
+                i,
+                i * 3
             ));
             if !result.success {
                 println!("Failed to insert {}: {}", i, result);
@@ -535,12 +651,15 @@ mod tests {
     #[test]
     fn test_many_varchars() {
         let mut executor = QueryExecutor::init("./default.db.bin", BTREE_NODE_SIZE);
-        executor.prepare("CREATE TABLE test (id Integer, name VARCHAR(420), age Integer)".to_string());
+        executor
+            .prepare("CREATE TABLE test (id Integer, name VARCHAR(420), age Integer)".to_string());
         for i in 1..=200 {
             let long_name = "User ".to_string() + &i.to_string() + &"x".repeat(300);
             let result = executor.prepare(format!(
                 "INSERT INTO test (id, name, age) VALUES ({}, '{}', {})",
-                i, long_name, i * 3
+                i,
+                long_name,
+                i * 3
             ));
             if !result.success {
                 println!("Failed to insert {}: {}", i, result);
@@ -560,7 +679,9 @@ mod tests {
             let long_name = "User ".to_string() + &i.to_string() + &"x".repeat(100);
             let result = executor.prepare(format!(
                 "INSERT INTO test (id, name, age) VALUES ({}, '{}', {})",
-                i, long_name, i * 3
+                i,
+                long_name,
+                i * 3
             ));
             if !result.success {
                 println!("Failed to insert {}: {}", i, result);
@@ -575,12 +696,15 @@ mod tests {
     #[test]
     fn test_large_nodes() {
         let mut executor = QueryExecutor::init("./default.db.bin", 50);
-        executor.prepare("CREATE TABLE test (id Integer, name VARCHAR(420), age Integer)".to_string());
+        executor
+            .prepare("CREATE TABLE test (id Integer, name VARCHAR(420), age Integer)".to_string());
         for i in 1..=100 {
             let long_name = "User ".to_string() + &i.to_string() + &"x".repeat(300);
             let result = executor.prepare(format!(
                 "INSERT INTO test (id, name, age) VALUES ({}, '{}', {})",
-                i, long_name, i * 3
+                i,
+                long_name,
+                i * 3
             ));
             if !result.success {
                 println!("Failed to insert {}: {}", i, result);
@@ -595,13 +719,16 @@ mod tests {
     #[test]
     fn test_large_nodes_multiple_splits_and_integrity() {
         let mut executor = QueryExecutor::init("./default.db.bin", 50);
-        executor.prepare("CREATE TABLE test (id Integer, name VARCHAR(420), age Integer)".to_string());
+        executor
+            .prepare("CREATE TABLE test (id Integer, name VARCHAR(420), age Integer)".to_string());
 
         for i in 1..=220 {
             let long_name = "User ".to_string() + &i.to_string() + &"y".repeat(320);
             let result = executor.prepare(format!(
                 "INSERT INTO test (id, name, age) VALUES ({}, '{}', {})",
-                i, long_name, i * 2
+                i,
+                long_name,
+                i * 2
             ));
             if !result.success {
                 println!("Failed to insert {}: {}", i, result);
@@ -623,13 +750,16 @@ mod tests {
     #[test]
     fn test_large_nodes_delete_and_reinsert() {
         let mut executor = QueryExecutor::init("./default.db.bin", 50);
-        executor.prepare("CREATE TABLE test (id Integer, name VARCHAR(420), age Integer)".to_string());
+        executor
+            .prepare("CREATE TABLE test (id Integer, name VARCHAR(420), age Integer)".to_string());
 
         for i in 1..=160 {
             let long_name = "User ".to_string() + &i.to_string() + &"z".repeat(280);
             let result = executor.prepare(format!(
                 "INSERT INTO test (id, name, age) VALUES ({}, '{}', {})",
-                i, long_name, i * 3
+                i,
+                long_name,
+                i * 3
             ));
             if !result.success {
                 println!("Failed to insert {}: {}", i, result);
@@ -644,7 +774,9 @@ mod tests {
             let long_name = "ReUser ".to_string() + &i.to_string() + &"w".repeat(260);
             let result = executor.prepare(format!(
                 "INSERT INTO test (id, name, age) VALUES ({}, '{}', {})",
-                i, long_name, i * 5
+                i,
+                long_name,
+                i * 5
             ));
             if !result.success {
                 println!("Failed to reinsert {}: {}", i, result);
