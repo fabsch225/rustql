@@ -210,7 +210,7 @@ impl PageManager {
                 Serializer::set_is_data_page(page, is_data_page)?;
                 Serializer::set_is_overflow_page(page, !is_data_page)?;
                 Serializer::set_is_deleted(page, false)?;
-                Self::update_payload_page_free_space(page);
+                //Self::update_payload_page_free_space(page);
                 Ok(())
             })?;
 
@@ -636,7 +636,7 @@ impl PageManager {
             page.data[0..blob.len()].copy_from_slice(blob);
             return node.pager_accessor.access_page_write(node, |d| {
                 d.data = page.data;
-                Self::update_btree_page_free_space(d, &node.table_schema)?;
+                //Self::update_btree_page_free_space(d, &node.table_schema)?;
                 Ok(())
             });
         }
@@ -666,7 +666,7 @@ impl PageManager {
                 } else {
                     0
                 };
-                page.free_space = PAGE_SIZE - bytes_on_page;
+                //page.free_space = PAGE_SIZE - bytes_on_page;
                 Ok(())
             })?;
         }
@@ -767,7 +767,7 @@ impl PagerProxy {
                 &mut pc.data,
                 &src_page,
             )?;
-            PageManager::update_btree_page_free_space(pc, table_schema)?;
+            //PageManager::update_btree_page_free_space(pc, table_schema)?;
             Ok(())
         })
     }
@@ -791,7 +791,7 @@ impl PagerProxy {
                 &mut pc.data,
                 &src_page.data,
             )?;
-            PageManager::update_btree_page_free_space(pc, schema)?;
+            //PageManager::update_btree_page_free_space(pc, schema)?;
             Ok(())
         })
     }
@@ -842,7 +842,7 @@ impl PagerProxy {
         pager_interface.access_page_write(&node, |d| {
             let node_offset = Serializer::find_position_offset(&d.data, &node.position, schema)?;
             d.data[node_offset + 1] = Serializer::create_node_flag(true);
-            PageManager::update_btree_page_free_space(d, schema)?;
+            //PageManager::update_btree_page_free_space(d, schema)?;
             Ok(())
         })?;
         Ok(node)
@@ -873,7 +873,7 @@ impl PagerProxy {
                     &mut p.data,
                     None,
                 )?;
-                PageManager::update_btree_page_free_space(p, schema)?;
+                //PageManager::update_btree_page_free_space(p, schema)?;
                 Ok(())
             })?;
         } else {
@@ -887,10 +887,10 @@ impl PagerProxy {
                     &mut page1.data,
                     Some(&mut page2.data),
                 )?;
-                PageManager::update_btree_page_free_space(page2, schema)?;
+                //PageManager::update_btree_page_free_space(page2, schema)?;
                 let mut page1_write = p.access_page_write(&node1.position)?;
                 page1_write.data = page1.data;
-                PageManager::update_btree_page_free_space(page1_write, schema)?;
+                //PageManager::update_btree_page_free_space(page1_write, schema)?;
                 Ok(())
             })?;
         }
@@ -1143,7 +1143,7 @@ impl PagerProxy {
 
         parent.pager_accessor.access_page_write(parent, |d| {
             d.data = page.data;
-            PageManager::update_btree_page_free_space(d, &parent.table_schema)?;
+            //PageManager::update_btree_page_free_space(d, &parent.table_schema)?;
             Ok(())
         })
     }
@@ -1221,7 +1221,7 @@ impl PagerProxy {
 
         parent.pager_accessor.access_page_write(parent, |d| {
             d.data = page.data;
-            PageManager::update_btree_page_free_space(d, &parent.table_schema)?;
+            //PageManager::update_btree_page_free_space(d, &parent.table_schema)?;
             Ok(())
         })
     }
@@ -1313,7 +1313,7 @@ impl PagerProxy {
 
         parent.pager_accessor.access_page_write(parent, |d| {
             d.data = page.data;
-            PageManager::update_btree_page_free_space(d, &parent.table_schema)?;
+            //PageManager::update_btree_page_free_space(d, &parent.table_schema)?;
             Ok(())
         })?;
 
@@ -1393,7 +1393,7 @@ impl PagerProxy {
 
         parent.pager_accessor.access_page_write(parent, |d| {
             d.data = page.data;
-            PageManager::update_btree_page_free_space(d, &parent.table_schema)?;
+            //PageManager::update_btree_page_free_space(d, &parent.table_schema)?;
             Ok(())
         })?;
 
@@ -1489,7 +1489,7 @@ impl PagerProxy {
         )?;
         parent.pager_accessor.access_page_write(parent, |d| {
             d.data = page.data;
-            PageManager::update_btree_page_free_space(d, &parent.table_schema)?;
+            //PageManager::update_btree_page_free_space(d, &parent.table_schema)?;
             Ok(())
         })?;
         Ok(())
@@ -1561,7 +1561,7 @@ impl PagerProxy {
         PageManager::update_node_external_flag(&mut page.data, node, &encoded_data)?;
         node.pager_accessor.access_page_write(node, |d| {
             d.data = page.data;
-            PageManager::update_btree_page_free_space(d, &node.table_schema)?;
+            //PageManager::update_btree_page_free_space(d, &node.table_schema)?;
             Ok(())
         })?;
 

@@ -381,10 +381,12 @@ impl Planner {
                 let optimized_plan =
                     Self::pushdown_projections(schema, filtered_plan, projected_fields.clone())?;
 
-                Ok(PlanNode::Project {
+                let with_final_projection = PlanNode::Project {
                     source: Box::new(optimized_plan),
                     fields: projected_fields,
-                })
+                };
+
+                Self::prune_redundant_projections(schema, with_final_projection)
             }
             ParsedQueryTreeNode::SetOperation(set_op) => {
                 if set_op.operands.is_empty() {
@@ -886,6 +888,70 @@ impl Planner {
                     fields: projected_fields,
                 })
             }
+        }
+    }
+
+    fn prune_redundant_projections(
+        global_schema: &Schema,
+        plan: PlanNode,
+    ) -> Result<PlanNode, QueryResult> {
+        match plan {
+            PlanNode::Project { source, fields } => {
+                let mut simplified_source =
+                    Self::prune_redundant_projections(global_schema, *source)?;
+
+                if let PlanNode::Project {
+                    source: inner_source,
+                    ..
+                } = simplified_source
+                {
+                    simplified_source = *inner_source;
+                }
+
+                let source_schema = simplified_source
+                    .get_schema(global_schema)
+                    .map_err(|_| QueryResult::user_input_wrong("".to_string()))?;
+
+                let is_identity_projection = fields.len() == source_schema.fields.len()
+                    && fields
+                        .iter()
+                        .zip(source_schema.fields.iter())
+                        .all(|(a, b)| Self::same_field(a, b));
+
+                if is_identity_projection {
+                    Ok(simplified_source)
+                } else {
+                    Ok(PlanNode::Project {
+                        source: Box::new(simplified_source),
+                        fields,
+                    })
+                }
+            }
+            PlanNode::Filter { source, conditions } => Ok(PlanNode::Filter {
+                source: Box::new(Self::prune_redundant_projections(global_schema, *source)?),
+                conditions,
+            }),
+            PlanNode::Join {
+                left,
+                right,
+                join_type,
+                left_join_op,
+                right_join_op,
+                conditions,
+            } => Ok(PlanNode::Join {
+                left: Box::new(Self::prune_redundant_projections(global_schema, *left)?),
+                right: Box::new(Self::prune_redundant_projections(global_schema, *right)?),
+                join_type,
+                left_join_op,
+                right_join_op,
+                conditions,
+            }),
+            PlanNode::SetOperation { op, left, right } => Ok(PlanNode::SetOperation {
+                op,
+                left: Box::new(Self::prune_redundant_projections(global_schema, *left)?),
+                right: Box::new(Self::prune_redundant_projections(global_schema, *right)?),
+            }),
+            other => Ok(other),
         }
     }
 

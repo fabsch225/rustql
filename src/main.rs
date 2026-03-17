@@ -83,14 +83,11 @@ fn main() {
     for i in 10..=60 {
         exec.prepare(format!("INSERT INTO D VALUES ({}, {})", i, i * 5));
     }
-    // Expected:
-    //   A ∩ B = 25..50
-    //   C ∩ D = 40..60 → 40..50 when intersected with A∩B
-    //   final = 40..50 = 11 rows
-
+   
     let query = r#"
-        SELECT A.id FROM (SELECT A.id FROM A INNER JOIN D ON D.id = A.id UNION SELECT B.id FROM B ) INTERSECT SELECT C.id FROM C
+        SELECT A.id FROM (SELECT A.id FROM A INNER JOIN D ON D.id = A.id UNION SELECT B.id FROM B WHERE B.v > 5) INTERSECT (SELECT C.id FROM C INNER JOIN Lg ON Lg.age = C.id)
     "#;
+    exec.plan(query.to_string());
     loop {
         if handle_cli(&mut exec) {
             break;
