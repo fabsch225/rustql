@@ -73,9 +73,7 @@ pub struct PageContainer {
     pub data: PageData,
     position: Position,
     pub free_space: usize,
-    pub flag: Flag,
-    //pub transaction_shards: HashMap<TransactionId, (PageData, usize)>
-    //if i do this, i should put data and free_space into a struct
+    pub flag: Flag
 }
 
 pub type TableName = Vec<u8>;
@@ -140,6 +138,7 @@ pub type TransactionId = u64;
 struct TransactionState {
     page_overrides: HashMap<usize, PageContainer>,
     locked_tables: HashSet<String>,
+    active: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -153,7 +152,7 @@ pub struct PagerCore {
     cache: RwLock<HashMap<usize, PageContainer>>,
     file: Arc<File>,
     next_page_index: AtomicUsize,
-    transactions: RwLock<HashMap<TransactionId, TransactionState>>,
+    transactions: RwLock<HashMap<TransactionId, Arc<RwLock<TransactionState>>>>,
     current_transaction_ids: RwLock<HashMap<ThreadId, TransactionId>>,
     next_transaction_id: AtomicU64,
     table_locks: RwLock<HashMap<String, TableLock>>,
@@ -233,8 +232,7 @@ impl PagerAccessor {
     pub fn current_transaction_id(&self) -> Option<TransactionId> {
         self.access_pager_read(|p| p.current_transaction_id())
     }
-
-    //this does create lots of overhead / could be removed
+    
     pub fn verify(&self, pager: &PagerCore) -> bool {
         pager.hash == self.hash
     }
@@ -253,11 +251,6 @@ impl PagerAccessor {
         func(&self.pager)
     }
 
-    //this is a bit confusing, but the page read function does still require write-access to the pager...
-    //TODO Optimize reading / writing to the pager by checking cache beforehand!
-    //Implement Pager::try_read_page_from_cache -> Result<PageContainer, Status>, and if there is a cache miss, return a Status::CacheMiss,
-    //    then we can request write access here and try to load from disk.
-    // (now we have to account for the possibility of loading a page from disk, which requires mutating the filestream)
     pub fn access_page_read<F, T>(&self, node: &BTreeNode, func: F) -> Result<T, Status>
     where
         F: FnOnce(&PageContainer) -> Result<T, Status>,
@@ -314,10 +307,11 @@ impl PagerCore {
             .map_err(|_| Status::InternalExceptionPagerWriteLock)?
             .insert(
             tx_id,
-            TransactionState {
+            Arc::new(RwLock::new(TransactionState {
                 page_overrides: HashMap::new(),
                 locked_tables: HashSet::new(),
-            },
+                active: true,
+            })),
         );
         Ok(tx_id)
     }
@@ -351,19 +345,30 @@ impl PagerCore {
     }
 
     pub fn commit_transaction_by_id(&self, tx_id: TransactionId) -> Result<(), Status> {
-        let tx = self
+        let tx_handle = self
             .transactions
             .write()
             .map_err(|_| Status::InternalExceptionPagerWriteLock)?
             .remove(&tx_id)
             .ok_or(ExceptionNoActiveTransaction)?;
 
+        let (page_overrides, locked_tables) = {
+            let mut tx = tx_handle
+                .write()
+                .map_err(|_| Status::InternalExceptionPagerWriteLock)?;
+            tx.active = false;
+            (
+                std::mem::take(&mut tx.page_overrides),
+                std::mem::take(&mut tx.locked_tables),
+            )
+        };
+
         {
             let mut cache = self
                 .cache
                 .write()
                 .map_err(|_| Status::InternalExceptionPagerWriteLock)?;
-            for (page_idx, page) in tx.page_overrides {
+            for (page_idx, page) in page_overrides {
                 cache.insert(page_idx, page);
             }
         }
@@ -373,7 +378,7 @@ impl PagerCore {
                 .table_locks
                 .write()
                 .map_err(|_| Status::InternalExceptionPagerWriteLock)?;
-            for table in tx.locked_tables {
+            for table in locked_tables {
                 if let Some(lock) = table_locks.get(&table)
                     && lock.holder_tx_id == tx_id
                 {
@@ -395,18 +400,26 @@ impl PagerCore {
     }
 
     pub fn rollback_transaction_by_id(&self, tx_id: TransactionId) -> Result<(), Status> {
-        let tx = self
+        let tx_handle = self
             .transactions
             .write()
             .map_err(|_| Status::InternalExceptionPagerWriteLock)?
             .remove(&tx_id)
             .ok_or(ExceptionNoActiveTransaction)?;
 
+        let locked_tables = {
+            let mut tx = tx_handle
+                .write()
+                .map_err(|_| Status::InternalExceptionPagerWriteLock)?;
+            tx.active = false;
+            std::mem::take(&mut tx.locked_tables)
+        };
+
         let mut table_locks = self
             .table_locks
             .write()
             .map_err(|_| Status::InternalExceptionPagerWriteLock)?;
-        for table in tx.locked_tables {
+        for table in locked_tables {
             if let Some(lock) = table_locks.get(&table)
                 && lock.holder_tx_id == tx_id
             {
@@ -463,12 +476,18 @@ impl PagerCore {
             }
         }
 
-        if let Some(tx) = self
+        let tx_handle = self
             .transactions
-            .write()
+            .read()
             .map_err(|_| Status::InternalExceptionPagerWriteLock)?
-            .get_mut(&tx_id)
-        {
+            .get(&tx_id)
+            .cloned()
+            .ok_or(ExceptionNoActiveTransaction)?;
+
+        if let Ok(mut tx) = tx_handle.write() {
+            if !tx.active {
+                return Err(ExceptionNoActiveTransaction);
+            }
             tx.locked_tables.insert(table_name.to_string());
         }
 
@@ -578,15 +597,22 @@ impl PagerCore {
 
     pub fn access_page_read(&self, position: &Position) -> Result<PageContainer, Status> {
         if let Some(tx_id) = self.current_transaction_id()
-            && let Some(tx_page) = self
+            && let Some(tx_handle) = self
                 .transactions
                 .read()
                 .map_err(|_| Status::InternalExceptionPagerWriteLock)?
                 .get(&tx_id)
-                .and_then(|tx| tx.page_overrides.get(&position.page()))
                 .cloned()
         {
-            return Ok(tx_page);
+            let tx = tx_handle
+                .read()
+                .map_err(|_| Status::InternalExceptionPagerWriteLock)?;
+            if !tx.active {
+                return Err(ExceptionNoActiveTransaction);
+            }
+            if let Some(tx_page) = tx.page_overrides.get(&position.page()).cloned() {
+                return Ok(tx_page);
+            }
         }
 
         if let Some(cached) = self
@@ -609,15 +635,19 @@ impl PagerCore {
 
     pub fn try_read_page_from_cache(&self, position: &Position) -> Option<PageContainer> {
         if let Some(tx_id) = self.current_transaction_id()
-            && let Some(tx_page) = self
+            && let Some(tx_handle) = self
                 .transactions
                 .read()
                 .ok()?
                 .get(&tx_id)
-                .and_then(|tx| tx.page_overrides.get(&position.page()))
                 .cloned()
         {
-            return Some(tx_page);
+            let tx = tx_handle.read().ok()?;
+            if tx.active {
+                if let Some(tx_page) = tx.page_overrides.get(&position.page()).cloned() {
+                    return Some(tx_page);
+                }
+            }
         }
         self.cache.read().ok()?.get(&position.page()).cloned()
     }
@@ -628,16 +658,23 @@ impl PagerCore {
         F: FnOnce(&mut PageContainer) -> Result<(), Status>,
     {
         if let Some(tx_id) = self.current_transaction_id() {
-            let mut txs = self
+            let tx_handle = self
                 .transactions
+                .read()
+                .map_err(|_| Status::InternalExceptionPagerWriteLock)?
+                .get(&tx_id)
+                .cloned()
+                .ok_or(ExceptionNoActiveTransaction)?;
+
+            let mut tx = tx_handle
                 .write()
                 .map_err(|_| Status::InternalExceptionPagerWriteLock)?;
 
-            if !txs
-                .get(&tx_id)
-                .map(|tx| tx.page_overrides.contains_key(&position.page()))
-                .unwrap_or(false)
-            {
+            if !tx.active {
+                return Err(ExceptionNoActiveTransaction);
+            }
+
+            if !tx.page_overrides.contains_key(&position.page()) {
                 let mut page = if let Some(cached) = self
                     .cache
                     .read()
@@ -656,15 +693,12 @@ impl PagerCore {
                 };
 
                 Serializer::write_byte_at_position(&mut page.flag, 0, true);
-
-                if let Some(tx) = txs.get_mut(&tx_id) {
-                    tx.page_overrides.insert(position.page(), page);
-                }
+                tx.page_overrides.insert(position.page(), page);
             }
 
-            let page = txs
-                .get_mut(&tx_id)
-                .and_then(|tx| tx.page_overrides.get_mut(&position.page()))
+            let page = tx
+                .page_overrides
+                .get_mut(&position.page())
                 .ok_or(Status::InternalExceptionCacheDenied)?;
             return func(page);
         }
@@ -698,12 +732,18 @@ impl PagerCore {
                 flag: 0,
             };
 
-            if let Some(tx) = self
+            let tx_handle = self
                 .transactions
-                .write()
+                .read()
                 .map_err(|_| Status::InternalExceptionPagerWriteLock)?
-                .get_mut(&tx_id)
-            {
+                .get(&tx_id)
+                .cloned()
+                .ok_or(ExceptionNoActiveTransaction)?;
+
+            if let Ok(mut tx) = tx_handle.write() {
+                if !tx.active {
+                    return Err(ExceptionNoActiveTransaction);
+                }
                 tx.page_overrides.insert(position.page(), page_container);
             }
 

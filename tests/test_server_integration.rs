@@ -2,11 +2,12 @@
 mod tests {
     use rustql::server::serve_tcp;
     use std::io::{Read, Write};
+    use std::net::TcpListener;
     use std::net::TcpStream;
     use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::{Mutex, MutexGuard, OnceLock};
+    use std::sync::{mpsc, Arc, Barrier, Mutex, MutexGuard, OnceLock};
     use std::thread;
-    use std::time::{Duration, SystemTime, UNIX_EPOCH};
+    use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
     const MAGIC: &[u8; 4] = b"RSQL";
     const VERSION: u8 = 2;
@@ -70,7 +71,7 @@ mod tests {
     fn server_addr() -> String {
         SERVER_ADDR
             .get_or_init(|| {
-                let port = 16544u16;
+                let port = find_free_port();
                 let addr = format!("127.0.0.1:{}", port);
                 let db_path = format!(
                     "/tmp/rustql.server.integration.{}.db",
@@ -95,6 +96,14 @@ mod tests {
                 panic!("server did not start in time");
             })
             .clone()
+    }
+
+    fn find_free_port() -> u16 {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("failed to allocate free port");
+        listener
+            .local_addr()
+            .expect("failed to read local addr")
+            .port()
     }
 
     fn read_response(stream: &mut TcpStream) -> Response {
@@ -490,6 +499,190 @@ mod tests {
         let t = format!("{}0", t);
         let mut c = Client::connect();
         assert_eq!(c.send(&format!("CREATE TABLE {} (id Integer)", t), 256).status, 0);
+        std::thread::sleep(std::time::Duration::from_millis(100));
         assert_eq!(c.send(&format!("CREATE TABLE {} (id Integer)", t), 256).status, 1);
+    }
+
+    #[test]
+    fn integration_27_dirty_read_is_not_visible_across_connections() {
+        let _g = acquire_test_lock();
+        let t = unique_name("t_dirty_read");
+        let mut c1 = Client::connect();
+        let mut c2 = Client::connect();
+
+        assert_eq!(
+            c1.send(&format!("CREATE TABLE {} (id Integer, v Integer)", t), 256)
+                .status,
+            0
+        );
+        assert_eq!(
+            c1.send(&format!("INSERT INTO {} VALUES (1, 0)", t), 256).status,
+            0
+        );
+
+        assert_eq!(c1.send("BEGIN TRANSACTION", 256).status, 0);
+        assert_eq!(
+            c1.send(&format!("UPDATE {} SET v = 1 WHERE id = 1", t), 256)
+                .status,
+            0
+        );
+
+        // If dirty reads were possible, connection 2 would already see v=1 here.
+        let before_commit = c2.send(&format!("SELECT * FROM {} WHERE v = 1", t), 256);
+        assert_eq!(before_commit.status, 0);
+        assert_eq!(before_commit.rows.len(), 0);
+
+        assert_eq!(c1.send("COMMIT", 256).status, 0);
+
+        let after_commit = c2.send(&format!("SELECT * FROM {} WHERE v = 1", t), 256);
+        assert_eq!(after_commit.status, 0);
+        assert_eq!(after_commit.rows.len(), 1);
+    }
+
+    #[test]
+    fn integration_28_lost_update_is_prevented_by_table_locking() {
+        let _g = acquire_test_lock();
+        let t = unique_name("t_lost_update");
+        let mut c1 = Client::connect();
+        let mut c2 = Client::connect();
+
+        assert_eq!(
+            c1.send(&format!("CREATE TABLE {} (id Integer, v Integer)", t), 256)
+                .status,
+            0
+        );
+        assert_eq!(
+            c1.send(&format!("INSERT INTO {} VALUES (1, 0)", t), 256).status,
+            0
+        );
+
+        assert_eq!(c1.send("BEGIN TRANSACTION", 256).status, 0);
+        assert_eq!(
+            c1.send(&format!("UPDATE {} SET v = 1 WHERE id = 1", t), 256)
+                .status,
+            0
+        );
+
+        assert_eq!(c2.send("BEGIN TRANSACTION", 256).status, 0);
+        let second_update = c2.send(&format!("UPDATE {} SET v = 2 WHERE id = 1", t), 256);
+        assert_eq!(second_update.status, 1);
+        assert!(second_update.message.contains("ExceptionTableLocked"));
+
+        assert_eq!(c1.send("COMMIT", 256).status, 0);
+        assert_eq!(c2.send("ROLLBACK", 256).status, 0);
+
+        let final_v1 = c1.send(&format!("SELECT * FROM {} WHERE v = 1", t), 256);
+        assert_eq!(final_v1.status, 0);
+        assert_eq!(final_v1.rows.len(), 1);
+
+        let final_v2 = c1.send(&format!("SELECT * FROM {} WHERE v = 2", t), 256);
+        assert_eq!(final_v2.status, 0);
+        assert_eq!(final_v2.rows.len(), 0);
+    }
+
+    #[test]
+    fn integration_29_deadlock_pattern_two_tables_does_not_hang() {
+        let _g = acquire_test_lock();
+        let t1 = unique_name("t_dead_a");
+        let t2 = unique_name("t_dead_b");
+
+        let mut setup = Client::connect();
+        assert_eq!(
+            setup
+                .send(&format!("CREATE TABLE {} (id Integer, v Integer)", t1), 256)
+                .status,
+            0
+        );
+        assert_eq!(
+            setup
+                .send(&format!("CREATE TABLE {} (id Integer, v Integer)", t2), 256)
+                .status,
+            0
+        );
+        assert_eq!(setup.send(&format!("INSERT INTO {} VALUES (1, 0)", t1), 256).status, 0);
+        assert_eq!(setup.send(&format!("INSERT INTO {} VALUES (1, 0)", t2), 256).status, 0);
+
+        let barrier = Arc::new(Barrier::new(2));
+        let (done_tx, done_rx) = mpsc::channel::<(u8, String, Duration, u8)>();
+
+        let t1_a = t1.clone();
+        let t2_a = t2.clone();
+        let barrier_a = barrier.clone();
+        let done_tx_a = done_tx.clone();
+        let h1 = thread::spawn(move || {
+            let mut c = Client::connect();
+            c.stream.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+            c.stream.set_write_timeout(Some(Duration::from_secs(2))).unwrap();
+
+            assert_eq!(c.send("BEGIN TRANSACTION", 256).status, 0);
+            assert_eq!(
+                c.send(&format!("UPDATE {} SET v = 1 WHERE id = 1", t1_a), 256)
+                    .status,
+                0
+            );
+
+            barrier_a.wait();
+
+            let started = Instant::now();
+            let r = c.send(&format!("UPDATE {} SET v = 11 WHERE id = 1", t2_a), 256);
+            let elapsed = started.elapsed();
+            let rollback_status = c.send("ROLLBACK", 256).status;
+            done_tx_a
+                .send((r.status, r.message, elapsed, rollback_status))
+                .unwrap();
+        });
+
+        let t1_b = t1.clone();
+        let t2_b = t2.clone();
+        let barrier_b = barrier.clone();
+        let done_tx_b = done_tx.clone();
+        let h2 = thread::spawn(move || {
+            let mut c = Client::connect();
+            c.stream.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+            c.stream.set_write_timeout(Some(Duration::from_secs(2))).unwrap();
+
+            assert_eq!(c.send("BEGIN TRANSACTION", 256).status, 0);
+            assert_eq!(
+                c.send(&format!("UPDATE {} SET v = 2 WHERE id = 1", t2_b), 256)
+                    .status,
+                0
+            );
+
+            barrier_b.wait();
+
+            let started = Instant::now();
+            let r = c.send(&format!("UPDATE {} SET v = 22 WHERE id = 1", t1_b), 256);
+            let elapsed = started.elapsed();
+            let rollback_status = c.send("ROLLBACK", 256).status;
+            done_tx_b
+                .send((r.status, r.message, elapsed, rollback_status))
+                .unwrap();
+        });
+
+        let first = done_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("first worker timed out (possible deadlock)");
+        let second = done_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("second worker timed out (possible deadlock)");
+
+        h1.join().expect("worker 1 panicked");
+        h2.join().expect("worker 2 panicked");
+
+        for (status, message, elapsed, rollback_status) in [first, second] {
+            assert_eq!(status, 1);
+            assert!(message.contains("ExceptionTableLocked"));
+            assert!(
+                elapsed < Duration::from_secs(2),
+                "lock conflict took too long: {:?}",
+                elapsed
+            );
+            assert_eq!(rollback_status, 0);
+        }
+
+        // Server still responsive after the deadlock pattern attempt.
+        let mut verify = Client::connect();
+        let r = verify.send(&format!("SELECT * FROM {}", t1), 256);
+        assert_eq!(r.status, 0);
     }
 }
