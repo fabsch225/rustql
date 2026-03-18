@@ -4,7 +4,8 @@ use crate::dataframe::{
     BTreeScanSource, DataFrame, JoinStrategy, MemorySource, RowSource, SetOpStrategy, Source,
 };
 use crate::pager::{
-    Key, PAGE_SIZE, PAGE_SIZE_WITH_META, PageData, PagerAccessor, PagerCore, Position, Row, TableName, Type
+    Key, PAGE_SIZE, PAGE_SIZE_WITH_META, PageData, PagerAccessor, PagerCore, Position, Row,
+    TableName, TransactionId, Type,
 };
 use crate::pager_proxy::PagerProxy;
 use crate::parser::JoinType::Natural;
@@ -165,6 +166,26 @@ impl QueryExecutor {
         bootstrap_executor
     }
 
+        pub fn from_pager_accessor(pager_accessor: PagerAccessor, t: usize) -> Self {
+            let mut bootstrap_executor = QueryExecutor {
+                pager_accessor: pager_accessor.clone(),
+                query_cache: HashMap::new(),
+                schema: Schema {
+                    table_index: TableIndex {
+                        index: vec![TableName::from(MASTER_TABLE_NAME.to_string())],
+                    },
+                    tables: vec![Self::make_master_table_schema()],
+                    index_definitions: vec![],
+                },
+                btree_node_width: t,
+                request_counter: 0,
+                last_write_table_id: None,
+            };
+
+            bootstrap_executor.schema = bootstrap_executor.load_schema();
+            bootstrap_executor
+        }
+
     pub fn exit(&self) {
         self.pager_accessor
             .access_pager_write(|p| p.flush())
@@ -190,6 +211,55 @@ impl QueryExecutor {
             result.err().unwrap()
         } else {
             result.expect("just checked")
+        }
+    }
+
+    pub fn prepare_in_transaction_context(
+        &mut self,
+        query: String,
+        tx_id: Option<TransactionId>,
+    ) -> QueryResult {
+        if let Err(status) = self.pager_accessor.set_current_transaction(tx_id) {
+            return QueryResult::err(status);
+        }
+
+        let result = self.prepare(query);
+        let _ = self.pager_accessor.set_current_transaction(None);
+        result
+    }
+
+    pub fn prepare_in_implicit_transaction(&mut self, query: String) -> QueryResult {
+        let implicit_tx_id = match self.pager_accessor.begin_transaction_with_id() {
+            Ok(tx_id) => tx_id,
+            Err(status) => return QueryResult::err(status),
+        };
+
+        if let Err(status) = self
+            .pager_accessor
+            .set_current_transaction(Some(implicit_tx_id))
+        {
+            return QueryResult::err(status);
+        }
+
+        let statement_result = self.prepare(query);
+
+        if let Err(status) = self
+            .pager_accessor
+            .set_current_transaction(Some(implicit_tx_id))
+        {
+            return QueryResult::err(status);
+        }
+
+        if statement_result.success {
+            let commit_result = self.prepare("COMMIT".to_string());
+            if commit_result.success {
+                statement_result
+            } else {
+                commit_result
+            }
+        } else {
+            let _ = self.prepare("ROLLBACK".to_string());
+            statement_result
         }
     }
 
@@ -1104,7 +1174,7 @@ impl QueryExecutor {
         db
     }
 
-    fn reload_schema(&mut self) -> Result<QueryResult, QueryResult> {
+    pub fn reload_schema(&mut self) -> Result<QueryResult, QueryResult> {
         self.schema = self.load_schema();
         Ok(QueryResult::went_fine())
     }

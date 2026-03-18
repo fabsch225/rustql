@@ -20,6 +20,7 @@ use std::hash::{Hash, Hasher};
 use std::io::{ErrorKind, Read, Seek, SeekFrom, Write};
 use std::os::unix::fs::FileExt;
 use std::sync::{Arc, RwLock};
+use std::thread::ThreadId;
 use std::{fmt, usize};
 
 #[derive(PartialEq, Clone)]
@@ -152,7 +153,7 @@ pub struct PagerCore {
     file: File,
     next_page_index: usize,
     transactions: HashMap<TransactionId, TransactionState>,
-    current_transaction_id: Option<TransactionId>,
+    current_transaction_ids: HashMap<ThreadId, TransactionId>,
     next_transaction_id: TransactionId,
     table_locks: HashMap<String, TableLock>,
 }
@@ -225,11 +226,11 @@ impl PagerAccessor {
     }
 
     pub fn is_transaction_active(&self) -> bool {
-        self.access_pager_read(|p| p.current_transaction_id.is_some())
+        self.access_pager_read(|p| p.current_transaction_id().is_some())
     }
 
     pub fn current_transaction_id(&self) -> Option<TransactionId> {
-        self.access_pager_read(|p| p.current_transaction_id)
+        self.access_pager_read(|p| p.current_transaction_id())
     }
 
     //this does create lots of overhead / could be removed
@@ -308,17 +309,28 @@ impl PagerAccessor {
 }
 
 impl PagerCore {
+    fn current_thread_id() -> ThreadId {
+        std::thread::current().id()
+    }
+
+    fn current_transaction_id(&self) -> Option<TransactionId> {
+        self.current_transaction_ids
+            .get(&Self::current_thread_id())
+            .copied()
+    }
+
     fn get_visible_next_page_index(&self) -> usize {
         self.next_page_index
     }
 
     pub fn begin_transaction(&mut self) -> Result<(), Status> {
-        if self.current_transaction_id.is_some() {
+        if self.current_transaction_id().is_some() {
             return Err(ExceptionTransactionAlreadyActive);
         }
 
         let tx_id = self.begin_transaction_with_id()?;
-        self.current_transaction_id = Some(tx_id);
+        self.current_transaction_ids
+            .insert(Self::current_thread_id(), tx_id);
         Ok(())
     }
 
@@ -342,14 +354,17 @@ impl PagerCore {
         {
             return Err(ExceptionNoActiveTransaction);
         }
-        self.current_transaction_id = tx_id;
+        let thread_id = Self::current_thread_id();
+        if let Some(id) = tx_id {
+            self.current_transaction_ids.insert(thread_id, id);
+        } else {
+            self.current_transaction_ids.remove(&thread_id);
+        }
         Ok(())
     }
 
     pub fn commit_transaction(&mut self) -> Result<(), Status> {
-        let tx_id = self
-            .current_transaction_id
-            .ok_or(ExceptionNoActiveTransaction)?;
+        let tx_id = self.current_transaction_id().ok_or(ExceptionNoActiveTransaction)?;
         self.commit_transaction_by_id(tx_id)
     }
 
@@ -371,16 +386,12 @@ impl PagerCore {
             }
         }
 
-        if self.current_transaction_id == Some(tx_id) {
-            self.current_transaction_id = None;
-        }
+        self.current_transaction_ids.retain(|_, bound| *bound != tx_id);
         Ok(())
     }
 
     pub fn rollback_transaction(&mut self) -> Result<(), Status> {
-        let tx_id = self
-            .current_transaction_id
-            .ok_or(ExceptionNoActiveTransaction)?;
+        let tx_id = self.current_transaction_id().ok_or(ExceptionNoActiveTransaction)?;
         self.rollback_transaction_by_id(tx_id)
     }
 
@@ -398,14 +409,12 @@ impl PagerCore {
             }
         }
 
-        if self.current_transaction_id == Some(tx_id) {
-            self.current_transaction_id = None;
-        }
+        self.current_transaction_ids.retain(|_, bound| *bound != tx_id);
         Ok(())
     }
 
     pub fn lock_table_for_current_transaction(&mut self, table_name: &str) -> Result<(), Status> {
-        let Some(tx_id) = self.current_transaction_id else {
+        let Some(tx_id) = self.current_transaction_id() else {
             return Ok(());
         };
 
@@ -513,7 +522,7 @@ impl PagerCore {
             file,
             next_page_index,
             transactions: HashMap::new(),
-            current_transaction_id: None,
+            current_transaction_ids: HashMap::new(),
             next_transaction_id: 1,
             table_locks: HashMap::new(),
         }))
@@ -536,7 +545,7 @@ impl PagerCore {
     }
 
     pub fn access_page_read(&mut self, position: &Position) -> Result<PageContainer, Status> {
-        if let Some(tx_id) = self.current_transaction_id
+        if let Some(tx_id) = self.current_transaction_id()
             && let Some(tx_page) = self
                 .transactions
                 .get(&tx_id)
@@ -568,7 +577,7 @@ impl PagerCore {
     }
 
     pub fn try_read_page_from_cache(&self, position: &Position) -> Option<PageContainer> {
-        if let Some(tx_id) = self.current_transaction_id
+        if let Some(tx_id) = self.current_transaction_id()
             && let Some(tx_page) = self
                 .transactions
                 .get(&tx_id)
@@ -582,7 +591,7 @@ impl PagerCore {
 
     //this should be the only function that writes to pages, so we can keep track of the dirty-flag
     pub fn access_page_write(&mut self, position: &Position) -> Result<&mut PageContainer, Status> {
-        if let Some(tx_id) = self.current_transaction_id {
+        if let Some(tx_id) = self.current_transaction_id() {
             if !self
                 .transactions
                 .get(&tx_id)
@@ -641,7 +650,7 @@ impl PagerCore {
     }
 
     pub fn create_page(&mut self) -> Result<usize, Status> {
-        if let Some(tx_id) = self.current_transaction_id {
+        if let Some(tx_id) = self.current_transaction_id() {
             let page_index = self.next_page_index;
             self.next_page_index += 1;
 

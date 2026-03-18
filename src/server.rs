@@ -1,10 +1,11 @@
 use crate::executor::QueryExecutor;
+use crate::pager::PagerAccessor;
 use crate::pager::{TransactionId, Type};
 use crate::schema::Field;
 use crate::serializer::Serializer;
 use std::io::{self, ErrorKind, Read, Write};
 use std::net::{TcpListener, TcpStream};
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 use std::thread;
 
 const MAGIC: &[u8; 4] = b"RSQL";
@@ -46,7 +47,11 @@ pub fn serve_tcp(
     db_path: &str,
     btree_node_width: usize,
 ) -> io::Result<()> {
-    let engine = Arc::new(RwLock::new(QueryExecutor::init(db_path, btree_node_width)));
+    let shared_pager = {
+        let bootstrap = QueryExecutor::init(db_path, btree_node_width);
+        bootstrap.pager_accessor.clone()
+    };
+    let shared_pager = Arc::new(shared_pager);
 
     let listener = TcpListener::bind(bind_addr)?;
     println!("RustQL TCP server listening on {bind_addr}");
@@ -54,10 +59,14 @@ pub fn serve_tcp(
     for stream in listener.incoming() {
         match stream {
             Ok(tcp_stream) => {
-                let engine = engine.clone();
+                let shared_pager = shared_pager.clone();
 
                 thread::spawn(move || {
-                    if let Err(e) = handle_client(tcp_stream, engine) {
+                    let executor = QueryExecutor::from_pager_accessor(
+                        (*shared_pager).clone(),
+                        btree_node_width,
+                    );
+                    if let Err(e) = handle_client(tcp_stream, executor) {
                         eprintln!("client connection ended: {e}");
                     }
                 });
@@ -71,7 +80,7 @@ pub fn serve_tcp(
 
 fn handle_client(
     mut stream: TcpStream,
-    engine: Arc<RwLock<QueryExecutor>>,
+    mut executor: QueryExecutor,
 ) -> io::Result<()> {
     /*
      * Connection-local transaction context.
@@ -89,7 +98,7 @@ fn handle_client(
         let request = match read_request(&mut stream) {
             Ok(request) => request,
             Err(e) if e.kind() == ErrorKind::UnexpectedEof => {
-                rollback_open_transaction(&engine, active_tx_id);
+                rollback_open_transaction(&mut executor, active_tx_id);
                 return Ok(());
             }
             Err(e) => return Err(e),
@@ -103,12 +112,10 @@ fn handle_client(
          */
         let tx_control = parse_transaction_control(&query);
 
-        let mut guard = engine
-            .write()
-            .map_err(|_| io::Error::other("engine write lock poisoned"))?;
-
-        if let Err(status) = guard.pager_accessor.set_current_transaction(active_tx_id) {
-            return Err(io::Error::other(format!("failed to bind transaction context: {:?}", status)));
+        if let Err(err_result) = executor.reload_schema() {
+            let message = decode_message_from_dataframe(&err_result.data)
+                .unwrap_or_else(|| "schema reload failed".to_string());
+            return Err(io::Error::other(message));
         }
 
         /*
@@ -125,15 +132,15 @@ fn handle_client(
          *    inside that transaction and are not auto-committed.
          */
         let mut result = if active_tx_id.is_none() && tx_control == TransactionControl::Begin {
-            let begin_result = guard.prepare(query);
+            let begin_result = executor.prepare_in_transaction_context(query, None);
             if begin_result.success {
-                active_tx_id = guard.pager_accessor.current_transaction_id();
+                active_tx_id = executor.pager_accessor.current_transaction_id();
             }
             begin_result
         } else if active_tx_id.is_some()
             && (tx_control == TransactionControl::Commit || tx_control == TransactionControl::Rollback)
         {
-            let end_result = guard.prepare(query);
+            let end_result = executor.prepare_in_transaction_context(query, active_tx_id);
             if end_result.success {
                 active_tx_id = None;
             }
@@ -145,45 +152,10 @@ fn handle_client(
         {
             crate::executor::QueryResult::err(crate::debug::Status::ExceptionNoActiveTransaction)
         } else if active_tx_id.is_some() {
-            guard.prepare(query)
+            executor.prepare_in_transaction_context(query, active_tx_id)
         } else {
-            match guard.pager_accessor.begin_transaction_with_id() {
-                Ok(implicit_tx_id) => {
-                    if let Err(status) = guard
-                        .pager_accessor
-                        .set_current_transaction(Some(implicit_tx_id))
-                    {
-                        crate::executor::QueryResult::err(status)
-                    } else {
-                        let statement_result = guard.prepare(query);
-                        guard
-                            .pager_accessor
-                            .set_current_transaction(Some(implicit_tx_id))
-                            .ok();
-
-                        if statement_result.success {
-                            let commit_result = guard.prepare("COMMIT".to_string());
-                            if commit_result.success {
-                                statement_result
-                            } else {
-                                commit_result
-                            }
-                        } else {
-                            let _ = guard.prepare("ROLLBACK".to_string());
-                            statement_result
-                        }
-                    }
-                }
-                Err(status) => crate::executor::QueryResult::err(status),
-            }
+            executor.prepare_in_implicit_transaction(query)
         };
-
-        /*
-         * Clear bound transaction context on the shared executor after each
-         * request. The real ownership is `active_tx_id` above; this reset
-         * prevents context leakage between concurrently handled clients.
-         */
-        let _ = guard.pager_accessor.set_current_transaction(None);
 
         let success = result.success;
         let mut data = result.data;
@@ -226,7 +198,7 @@ fn parse_transaction_control(sql: &str) -> TransactionControl {
     }
 }
 
-fn rollback_open_transaction(engine: &Arc<RwLock<QueryExecutor>>, tx_id: Option<TransactionId>) {
+fn rollback_open_transaction(executor: &mut QueryExecutor, tx_id: Option<TransactionId>) {
     /*
      * Safety net on disconnect:
      * if a client drops while holding an explicit transaction, we rollback
@@ -236,10 +208,8 @@ fn rollback_open_transaction(engine: &Arc<RwLock<QueryExecutor>>, tx_id: Option<
         return;
     };
 
-    if let Ok(mut guard) = engine.write() {
-        let _ = guard.pager_accessor.rollback_transaction_by_id(id);
-        let _ = guard.pager_accessor.set_current_transaction(None);
-    }
+    let _ = executor.pager_accessor.rollback_transaction_by_id(id);
+    let _ = executor.pager_accessor.set_current_transaction(None);
 }
 
 fn decode_message_from_dataframe(data: &crate::dataframe::DataFrame) -> Option<String> {
@@ -703,35 +673,28 @@ mod tests {
     #[test]
     fn test_rollback_open_transaction_no_tx_is_noop() {
         let db_path = unique_db_path("rustql_server_test_noop");
-        let engine = Arc::new(RwLock::new(QueryExecutor::init(&db_path, 3)));
-        rollback_open_transaction(&engine, None);
-        assert!(engine.read().unwrap().pager_accessor.current_transaction_id().is_none());
+        let mut executor = QueryExecutor::init(&db_path, 3);
+        rollback_open_transaction(&mut executor, None);
+        assert!(executor.pager_accessor.current_transaction_id().is_none());
         let _ = fs::remove_file(db_path);
     }
 
     #[test]
     fn test_rollback_open_transaction_clears_tx() {
         let db_path = unique_db_path("rustql_server_test_rb");
-        let engine = Arc::new(RwLock::new(QueryExecutor::init(&db_path, 3)));
+        let mut executor = QueryExecutor::init(&db_path, 3);
 
-        let tx_id = {
-            let mut guard = engine.write().unwrap();
-            let tx = guard.pager_accessor.begin_transaction_with_id().unwrap();
-            guard
-                .pager_accessor
-                .set_current_transaction(Some(tx))
-                .unwrap();
-            tx
-        };
+        let tx_id = executor.pager_accessor.begin_transaction_with_id().unwrap();
+        executor
+            .pager_accessor
+            .set_current_transaction(Some(tx_id))
+            .unwrap();
 
-        rollback_open_transaction(&engine, Some(tx_id));
+        rollback_open_transaction(&mut executor, Some(tx_id));
 
-        {
-            let guard = engine.read().unwrap();
-            assert!(guard.pager_accessor.current_transaction_id().is_none());
-            let should_fail = guard.pager_accessor.set_current_transaction(Some(tx_id));
-            assert!(matches!(should_fail, Err(Status::ExceptionNoActiveTransaction)));
-        }
+        assert!(executor.pager_accessor.current_transaction_id().is_none());
+        let should_fail = executor.pager_accessor.set_current_transaction(Some(tx_id));
+        assert!(matches!(should_fail, Err(Status::ExceptionNoActiveTransaction)));
 
         let _ = fs::remove_file(db_path);
     }
