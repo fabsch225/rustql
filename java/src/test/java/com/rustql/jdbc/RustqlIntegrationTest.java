@@ -16,6 +16,7 @@ import java.sql.SQLException;
 import java.sql.Statement;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.Properties;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
@@ -232,7 +233,11 @@ class RustqlIntegrationTest {
         CountDownLatch done = new CountDownLatch(2);
         AtomicReference<Throwable> t1Error = new AtomicReference<>();
         AtomicReference<Throwable> t2Error = new AtomicReference<>();
-        AtomicReference<SQLException> expectedConflict = new AtomicReference<>();
+
+        Properties retryProps = new Properties();
+        retryProps.setProperty("lockRetryMaxRetries", "12");
+        retryProps.setProperty("lockRetryInitialBackoffMs", "25");
+        retryProps.setProperty("lockRetryMaxBackoffMs", "120");
 
         Thread t1 = new Thread(() -> {
             try (Connection c1 = DriverManager.getConnection(jdbcUrl());
@@ -250,16 +255,10 @@ class RustqlIntegrationTest {
         }, "it-lock-owner");
 
         Thread t2 = new Thread(() -> {
-            try (Connection c2 = DriverManager.getConnection(jdbcUrl());
+            try (Connection c2 = DriverManager.getConnection(jdbcUrl(), retryProps);
                  Statement s2 = c2.createStatement()) {
                 assertTrue(tx1Locked.await(5, TimeUnit.SECONDS));
-                try {
-                    s2.execute("INSERT INTO " + users + " (id, name) VALUES (2, 'charlie')");
-                } catch (SQLException ex) {
-                    expectedConflict.set(ex);
-                }
-
-                Thread.sleep(800);
+                // First attempt conflicts while tx1 holds the table lock. Driver retries with backoff.
                 s2.execute("INSERT INTO " + users + " (id, name) VALUES (2, 'charlie')");
             } catch (Throwable e) {
                 t2Error.set(e);
@@ -278,9 +277,6 @@ class RustqlIntegrationTest {
         if (t2Error.get() != null) {
             throw new AssertionError("t2 failed", t2Error.get());
         }
-
-        SQLException conflict = expectedConflict.get();
-        assertTrue(conflict != null && conflict.getMessage().contains("ExceptionTableLocked"));
 
         try (Connection verify = DriverManager.getConnection(jdbcUrl());
              Statement s = verify.createStatement()) {
@@ -318,6 +314,55 @@ class RustqlIntegrationTest {
         try (Connection c2 = DriverManager.getConnection(jdbcUrl());
              Statement s2 = c2.createStatement()) {
             assertEquals(1, countRows(s2, "SELECT id, name FROM " + table + " WHERE id = 7"));
+        }
+    }
+
+    @Test
+    void lockRetryBackoffExhaustionStillFails() throws Exception {
+        String users = "it_demo_retry_exhaust_" + System.nanoTime();
+
+        try (Connection setup = DriverManager.getConnection(jdbcUrl());
+             Statement s = setup.createStatement()) {
+            s.execute("CREATE TABLE " + users + " (id Integer, name Varchar(25))");
+        }
+
+        CountDownLatch tx1Locked = new CountDownLatch(1);
+        CountDownLatch done = new CountDownLatch(1);
+        AtomicReference<Throwable> ownerError = new AtomicReference<>();
+
+        Thread owner = new Thread(() -> {
+            try (Connection c1 = DriverManager.getConnection(jdbcUrl());
+                 Statement s1 = c1.createStatement()) {
+                s1.execute("BEGIN TRANSACTION");
+                s1.execute("INSERT INTO " + users + " (id, name) VALUES (1, 'owner')");
+                tx1Locked.countDown();
+                Thread.sleep(1200);
+                s1.execute("COMMIT");
+            } catch (Throwable e) {
+                ownerError.set(e);
+            } finally {
+                done.countDown();
+            }
+        }, "it-retry-owner");
+
+        owner.start();
+        assertTrue(tx1Locked.await(5, TimeUnit.SECONDS));
+
+        Properties lowRetryProps = new Properties();
+        lowRetryProps.setProperty("lockRetryMaxRetries", "1");
+        lowRetryProps.setProperty("lockRetryInitialBackoffMs", "20");
+        lowRetryProps.setProperty("lockRetryMaxBackoffMs", "30");
+
+        try (Connection waiter = DriverManager.getConnection(jdbcUrl(), lowRetryProps);
+             Statement ws = waiter.createStatement()) {
+            SQLException ex = assertThrows(SQLException.class,
+                () -> ws.execute("INSERT INTO " + users + " (id, name) VALUES (2, 'waiter')"));
+            assertTrue(ex.getMessage().contains("ExceptionTableLocked"));
+        }
+
+        assertTrue(done.await(5, TimeUnit.SECONDS));
+        if (ownerError.get() != null) {
+            throw new AssertionError("owner failed", ownerError.get());
         }
     }
 

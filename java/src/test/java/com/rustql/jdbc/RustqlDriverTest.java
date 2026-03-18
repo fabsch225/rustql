@@ -1,12 +1,16 @@
 package com.rustql.jdbc;
 
-import org.junit.jupiter.api.Test;
-
 import java.sql.Connection;
 import java.sql.SQLException;
 import java.util.Properties;
 
-import static org.junit.jupiter.api.Assertions.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import org.junit.jupiter.api.Test;
 
 class RustqlDriverTest {
 
@@ -37,6 +41,23 @@ class RustqlDriverTest {
         assertEquals("db.local", rustqlConnection.host());
         assertEquals(7777, rustqlConnection.port());
         assertEquals(1234, rustqlConnection.timeoutMs());
+    }
+
+    @Test
+    void connectParsesRetryBackoffProperties() throws SQLException {
+        RustqlDriver driver = new RustqlDriver();
+        Properties properties = new Properties();
+        properties.setProperty("lockRetryMaxRetries", "7");
+        properties.setProperty("lockRetryInitialBackoffMs", "15");
+        properties.setProperty("lockRetryMaxBackoffMs", "120");
+
+        Connection connection = driver.connect("jdbc:rustql://db.local:7777", properties);
+        assertNotNull(connection);
+
+        RustqlConnection rustqlConnection = (RustqlConnection) connection;
+        assertEquals(7, rustqlConnection.lockRetryMaxRetries());
+        assertEquals(15, rustqlConnection.lockRetryInitialBackoffMs());
+        assertEquals(120, rustqlConnection.lockRetryMaxBackoffMs());
     }
 
     @Test

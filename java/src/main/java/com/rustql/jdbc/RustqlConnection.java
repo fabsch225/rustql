@@ -23,16 +23,44 @@ import java.util.Properties;
 import java.util.concurrent.Executor;
 
 final class RustqlConnection implements Connection {
+    static final int DEFAULT_LOCK_RETRY_MAX_RETRIES = 5;
+    static final int DEFAULT_LOCK_RETRY_INITIAL_BACKOFF_MS = 50;
+    static final int DEFAULT_LOCK_RETRY_MAX_BACKOFF_MS = 500;
+
     private final String host;
     private final int port;
     private final int timeoutMs;
+    private final int lockRetryMaxRetries;
+    private final int lockRetryInitialBackoffMs;
+    private final int lockRetryMaxBackoffMs;
     private boolean closed;
     private RustqlProtocol.Session session;
 
     RustqlConnection(String host, int port, int timeoutMs) {
+        this(
+            host,
+            port,
+            timeoutMs,
+            DEFAULT_LOCK_RETRY_MAX_RETRIES,
+            DEFAULT_LOCK_RETRY_INITIAL_BACKOFF_MS,
+            DEFAULT_LOCK_RETRY_MAX_BACKOFF_MS
+        );
+    }
+
+    RustqlConnection(
+        String host,
+        int port,
+        int timeoutMs,
+        int lockRetryMaxRetries,
+        int lockRetryInitialBackoffMs,
+        int lockRetryMaxBackoffMs
+    ) {
         this.host = host;
         this.port = port;
         this.timeoutMs = timeoutMs;
+        this.lockRetryMaxRetries = Math.max(0, lockRetryMaxRetries);
+        this.lockRetryInitialBackoffMs = Math.max(1, lockRetryInitialBackoffMs);
+        this.lockRetryMaxBackoffMs = Math.max(this.lockRetryInitialBackoffMs, lockRetryMaxBackoffMs);
     }
 
     @Override
@@ -51,6 +79,18 @@ final class RustqlConnection implements Connection {
 
     int timeoutMs() {
         return timeoutMs;
+    }
+
+    int lockRetryMaxRetries() {
+        return lockRetryMaxRetries;
+    }
+
+    int lockRetryInitialBackoffMs() {
+        return lockRetryInitialBackoffMs;
+    }
+
+    int lockRetryMaxBackoffMs() {
+        return lockRetryMaxBackoffMs;
     }
 
     @Override

@@ -28,7 +28,33 @@ public final class RustqlDriver implements Driver {
 
         Endpoint endpoint = parseEndpoint(url);
         int timeoutMs = parseTimeout(info);
-        return new RustqlConnection(endpoint.host, endpoint.port, timeoutMs);
+        int lockRetryMaxRetries = parseIntProperty(
+            info,
+            "lockRetryMaxRetries",
+            RustqlConnection.DEFAULT_LOCK_RETRY_MAX_RETRIES,
+            0
+        );
+        int lockRetryInitialBackoffMs = parseIntProperty(
+            info,
+            "lockRetryInitialBackoffMs",
+            RustqlConnection.DEFAULT_LOCK_RETRY_INITIAL_BACKOFF_MS,
+            1
+        );
+        int lockRetryMaxBackoffMs = parseIntProperty(
+            info,
+            "lockRetryMaxBackoffMs",
+            RustqlConnection.DEFAULT_LOCK_RETRY_MAX_BACKOFF_MS,
+            1
+        );
+
+        return new RustqlConnection(
+            endpoint.host,
+            endpoint.port,
+            timeoutMs,
+            lockRetryMaxRetries,
+            lockRetryInitialBackoffMs,
+            lockRetryMaxBackoffMs
+        );
     }
 
     @Override
@@ -40,7 +66,31 @@ public final class RustqlDriver implements Driver {
     public DriverPropertyInfo[] getPropertyInfo(String url, Properties info) {
         DriverPropertyInfo timeout = new DriverPropertyInfo("timeoutMs", info.getProperty("timeoutMs", "5000"));
         timeout.description = "Socket connect/read timeout in milliseconds";
-        return new DriverPropertyInfo[]{timeout};
+        DriverPropertyInfo retryCount = new DriverPropertyInfo(
+            "lockRetryMaxRetries",
+            info.getProperty("lockRetryMaxRetries", String.valueOf(RustqlConnection.DEFAULT_LOCK_RETRY_MAX_RETRIES))
+        );
+        retryCount.description = "Number of retries after ExceptionTableLocked";
+
+        DriverPropertyInfo retryInitialBackoff = new DriverPropertyInfo(
+            "lockRetryInitialBackoffMs",
+            info.getProperty(
+                "lockRetryInitialBackoffMs",
+                String.valueOf(RustqlConnection.DEFAULT_LOCK_RETRY_INITIAL_BACKOFF_MS)
+            )
+        );
+        retryInitialBackoff.description = "Initial lock-conflict retry backoff in milliseconds";
+
+        DriverPropertyInfo retryMaxBackoff = new DriverPropertyInfo(
+            "lockRetryMaxBackoffMs",
+            info.getProperty(
+                "lockRetryMaxBackoffMs",
+                String.valueOf(RustqlConnection.DEFAULT_LOCK_RETRY_MAX_BACKOFF_MS)
+            )
+        );
+        retryMaxBackoff.description = "Maximum lock-conflict retry backoff in milliseconds";
+
+        return new DriverPropertyInfo[]{timeout, retryCount, retryInitialBackoff, retryMaxBackoff};
     }
 
     @Override
@@ -64,11 +114,16 @@ public final class RustqlDriver implements Driver {
     }
 
     private static int parseTimeout(Properties info) {
-        String raw = info.getProperty("timeoutMs", "5000");
+        return parseIntProperty(info, "timeoutMs", 5000, 1);
+    }
+
+    private static int parseIntProperty(Properties info, String key, int defaultValue, int minValue) {
+        String raw = info.getProperty(key, String.valueOf(defaultValue));
         try {
-            return Integer.parseInt(raw);
+            int parsed = Integer.parseInt(raw);
+            return Math.max(minValue, parsed);
         } catch (NumberFormatException ignored) {
-            return 5000;
+            return defaultValue;
         }
     }
 

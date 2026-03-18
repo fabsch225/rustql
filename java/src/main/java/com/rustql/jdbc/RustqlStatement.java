@@ -8,6 +8,7 @@ import java.sql.SQLFeatureNotSupportedException;
 import java.sql.SQLWarning;
 import java.sql.Statement;
 import java.util.List;
+import java.util.concurrent.locks.LockSupport;
 
 import javax.sql.RowSetMetaData;
 import javax.sql.rowset.CachedRowSet;
@@ -30,15 +31,43 @@ final class RustqlStatement implements Statement {
     @Override
     public ResultSet executeQuery(String sql) throws SQLException {
         ensureOpen();
-        RustqlProtocol.QueryResponse response = connection.execute(sql, fetchSize);
-
-        if (response.status != 0) {
-            throw new SQLException(response.message);
-        }
+        RustqlProtocol.QueryResponse response = executeWithRetry(sql);
 
         this.lastResultSet = toCachedRowSet(response.columns, response.rows);
         this.updateCount = -1;
         return this.lastResultSet;
+    }
+
+    private RustqlProtocol.QueryResponse executeWithRetry(String sql) throws SQLException {
+        int retries = 0;
+        long backoffMs = connection.lockRetryInitialBackoffMs();
+
+        while (true) {
+            RustqlProtocol.QueryResponse response = connection.execute(sql, fetchSize);
+
+            if (response.status == 0) {
+                return response;
+            }
+
+            boolean retryable = response.message != null && response.message.contains("ExceptionTableLocked");
+            if (!retryable || retries >= connection.lockRetryMaxRetries()) {
+                throw new SQLException(response.message);
+            }
+
+            waitForRetry(backoffMs);
+            if (Thread.currentThread().isInterrupted()) {
+                Thread.currentThread().interrupt();
+                throw new SQLException("Interrupted while waiting to retry lock-conflicted statement");
+            }
+
+            retries++;
+            backoffMs = Math.min(backoffMs * 2L, connection.lockRetryMaxBackoffMs());
+        }
+    }
+
+    private void waitForRetry(long backoffMs) {
+        long nanos = Math.max(1L, backoffMs) * 1_000_000L;
+        LockSupport.parkNanos(nanos);
     }
 
     @Override
