@@ -1,11 +1,13 @@
 #[cfg(test)]
 mod tests {
     use rustql::btree::BTreeNode;
+    use rustql::debug::Status;
     use rustql::pager::{Key, PagerAccessor, PagerCore, Position, Row, Type, PAGE_SIZE};
     use rustql::pager_proxy::{PageManager, PagerProxy};
     use rustql::schema::{Field, TableSchema};
     use rustql::serializer::Serializer;
     use std::collections::HashSet;
+    use std::panic::{catch_unwind, AssertUnwindSafe};
 
     fn get_schema() -> TableSchema {
         TableSchema {
@@ -399,6 +401,47 @@ mod tests {
             .lock_table_for_transaction_id(tx2, "users")
             .is_ok());
 
+        pager_interface.rollback_transaction_by_id(tx2).unwrap();
+    }
+
+    #[test]
+    fn test_commit_failure_is_atomic_and_does_not_partially_finalize_tx() {
+        let pager_interface = PagerCore::init_from_file("./default.db.bin").unwrap();
+
+        // First, poison the cache lock by panicking while a non-transactional page write holds it.
+        let page = pager_interface.access_pager_write(|p| p.create_page()).unwrap();
+        let poison_pos = Position::new(page, 0);
+        let poisoned = catch_unwind(AssertUnwindSafe(|| {
+            let _ = pager_interface.access_pager_write(|p| {
+                p.with_page_write(&poison_pos, |_page| {
+                    panic!("intentional panic to poison cache lock");
+                })
+            });
+        }));
+        assert!(poisoned.is_err());
+
+        // Tx1 acquires a table lock. Commit fails on poisoned cache lock before finalizing tx state.
+        let tx1 = pager_interface.begin_transaction_with_id().unwrap();
+        pager_interface
+            .lock_table_for_transaction_id(tx1, "atomicity_leak_table")
+            .unwrap();
+
+        let commit_result = pager_interface.commit_transaction_by_id(tx1);
+        assert_eq!(commit_result, Err(Status::InternalExceptionPagerWriteLock));
+
+        // Tx2 cannot acquire the same lock while tx1 is still active.
+        let tx2 = pager_interface.begin_transaction_with_id().unwrap();
+        let lock_result = pager_interface.lock_table_for_transaction_id(tx2, "atomicity_leak_table");
+        assert_eq!(lock_result, Err(Status::ExceptionTableLocked));
+
+        // Rollback tx1 should succeed (tx1 was not partially finalized/removed by failed commit).
+        assert_eq!(pager_interface.rollback_transaction_by_id(tx1), Ok(()));
+
+        // After tx1 rollback, tx2 can acquire the table lock.
+        assert_eq!(
+            pager_interface.lock_table_for_transaction_id(tx2, "atomicity_leak_table"),
+            Ok(())
+        );
         pager_interface.rollback_transaction_by_id(tx2).unwrap();
     }
 }
