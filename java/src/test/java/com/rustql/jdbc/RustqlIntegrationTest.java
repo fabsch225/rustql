@@ -16,6 +16,9 @@ import java.sql.SQLException;
 import java.sql.Statement;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 
 import org.junit.jupiter.api.AfterAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -152,6 +155,179 @@ class RustqlIntegrationTest {
 
                 assertFalse(rs.next());
             }
+        }
+    }
+
+    @Test
+    void disjointTablesConcurrentWritesSucceed() throws Exception {
+        String users = "it_demo_users_" + System.nanoTime();
+        String orders = "it_demo_orders_" + System.nanoTime();
+
+        try (Connection setup = DriverManager.getConnection(jdbcUrl());
+             Statement s = setup.createStatement()) {
+            s.execute("CREATE TABLE " + users + " (id Integer, name Varchar(25))");
+            s.execute("CREATE TABLE " + orders + " (id Integer, note Varchar(25))");
+        }
+
+        CountDownLatch tx1Locked = new CountDownLatch(1);
+        CountDownLatch done = new CountDownLatch(2);
+        AtomicReference<Throwable> t1Error = new AtomicReference<>();
+        AtomicReference<Throwable> t2Error = new AtomicReference<>();
+
+        Thread t1 = new Thread(() -> {
+            try (Connection c1 = DriverManager.getConnection(jdbcUrl());
+                 Statement s1 = c1.createStatement()) {
+                s1.execute("BEGIN TRANSACTION");
+                s1.execute("INSERT INTO " + users + " (id, name) VALUES (1, 'alice')");
+                tx1Locked.countDown();
+                Thread.sleep(500);
+                s1.execute("COMMIT");
+            } catch (Throwable e) {
+                t1Error.set(e);
+            } finally {
+                done.countDown();
+            }
+        }, "it-disjoint-users");
+
+        Thread t2 = new Thread(() -> {
+            try (Connection c2 = DriverManager.getConnection(jdbcUrl());
+                 Statement s2 = c2.createStatement()) {
+                assertTrue(tx1Locked.await(5, TimeUnit.SECONDS));
+                s2.execute("INSERT INTO " + orders + " (id, note) VALUES (100, 'ok-disjoint')");
+            } catch (Throwable e) {
+                t2Error.set(e);
+            } finally {
+                done.countDown();
+            }
+        }, "it-disjoint-orders");
+
+        t1.start();
+        t2.start();
+        assertTrue(done.await(10, TimeUnit.SECONDS));
+
+        if (t1Error.get() != null) {
+            throw new AssertionError("t1 failed", t1Error.get());
+        }
+        if (t2Error.get() != null) {
+            throw new AssertionError("t2 failed", t2Error.get());
+        }
+
+        try (Connection verify = DriverManager.getConnection(jdbcUrl());
+             Statement s = verify.createStatement()) {
+            assertEquals(1, countRows(s, "SELECT id, name FROM " + users));
+            assertEquals(1, countRows(s, "SELECT id, note FROM " + orders));
+        }
+    }
+
+    @Test
+    void sameTableLockConflictThenRetryAfterCommitSucceeds() throws Exception {
+        String users = "it_demo_lock_users_" + System.nanoTime();
+
+        try (Connection setup = DriverManager.getConnection(jdbcUrl());
+             Statement s = setup.createStatement()) {
+            s.execute("CREATE TABLE " + users + " (id Integer, name Varchar(25))");
+        }
+
+        CountDownLatch tx1Locked = new CountDownLatch(1);
+        CountDownLatch done = new CountDownLatch(2);
+        AtomicReference<Throwable> t1Error = new AtomicReference<>();
+        AtomicReference<Throwable> t2Error = new AtomicReference<>();
+        AtomicReference<SQLException> expectedConflict = new AtomicReference<>();
+
+        Thread t1 = new Thread(() -> {
+            try (Connection c1 = DriverManager.getConnection(jdbcUrl());
+                 Statement s1 = c1.createStatement()) {
+                s1.execute("BEGIN TRANSACTION");
+                s1.execute("INSERT INTO " + users + " (id, name) VALUES (1, 'bob')");
+                tx1Locked.countDown();
+                Thread.sleep(600);
+                s1.execute("COMMIT");
+            } catch (Throwable e) {
+                t1Error.set(e);
+            } finally {
+                done.countDown();
+            }
+        }, "it-lock-owner");
+
+        Thread t2 = new Thread(() -> {
+            try (Connection c2 = DriverManager.getConnection(jdbcUrl());
+                 Statement s2 = c2.createStatement()) {
+                assertTrue(tx1Locked.await(5, TimeUnit.SECONDS));
+                try {
+                    s2.execute("INSERT INTO " + users + " (id, name) VALUES (2, 'charlie')");
+                } catch (SQLException ex) {
+                    expectedConflict.set(ex);
+                }
+
+                Thread.sleep(800);
+                s2.execute("INSERT INTO " + users + " (id, name) VALUES (2, 'charlie')");
+            } catch (Throwable e) {
+                t2Error.set(e);
+            } finally {
+                done.countDown();
+            }
+        }, "it-lock-waiter");
+
+        t1.start();
+        t2.start();
+        assertTrue(done.await(10, TimeUnit.SECONDS));
+
+        if (t1Error.get() != null) {
+            throw new AssertionError("t1 failed", t1Error.get());
+        }
+        if (t2Error.get() != null) {
+            throw new AssertionError("t2 failed", t2Error.get());
+        }
+
+        SQLException conflict = expectedConflict.get();
+        assertTrue(conflict != null && conflict.getMessage().contains("ExceptionTableLocked"));
+
+        try (Connection verify = DriverManager.getConnection(jdbcUrl());
+             Statement s = verify.createStatement()) {
+            assertEquals(2, countRows(s, "SELECT id, name FROM " + users));
+        }
+    }
+
+    @Test
+    void rollbackDiscardsChangesInExplicitTransaction() throws SQLException {
+        String table = "it_demo_rb_" + System.nanoTime();
+
+        try (Connection connection = DriverManager.getConnection(jdbcUrl());
+             Statement statement = connection.createStatement()) {
+            statement.execute("CREATE TABLE " + table + " (id Integer, name Varchar(25))");
+            statement.execute("BEGIN TRANSACTION");
+            statement.execute("INSERT INTO " + table + " (id, name) VALUES (1, 'temp')");
+            statement.execute("ROLLBACK");
+
+            assertEquals(0, countRows(statement, "SELECT id, name FROM " + table));
+        }
+    }
+
+    @Test
+    void commitPersistsAcrossConnections() throws SQLException {
+        String table = "it_demo_commit_" + System.nanoTime();
+
+        try (Connection c1 = DriverManager.getConnection(jdbcUrl());
+             Statement s1 = c1.createStatement()) {
+            s1.execute("CREATE TABLE " + table + " (id Integer, name Varchar(25))");
+            s1.execute("BEGIN TRANSACTION");
+            s1.execute("INSERT INTO " + table + " (id, name) VALUES (7, 'persisted')");
+            s1.execute("COMMIT");
+        }
+
+        try (Connection c2 = DriverManager.getConnection(jdbcUrl());
+             Statement s2 = c2.createStatement()) {
+            assertEquals(1, countRows(s2, "SELECT id, name FROM " + table + " WHERE id = 7"));
+        }
+    }
+
+    private static int countRows(Statement statement, String sql) throws SQLException {
+        try (ResultSet rs = statement.executeQuery(sql)) {
+            int count = 0;
+            while (rs.next()) {
+                count++;
+            }
+            return count;
         }
     }
 

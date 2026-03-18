@@ -132,11 +132,16 @@ fn handle_client(
          *    inside that transaction and are not auto-committed.
          */
         let mut result = if active_tx_id.is_none() && tx_control == TransactionControl::Begin {
-            let begin_result = executor.prepare_in_transaction_context(query, None);
-            if begin_result.success {
-                active_tx_id = executor.pager_accessor.current_transaction_id();
+            if let Err(status) = executor.pager_accessor.set_current_transaction(None) {
+                crate::executor::QueryResult::err(status)
+            } else {
+                let begin_result = executor.prepare(query);
+                if begin_result.success {
+                    active_tx_id = executor.pager_accessor.current_transaction_id();
+                }
+                let _ = executor.pager_accessor.set_current_transaction(None);
+                begin_result
             }
-            begin_result
         } else if active_tx_id.is_some()
             && (tx_control == TransactionControl::Commit || tx_control == TransactionControl::Rollback)
         {

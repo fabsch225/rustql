@@ -132,6 +132,18 @@ mod tests {
     }
 
     #[test]
+    fn test_create_table_duplicate_name_with_trailing_zero_fails() {
+        let mut executor = QueryExecutor::init("./default.db.bin", BTREE_NODE_SIZE);
+        let table_name = "table_ends_with_zero0";
+
+        let first = executor.prepare(format!("CREATE TABLE {} (id Integer)", table_name));
+        assert!(first.success);
+
+        let second = executor.prepare(format!("CREATE TABLE {} (id Integer)", table_name));
+        assert!(!second.success);
+    }
+
+    #[test]
     fn test_select_all() {
         let mut executor = QueryExecutor::init("./default.db.bin", BTREE_NODE_SIZE);
         executor.prepare("CREATE TABLE test (id Integer, name String)".to_string());

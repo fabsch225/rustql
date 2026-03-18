@@ -386,8 +386,7 @@ impl QueryExecutor {
                 //check if the table already exists
                 //this could be achieved using a unique / pk constraint on the system table.
                 //but there are no constraints implemented ;D
-                let stripped_mame = q.table_name.trim_end_matches(|char| char == '0');
-                let table_name: TableName = stripped_mame.as_bytes().to_vec();
+                let table_name: TableName = q.table_name.as_bytes().to_vec();
                 if self.schema.table_index.index.contains(&table_name) {
                     return Err(QueryResult::err(Status::ExceptionTableAlreadyExists));
                 }
