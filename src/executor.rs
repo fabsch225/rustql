@@ -1036,8 +1036,9 @@ impl QueryExecutor {
         for page in pages {
             let pos = Position::new(*page, 0);
             self.pager_accessor.access_pager_write(|p| {
-                let page_container = p.access_page_write(&pos)?;
-                Serializer::set_is_deleted(page_container, true)
+                p.with_page_write(&pos, |page_container| {
+                    Serializer::set_is_deleted(page_container, true)
+                })
             })?;
         }
         Ok(())

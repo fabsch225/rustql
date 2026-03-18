@@ -90,10 +90,11 @@ impl PageManager {
 
             let next_page = Serializer::get_payload_next_page_index(&page_read.data);
             pager_interface.access_pager_write(|p| {
-                let page = p.access_page_write(&pos)?;
-                Serializer::set_payload_page_deprecated(&mut page.data, true);
-                Serializer::set_is_deleted(page, true)?;
-                Ok(())
+                    p.with_page_write(&pos, |page| {
+                        Serializer::set_payload_page_deprecated(&mut page.data, true);
+                        Serializer::set_is_deleted(page, true)?;
+                        Ok(())
+                    })
             })?;
             current_page = next_page;
         }
@@ -127,7 +128,6 @@ impl PageManager {
         for page_idx in 1..next_page_idx {
             let pos = Position::new(page_idx, 0);
             let page = pager_interface.access_pager_write(|p| p.access_page_read(&pos))?;
-
             if !Self::is_payload_page_candidate(&page)? {
                 continue;
             }
@@ -136,6 +136,19 @@ impl PageManager {
             if owner != owner_root_page || !Serializer::is_payload_page_deprecated(&page.data) {
                 continue;
             }
+
+            pager_interface.access_pager_write(|p| {
+                p.with_page_write(&pos, |page| {
+                    page.data = [0u8; PAGE_SIZE];
+                    Serializer::set_payload_next_page_index(&mut page.data, 0);
+                    Serializer::set_payload_chunk_len(&mut page.data, 0);
+                    Serializer::set_payload_page_deprecated(&mut page.data, false);
+                    Serializer::set_payload_owner_root_page(&mut page.data, owner_root_page);
+                    Serializer::set_payload_magic(&mut page.data);
+                    Serializer::set_is_deleted(page, false)?;
+                    Ok(())
+                })
+            })?;
 
             return Ok(Some(page_idx));
         }
@@ -195,23 +208,24 @@ impl PageManager {
             let pos = Position::new(page_idx, 0);
 
             pager_interface.access_pager_write(|p| {
-                let page = p.access_page_write(&pos)?;
-                page.data = [0u8; PAGE_SIZE];
+                p.with_page_write(&pos, |page| {
+                    page.data = [0u8; PAGE_SIZE];
 
-                Serializer::set_payload_next_page_index(&mut page.data, next_page_index);
-                Serializer::set_payload_chunk_len(&mut page.data, chunk.len());
-                Serializer::set_payload_page_deprecated(&mut page.data, false);
-                Serializer::set_payload_owner_root_page(&mut page.data, owner_root_page);
-                Serializer::set_payload_magic(&mut page.data);
-                page.data[PAYLOAD_HEADER_SIZE
-                    ..PAYLOAD_HEADER_SIZE + chunk.len()]
-                    .copy_from_slice(chunk);
+                    Serializer::set_payload_next_page_index(&mut page.data, next_page_index);
+                    Serializer::set_payload_chunk_len(&mut page.data, chunk.len());
+                    Serializer::set_payload_page_deprecated(&mut page.data, false);
+                    Serializer::set_payload_owner_root_page(&mut page.data, owner_root_page);
+                    Serializer::set_payload_magic(&mut page.data);
+                    page.data[PAYLOAD_HEADER_SIZE
+                        ..PAYLOAD_HEADER_SIZE + chunk.len()]
+                        .copy_from_slice(chunk);
 
-                Serializer::set_is_data_page(page, is_data_page)?;
-                Serializer::set_is_overflow_page(page, !is_data_page)?;
-                Serializer::set_is_deleted(page, false)?;
-                //Self::update_payload_page_free_space(page);
-                Ok(())
+                    Serializer::set_is_data_page(page, is_data_page)?;
+                    Serializer::set_is_overflow_page(page, !is_data_page)?;
+                    Serializer::set_is_deleted(page, false)?;
+                    //Self::update_payload_page_free_space(page);
+                    Ok(())
+                })
             })?;
 
             next_page_index = page_idx;
@@ -328,16 +342,17 @@ impl PageManager {
             }
 
             pager_interface.access_pager_write(|p| {
-                let page = p.access_page_write(&pos)?;
-                let already_deprecated = Serializer::is_payload_page_deprecated(&page.data);
-                let already_deleted = Serializer::is_deleted(page)?;
+                    p.with_page_write(&pos, |page| {
+                        let already_deprecated = Serializer::is_payload_page_deprecated(&page.data);
+                        let already_deleted = Serializer::is_deleted(page)?;
 
-                if !already_deprecated || !already_deleted {
-                    Serializer::set_payload_page_deprecated(&mut page.data, true);
-                    Serializer::set_is_deleted(page, true)?;
-                    marked += 1;
-                }
-                Ok(())
+                        if !already_deprecated || !already_deleted {
+                            Serializer::set_payload_page_deprecated(&mut page.data, true);
+                            Serializer::set_is_deleted(page, true)?;
+                            marked += 1;
+                        }
+                        Ok(())
+                    })
             })?;
         }
 
@@ -621,7 +636,7 @@ impl PageManager {
             let page = node.pager_accessor.access_pager_write(|p| p.access_page_read(&pos))?;
             let start = i * PAGE_SIZE;
             let end = std::cmp::min(start + PAGE_SIZE, node_size);
-            blob[start..end].copy_from_slice(&page.data[..(end - start)]);
+            blob[start..end].copy_from_slice(&page.data[0..(end - start)]);
         }
 
         Ok(blob)
@@ -650,24 +665,25 @@ impl PageManager {
         for i in 0..reserved {
             let pos = Position::new(node.position.page() + i, 0);
             node.pager_accessor.access_pager_write(|p| {
-                let page = p.access_page_write(&pos)?;
-                page.data.fill(0);
-                if i < pages {
-                    let start = i * PAGE_SIZE;
-                    let end = std::cmp::min(start + PAGE_SIZE, blob.len());
-                    page.data[0..(end - start)].copy_from_slice(&blob[start..end]);
-                }
-                Serializer::set_is_overflow_page(page, i > 0)?;
-                Serializer::set_is_data_page(page, false)?;
-                let bytes_on_page = if i < pages {
-                    let start = i * PAGE_SIZE;
-                    let end = std::cmp::min(start + PAGE_SIZE, blob.len());
-                    end - start
-                } else {
-                    0
-                };
-                //page.free_space = PAGE_SIZE - bytes_on_page;
-                Ok(())
+                p.with_page_write(&pos, |page| {
+                    page.data.fill(0);
+                    if i < pages {
+                        let start = i * PAGE_SIZE;
+                        let end = std::cmp::min(start + PAGE_SIZE, blob.len());
+                        page.data[0..(end - start)].copy_from_slice(&blob[start..end]);
+                    }
+                    Serializer::set_is_overflow_page(page, i > 0)?;
+                    Serializer::set_is_data_page(page, false)?;
+                    let bytes_on_page = if i < pages {
+                        let start = i * PAGE_SIZE;
+                        let end = std::cmp::min(start + PAGE_SIZE, blob.len());
+                        end - start
+                    } else {
+                        0
+                    };
+                    page.free_space = PAGE_SIZE.saturating_sub(bytes_on_page);
+                    Ok(())
+                })
             })?;
         }
 
@@ -879,7 +895,7 @@ impl PagerProxy {
         } else {
             pager_interface.access_pager_write(|p| {
                 let mut page1 = p.access_page_read(&node1.position)?;
-                let mut page2 = p.access_page_write(&node2.position)?;
+                let mut page2 = p.access_page_read(&node2.position)?;
                 Serializer::switch_nodes(
                     schema,
                     &node1.position,
@@ -887,10 +903,16 @@ impl PagerProxy {
                     &mut page1.data,
                     Some(&mut page2.data),
                 )?;
-                //PageManager::update_btree_page_free_space(page2, schema)?;
-                let mut page1_write = p.access_page_write(&node1.position)?;
-                page1_write.data = page1.data;
-                //PageManager::update_btree_page_free_space(page1_write, schema)?;
+
+                p.with_page_write(&node2.position, |page2_write| {
+                    page2_write.data = page2.data;
+                    Ok(())
+                })?;
+
+                p.with_page_write(&node1.position, |page1_write| {
+                    page1_write.data = page1.data;
+                    Ok(())
+                })?;
                 Ok(())
             })?;
         }
