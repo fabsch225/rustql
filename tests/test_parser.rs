@@ -1,6 +1,9 @@
 #[cfg(test)]
 mod tests {
-    use rustql::parser::{JoinType, ParsedQuery, ParsedQueryTreeNode, ParsedSource, Parser};
+    use rustql::parser::{
+        JoinType, ParsedConditionExpr, ParsedLogicalOp, ParsedPredicateExpr, ParsedQuery,
+        ParsedQueryTreeNode, ParsedSource, ParsedValueExpr, Parser,
+    };
 
     #[test]
     fn test_create_table_valid() {
@@ -160,17 +163,31 @@ mod tests {
                     assert_eq!(select_query.result.len(), 2);
                     assert_eq!(select_query.result[0], "id");
                     assert_eq!(select_query.result[1], "name");
-                    assert_eq!(select_query.conditions.len(), 2);
 
-                    let first_condition = &select_query.conditions[0];
-                    assert_eq!(first_condition.0, "id");
-                    assert_eq!(first_condition.1, "=");
-                    assert_eq!(first_condition.2, "10");
+                    match select_query.conditions {
+                        Some(ParsedConditionExpr::Logical { op, left, right }) => {
+                            assert_eq!(op, ParsedLogicalOp::And);
 
-                    let second_condition = &select_query.conditions[1];
-                    assert_eq!(second_condition.0, "name");
-                    assert_eq!(second_condition.1, "=");
-                    assert_eq!(second_condition.2, "John");
+                            match *left {
+                                ParsedConditionExpr::Predicate(ParsedPredicateExpr::Compare { left, operator, right }) => {
+                                    assert_eq!(operator, "=");
+                                    assert!(matches!(left, ParsedValueExpr::Token(ref t) if t == "id"));
+                                    assert!(matches!(right, ParsedValueExpr::Token(ref t) if t == "10"));
+                                }
+                                _ => panic!("Expected compare predicate on left condition"),
+                            }
+
+                            match *right {
+                                ParsedConditionExpr::Predicate(ParsedPredicateExpr::Compare { left, operator, right }) => {
+                                    assert_eq!(operator, "=");
+                                    assert!(matches!(left, ParsedValueExpr::Token(ref t) if t == "name"));
+                                    assert!(matches!(right, ParsedValueExpr::Token(ref t) if t == "John"));
+                                }
+                                _ => panic!("Expected compare predicate on right condition"),
+                            }
+                        }
+                        _ => panic!("Expected AND condition tree"),
+                    }
                 }
                 _ => panic!("Expected Select query"),
             }
@@ -192,7 +209,7 @@ mod tests {
                     assert_eq!(select_query.result.len(), 2);
                     assert_eq!(select_query.result[0], "id");
                     assert_eq!(select_query.result[1], "name");
-                    assert!(select_query.conditions.is_empty());
+                    assert!(select_query.conditions.is_none());
                 }
                 _ => panic!("Expected Select query"),
             }
@@ -209,7 +226,7 @@ mod tests {
         assert!(result.is_err());
         assert_eq!(
             result.unwrap_err(),
-            "Expected value in condition".to_string()
+            "Expected right-side expression in condition".to_string()
         );
     }
 
@@ -566,10 +583,14 @@ mod tests {
                     ("age".to_string(), "31".to_string())
                 ]
             );
-            assert_eq!(
-                update_query.conditions,
-                vec![("id".to_string(), "=".to_string(), "1".to_string())]
-            );
+            match update_query.conditions {
+                Some(ParsedConditionExpr::Predicate(ParsedPredicateExpr::Compare { left, operator, right })) => {
+                    assert_eq!(operator, "=");
+                    assert!(matches!(left, ParsedValueExpr::Token(ref t) if t == "id"));
+                    assert!(matches!(right, ParsedValueExpr::Token(ref t) if t == "1"));
+                }
+                _ => panic!("Expected single compare condition in WHERE"),
+            }
         } else {
             panic!("Expected UpdateQuery");
         }
@@ -588,7 +609,7 @@ mod tests {
                 update_query.assignments,
                 vec![("active".to_string(), "true".to_string())]
             );
-            assert!(update_query.conditions.is_empty());
+            assert!(update_query.conditions.is_none());
         } else {
             panic!("Expected UpdateQuery");
         }

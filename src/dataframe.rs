@@ -35,12 +35,13 @@ impl DataFrame {
         header: Vec<Field>,
         btree: Btree,
         operation: SqlConditionOpCode,
+        seek_key: Option<Vec<u8>>,
     ) -> DataFrame {
         let schema = btree.table_schema.clone();
         DataFrame {
             identifier,
             header,
-            row_source: Source::BTree(BTreeScanSource::new(btree, schema, operation, None)),
+            row_source: Source::BTree(BTreeScanSource::new(btree, schema, operation, seek_key)),
             cursor_started: false,
         }
     }
@@ -53,6 +54,7 @@ impl DataFrame {
         base_btree: Btree,
         base_schema: TableSchema,
         index_operation: SqlConditionOpCode,
+        index_seek_key: Option<Vec<u8>>,
     ) -> DataFrame {
         DataFrame {
             identifier,
@@ -63,7 +65,7 @@ impl DataFrame {
                 base_btree,
                 base_schema,
                 index_operation,
-                None,
+                index_seek_key,
             )),
             cursor_started: false,
         }

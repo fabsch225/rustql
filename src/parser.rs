@@ -1,19 +1,19 @@
 use crate::planner::PlanNode::Join;
 use std::cmp::PartialEq;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum ParsedQueryTreeNode {
     SetOperation(ParsedSetOperation),
     SingleQuery(ParsedSelectQuery),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ParsedSetOperation {
     pub operation: ParsedSetOperator,
     pub operands: Vec<ParsedQueryTreeNode>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum ParsedSource {
     Join(Box<ParsedJoin>),
     Table(String),
@@ -36,14 +36,14 @@ pub enum JoinOp {
     Key,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ParsedJoinCondition {
     pub left: String,
     pub right: String,
     pub join_type: JoinType,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ParsedJoin {
     pub sources: Vec<ParsedSource>,
     pub conditions: Vec<ParsedJoinCondition>, //len(conditions) is len(sources) - 1
@@ -56,14 +56,46 @@ pub struct ParsedInsertQuery {
     pub values: Vec<String>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ParsedSelectQuery {
     pub source: ParsedSource,
     pub result: Vec<String>, //Vec<(String, String)>, //table alias, field name
+    pub conditions: Option<ParsedConditionExpr>,
+}
 
-    //conditions can be expressed like this:
-    //SELECT [] FROM table WHERE a = "xx" AND ... AND z > 34
-    pub conditions: Vec<(String, String, String)>,
+#[derive(Debug, Clone)]
+pub enum ParsedConditionExpr {
+    Logical {
+        op: ParsedLogicalOp,
+        left: Box<ParsedConditionExpr>,
+        right: Box<ParsedConditionExpr>,
+    },
+    Predicate(ParsedPredicateExpr),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ParsedLogicalOp {
+    And,
+    Or,
+    Xor,
+}
+
+#[derive(Debug, Clone)]
+pub enum ParsedPredicateExpr {
+    Compare {
+        left: ParsedValueExpr,
+        operator: String,
+        right: ParsedValueExpr,
+    },
+    InSubquery {
+        left: ParsedValueExpr,
+        subquery: Box<ParsedQueryTreeNode>,
+    },
+}
+
+#[derive(Debug, Clone)]
+pub enum ParsedValueExpr {
+    Token(String),
 }
 
 #[derive(Debug)]
@@ -94,14 +126,14 @@ pub struct ParsedCreateIndexQuery {
 #[derive(Debug)]
 pub struct ParsedDeleteQuery {
     pub table_name: String,
-    pub conditions: Vec<(String, String, String)>,
+    pub conditions: Option<ParsedConditionExpr>,
 }
 
 #[derive(Debug)]
 pub struct ParsedUpdateQuery {
     pub table_name: String,
     pub assignments: Vec<(String, String)>,
-    pub conditions: Vec<(String, String, String)>,
+    pub conditions: Option<ParsedConditionExpr>,
 }
 
 #[derive(Debug)]
@@ -221,10 +253,10 @@ impl Parser {
         match statement_type.to_uppercase().as_str() {
             "CREATE" => self.parse_create(),
             "DROP" => self.parse_drop(),
-            "SELECT" => Ok(ParsedQuery::Select(self.parse_select()?)),
+            "SELECT" => Ok(ParsedQuery::Select(self.parse_select(true)?)),
             "(" => {
                 self.expect_token("SELECT")?;
-                Ok(ParsedQuery::Select(self.parse_select()?))
+                Ok(ParsedQuery::Select(self.parse_select(true)?))
             }
             "INSERT" => self.parse_insert(),
             "DELETE" => self.parse_delete(),
@@ -434,7 +466,7 @@ impl Parser {
         }
     }
 
-    fn parse_select(&mut self) -> Result<ParsedQueryTreeNode, String> {
+    fn parse_select(&mut self, allow_setop_after_closing_paren: bool) -> Result<ParsedQueryTreeNode, String> {
         let mut fields = Vec::new();
         loop {
             let token = self
@@ -460,9 +492,7 @@ impl Parser {
         }
 
         let source = self.parse_source()?;
-
-        let mut conditions = Vec::new();
-        self.parse_where_conditions(&mut conditions)?;
+        let conditions = self.parse_where_conditions()?;
 
         let select_query = ParsedSelectQuery {
             source,
@@ -470,11 +500,19 @@ impl Parser {
             conditions,
         };
 
+        let mut consumed_closing_paren = false;
+        if let Some(token) = self.peek_token()
+            && token == ")"
+        {
+            self.lexer.next_token();
+            consumed_closing_paren = true;
+        }
+
         if let Some(token) = self.peek_token() {
-            if token == ")" {
-                self.lexer.next_token();
+            if consumed_closing_paren && !allow_setop_after_closing_paren {
                 return Ok(ParsedQueryTreeNode::SingleQuery(select_query));
             }
+
             if let Some(mut operation) = match token.to_uppercase().as_str() {
                 "UNION" => Some(ParsedSetOperator::Union),
                 "INTERSECT" => Some(ParsedSetOperator::Intersect),
@@ -482,7 +520,12 @@ impl Parser {
                 "TIMES" => Some(ParsedSetOperator::Times),
                 "ALL" => Some(ParsedSetOperator::All),
                 "MINUS" => Some(ParsedSetOperator::Minus),
-                _ => return Ok(ParsedQueryTreeNode::SingleQuery(select_query)),
+                _ => {
+                    if consumed_closing_paren {
+                        return Ok(ParsedQueryTreeNode::SingleQuery(select_query));
+                    }
+                    return Ok(ParsedQueryTreeNode::SingleQuery(select_query));
+                }
             } {
                 self.lexer.next_token();
                 if let Some(token) = self.peek_token()
@@ -498,7 +541,7 @@ impl Parser {
                     self.lexer.next_token();
                 }
                 self.expect_token("SELECT")?;
-                let right = self.parse_select()?;
+                let right = self.parse_select(allow_setop_after_closing_paren)?;
 
                 Ok(ParsedQueryTreeNode::SetOperation(ParsedSetOperation {
                     operation,
@@ -589,8 +632,7 @@ impl Parser {
             .next_token()
             .ok_or_else(|| "Expected table name".to_string())?;
 
-        let mut conditions = Vec::new();
-        self.parse_where_conditions(&mut conditions)?;
+        let conditions = self.parse_where_conditions()?;
 
         Ok(ParsedQuery::Delete(ParsedDeleteQuery {
             table_name,
@@ -632,8 +674,7 @@ impl Parser {
             return Err("Expected at least one assignment in SET clause".to_string());
         }
 
-        let mut conditions = Vec::new();
-        self.parse_where_conditions(&mut conditions)?;
+        let conditions = self.parse_where_conditions()?;
 
         Ok(ParsedQuery::Update(ParsedUpdateQuery {
             table_name,
@@ -642,38 +683,110 @@ impl Parser {
         }))
     }
 
-    fn parse_where_conditions(
-        &mut self,
-        conditions: &mut Vec<(String, String, String)>,
-    ) -> Result<(), String> {
+    fn parse_where_conditions(&mut self) -> Result<Option<ParsedConditionExpr>, String> {
         if let Some(token) = self.peek_token() {
             if token.to_uppercase() == "WHERE" {
                 self.expect_token("WHERE")?;
-                loop {
-                    let field_name = self
-                        .lexer
-                        .next_token()
-                        .ok_or_else(|| "Expected field name in condition".to_string())?;
-                    let operator = self
-                        .lexer
-                        .next_token()
-                        .ok_or_else(|| "Expected comparison operator".to_string())?;
-                    let value = self
-                        .lexer
-                        .next_token()
-                        .ok_or_else(|| "Expected value in condition".to_string())?;
-                    conditions.push((field_name, operator, value));
-
-                    match self.lexer.next_token().as_deref() {
-                        Some("AND") => continue,
-                        Some(")") => break,
-                        None => break,
-                        _ => return Err("Expected 'AND' or end of conditions".to_string()),
-                    }
-                }
+                let expr = self.parse_condition_expr()?;
+                return Ok(Some(expr));
             }
         }
-        Ok(())
+        Ok(None)
+    }
+
+    fn parse_condition_expr(&mut self) -> Result<ParsedConditionExpr, String> {
+        self.parse_condition_or_xor()
+    }
+
+    fn parse_condition_or_xor(&mut self) -> Result<ParsedConditionExpr, String> {
+        let mut left = self.parse_condition_and()?;
+
+        loop {
+            let next = self.peek_token().map(|t| t.to_uppercase());
+            match next.as_deref() {
+                Some("OR") => {
+                    self.expect_token("OR")?;
+                    let right = self.parse_condition_and()?;
+                    left = ParsedConditionExpr::Logical {
+                        op: ParsedLogicalOp::Or,
+                        left: Box::new(left),
+                        right: Box::new(right),
+                    };
+                }
+                Some("XOR") => {
+                    self.expect_token("XOR")?;
+                    let right = self.parse_condition_and()?;
+                    left = ParsedConditionExpr::Logical {
+                        op: ParsedLogicalOp::Xor,
+                        left: Box::new(left),
+                        right: Box::new(right),
+                    };
+                }
+                _ => break,
+            }
+        }
+
+        Ok(left)
+    }
+
+    fn parse_condition_and(&mut self) -> Result<ParsedConditionExpr, String> {
+        let mut left = self.parse_condition_primary()?;
+
+        while let Some(token) = self.peek_token() {
+            if token.to_uppercase() != "AND" {
+                break;
+            }
+            self.expect_token("AND")?;
+            let right = self.parse_condition_primary()?;
+            left = ParsedConditionExpr::Logical {
+                op: ParsedLogicalOp::And,
+                left: Box::new(left),
+                right: Box::new(right),
+            };
+        }
+
+        Ok(left)
+    }
+
+    fn parse_condition_primary(&mut self) -> Result<ParsedConditionExpr, String> {
+        if let Some(token) = self.peek_token() {
+            if token == "(" {
+                self.expect_token("(")?;
+                let inner = self.parse_condition_expr()?;
+                self.expect_token(")")?;
+                return Ok(inner);
+            }
+        }
+
+        let left = self
+            .lexer
+            .next_token()
+            .ok_or_else(|| "Expected left-side expression in condition".to_string())?;
+        let operator = self
+            .lexer
+            .next_token()
+            .ok_or_else(|| "Expected operator in condition".to_string())?;
+
+        if operator.to_uppercase() == "IN" {
+            self.expect_token("(")?;
+            self.expect_token("SELECT")?;
+            let subquery = self.parse_select(false)?;
+            return Ok(ParsedConditionExpr::Predicate(ParsedPredicateExpr::InSubquery {
+                left: ParsedValueExpr::Token(left),
+                subquery: Box::new(subquery),
+            }));
+        }
+
+        let right = self
+            .lexer
+            .next_token()
+            .ok_or_else(|| "Expected right-side expression in condition".to_string())?;
+
+        Ok(ParsedConditionExpr::Predicate(ParsedPredicateExpr::Compare {
+            left: ParsedValueExpr::Token(left),
+            operator,
+            right: ParsedValueExpr::Token(right),
+        }))
     }
     fn parse_source(&mut self) -> Result<ParsedSource, String> {
         let mut sources = vec![self.parse_single_source()?];
@@ -757,7 +870,7 @@ impl Parser {
                 }
             }
             self.expect_token("SELECT")?;
-            let sub = self.parse_select()?;
+            let sub = self.parse_select(false)?;
             //parse_select consumes the ")"
             for _ in 0..additional_open {
                 self.expect_token(")")?;

@@ -14,6 +14,7 @@ use crate::planner::SqlStatementComparisonOperator::{
     Equal, Greater, GreaterOrEqual, Lesser, LesserOrEqual,
 };
 use crate::planner::{
+    CompiledConditionExpr, CompiledInStrategy, CompiledLogicalOp, CompiledPredicateExpr,
     CompiledCreateIndexQuery, CompiledCreateTableQuery, CompiledDeleteQuery, CompiledInsertQuery, CompiledQuery,
     CompiledSelectQuery, CompiledTransactionStatement, CompiledUpdateQuery, PlanNode, Planner, SqlConditionOpCode,
     SqlStatementComparisonOperator,
@@ -107,6 +108,36 @@ pub struct QueryExecutor {
     pub btree_node_width: usize,
     request_counter: usize,
     last_write_table_id: Option<usize>,
+}
+
+#[derive(Debug, Clone)]
+enum PreparedConditionExpr {
+    Logical {
+        op: CompiledLogicalOp,
+        left: Box<PreparedConditionExpr>,
+        right: Box<PreparedConditionExpr>,
+    },
+    Predicate(PreparedPredicateExpr),
+}
+
+#[derive(Debug, Clone)]
+enum PreparedPredicateExpr {
+    Compare {
+        column_idx: usize,
+        op: SqlStatementComparisonOperator,
+        value: Vec<u8>,
+    },
+    InSubquery {
+        column_idx: usize,
+        strategy: PreparedInStrategy,
+    },
+}
+
+#[derive(Debug, Clone)]
+enum PreparedInStrategy {
+    Materialized(HashSet<Vec<u8>>),
+    KeyLookup { table_id: usize },
+    IndexLookup { index_table_id: usize },
 }
 
 impl QueryExecutor {
@@ -526,7 +557,7 @@ impl QueryExecutor {
                 }
 
                 let mut source = self
-                    .create_scan_source(q.table_id, q.operation, q.conditions.clone())
+                    .create_scan_source(q.table_id, q.operation, q.seek_key.clone())
                     .map_err(|s| QueryResult::err(s))?;
 
                 let schema = &self.schema.tables[q.table_id];
@@ -543,13 +574,22 @@ impl QueryExecutor {
                         .map_err(QueryResult::err)?;
 
                 let mut keys_to_delete = Vec::new();
+                let prepared_condition = q
+                    .condition
+                    .as_ref()
+                    .map(|c| self.prepare_condition_runtime(c))
+                    .transpose()
+                    .map_err(QueryResult::err)?;
 
                 source.reset().map_err(QueryResult::err)?;
                 while let Some(row) = source.next().map_err(QueryResult::err)? {
-                    if !Serializer::check_condition_on_bytes(&row, &q.conditions, &schema.fields)
-                        .map_err(QueryResult::err)?
-                    {
-                        continue;
+                    if let Some(cond) = &prepared_condition {
+                        if !self
+                            .evaluate_prepared_condition(cond, &row, schema)
+                            .map_err(QueryResult::err)?
+                        {
+                            continue;
+                        }
                     }
                     if row.len() < key_offset + key_len {
                         return Err(QueryResult::err(
@@ -616,17 +656,26 @@ impl QueryExecutor {
             .map_err(QueryResult::err)?;
 
         let mut source = self
-            .create_scan_source(q.table_id, q.operation.clone(), q.conditions.clone())
+            .create_scan_source(q.table_id, q.operation.clone(), q.seek_key.clone())
             .map_err(QueryResult::err)?;
 
         let mut updates_to_apply: Vec<(Vec<u8>, Vec<u8>, Vec<u8>)> = Vec::new();
+        let prepared_condition = q
+            .condition
+            .as_ref()
+            .map(|c| self.prepare_condition_runtime(c))
+            .transpose()
+            .map_err(QueryResult::err)?;
 
         source.reset().map_err(QueryResult::err)?;
         while let Some(row) = source.next().map_err(QueryResult::err)? {
-            if !Serializer::check_condition_on_bytes(&row, &q.conditions, &schema.fields)
-                .map_err(QueryResult::err)?
-            {
-                continue;
+            if let Some(cond) = &prepared_condition {
+                if !self
+                    .evaluate_prepared_condition(cond, &row, &schema)
+                    .map_err(QueryResult::err)?
+                {
+                    continue;
+                }
             }
             let mut updated_fields = Vec::with_capacity(schema.fields.len());
             for field_idx in 0..schema.fields.len() {
@@ -689,7 +738,7 @@ impl QueryExecutor {
                 table_id,
                 table_name,
                 operation,
-                conditions: _,
+                seek_key,
                 index_table_id,
                 index_on_column,
             } => {
@@ -725,6 +774,7 @@ impl QueryExecutor {
                         base_btree,
                         base_schema,
                         index_op,
+                        seek_key.clone(),
                     ))
                 } else {
                     let schema = self.schema.tables[*table_id].clone();
@@ -738,13 +788,27 @@ impl QueryExecutor {
                         plan.get_header(&self.schema)?,
                         btree,
                         operation.clone(),
+                        seek_key.clone(),
                     ))
                 }
             }
 
-            PlanNode::Filter { source, conditions } => {
+            PlanNode::Filter { source, condition } => {
                 let source_df = self.exec_planned_tree(source)?;
-                Ok(source_df.filter(conditions.clone()))
+                let prepared = self.prepare_condition_runtime(condition)?;
+                let rows = source_df.fetch()?;
+                let source_schema = source.get_schema(&self.schema)?;
+                let mut filtered = Vec::new();
+                for row in rows {
+                    if self.evaluate_prepared_condition(&prepared, &row, &source_schema)? {
+                        filtered.push(row);
+                    }
+                }
+                Ok(DataFrame::from_memory(
+                    "FilterResult".to_string(),
+                    source.get_header(&self.schema)?,
+                    filtered,
+                ))
             }
 
             PlanNode::Project { source, fields } => {
@@ -825,7 +889,7 @@ impl QueryExecutor {
         &self,
         table_id: usize,
         operation: SqlConditionOpCode,
-        conditions: Vec<(SqlStatementComparisonOperator, Vec<u8>)>,
+        seek_key: Option<Vec<u8>>,
     ) -> Result<BTreeScanSource, Status> {
         let schema = self.schema.tables[table_id].clone();
         let btree = Btree::init(
@@ -834,8 +898,149 @@ impl QueryExecutor {
             schema.clone(),
         )?;
 
-        let seek_key = BTreeScanSource::extract_seek_key(&operation, &conditions);
         Ok(BTreeScanSource::new(btree, schema, operation, seek_key))
+    }
+
+    fn prepare_condition_runtime(
+        &self,
+        expr: &CompiledConditionExpr,
+    ) -> Result<PreparedConditionExpr, Status> {
+        match expr {
+            CompiledConditionExpr::Logical { op, left, right } => Ok(PreparedConditionExpr::Logical {
+                op: op.clone(),
+                left: Box::new(self.prepare_condition_runtime(left)?),
+                right: Box::new(self.prepare_condition_runtime(right)?),
+            }),
+            CompiledConditionExpr::Predicate(pred) => match pred {
+                CompiledPredicateExpr::Compare {
+                    column_idx,
+                    op,
+                    value,
+                } => Ok(PreparedConditionExpr::Predicate(PreparedPredicateExpr::Compare {
+                    column_idx: *column_idx,
+                    op: *op,
+                    value: value.clone(),
+                })),
+                CompiledPredicateExpr::InSubquery { column_idx, strategy } => {
+                    let prepared_strategy = match strategy {
+                        CompiledInStrategy::Materialize(plan) => {
+                            let df = self.exec_planned_tree(plan)?;
+                            let rows = df.fetch()?;
+                            let mut set = HashSet::new();
+                            for row in rows {
+                                if !row.is_empty() {
+                                    set.insert(row);
+                                }
+                            }
+                            PreparedInStrategy::Materialized(set)
+                        }
+                        CompiledInStrategy::KeyLookup { table_id } => {
+                            PreparedInStrategy::KeyLookup { table_id: *table_id }
+                        }
+                        CompiledInStrategy::IndexLookup { index_table_id } => {
+                            PreparedInStrategy::IndexLookup {
+                                index_table_id: *index_table_id,
+                            }
+                        }
+                    };
+
+                    Ok(PreparedConditionExpr::Predicate(PreparedPredicateExpr::InSubquery {
+                        column_idx: *column_idx,
+                        strategy: prepared_strategy,
+                    }))
+                }
+            },
+        }
+    }
+
+    fn evaluate_prepared_condition(
+        &self,
+        expr: &PreparedConditionExpr,
+        row: &Row,
+        schema: &TableSchema,
+    ) -> Result<bool, Status> {
+        match expr {
+            PreparedConditionExpr::Logical { op, left, right } => {
+                let l = self.evaluate_prepared_condition(left, row, schema)?;
+                let r = self.evaluate_prepared_condition(right, row, schema)?;
+                Ok(match op {
+                    CompiledLogicalOp::And => l && r,
+                    CompiledLogicalOp::Or => l || r,
+                    CompiledLogicalOp::Xor => l ^ r,
+                })
+            }
+            PreparedConditionExpr::Predicate(pred) => match pred {
+                PreparedPredicateExpr::Compare {
+                    column_idx,
+                    op,
+                    value,
+                } => {
+                    if *op == SqlStatementComparisonOperator::None {
+                        return Ok(true);
+                    }
+                    let lhs = Serializer::get_field_on_row(row, *column_idx, schema)?;
+                    let field_type = &schema.fields[*column_idx].field_type;
+                    let ord = Serializer::compare_with_type(&lhs, value, field_type)?;
+                    Ok(match op {
+                        SqlStatementComparisonOperator::Equal => ord == std::cmp::Ordering::Equal,
+                        SqlStatementComparisonOperator::Greater => ord == std::cmp::Ordering::Greater,
+                        SqlStatementComparisonOperator::GreaterOrEqual => {
+                            ord == std::cmp::Ordering::Greater || ord == std::cmp::Ordering::Equal
+                        }
+                        SqlStatementComparisonOperator::Lesser => ord == std::cmp::Ordering::Less,
+                        SqlStatementComparisonOperator::LesserOrEqual => {
+                            ord == std::cmp::Ordering::Less || ord == std::cmp::Ordering::Equal
+                        }
+                        SqlStatementComparisonOperator::None => true,
+                    })
+                }
+                PreparedPredicateExpr::InSubquery {
+                    column_idx,
+                    strategy,
+                } => {
+                    let lhs = Serializer::get_field_on_row(row, *column_idx, schema)?;
+                    match strategy {
+                        PreparedInStrategy::Materialized(set) => Ok(set.contains(&lhs)),
+                        PreparedInStrategy::KeyLookup { table_id } => {
+                            let table_schema = self.schema.tables[*table_id].clone();
+                            let btree = Btree::init(
+                                table_schema.btree_order,
+                                self.pager_accessor.clone(),
+                                table_schema.clone(),
+                            )?;
+                            let mut cursor = BTreeCursor::new(btree);
+                            cursor.go_to(&lhs)?;
+                            if !cursor.is_valid() {
+                                return Ok(false);
+                            }
+                            if let Some((key, _)) = cursor.current()? {
+                                Ok(key == lhs && !Serializer::is_tomb(&key, &table_schema)?)
+                            } else {
+                                Ok(false)
+                            }
+                        }
+                        PreparedInStrategy::IndexLookup { index_table_id } => {
+                            let index_schema = self.schema.tables[*index_table_id].clone();
+                            let btree = Btree::init(
+                                index_schema.btree_order,
+                                self.pager_accessor.clone(),
+                                index_schema.clone(),
+                            )?;
+                            let mut cursor = BTreeCursor::new(btree);
+                            cursor.go_to(&lhs)?;
+                            if !cursor.is_valid() {
+                                return Ok(false);
+                            }
+                            if let Some((key, _)) = cursor.current()? {
+                                Ok(key == lhs && !Serializer::is_tomb(&key, &index_schema)?)
+                            } else {
+                                Ok(false)
+                            }
+                        }
+                    }
+                }
+            },
+        }
     }
 
     fn index_table_name(base_table: &str, column: &str) -> String {
@@ -944,7 +1149,7 @@ impl QueryExecutor {
                 .map_err(QueryResult::err)?;
 
             let mut base_source = self
-                .create_scan_source(table_id, SqlConditionOpCode::SelectFTS, vec![])
+                .create_scan_source(table_id, SqlConditionOpCode::SelectFTS, None)
                 .map_err(QueryResult::err)?;
 
             let mut index_btree = Btree::init(
@@ -1180,7 +1385,7 @@ impl QueryExecutor {
                     table_id: 0,
                     table_name: MASTER_TABLE_NAME.to_string(),
                     operation: SqlConditionOpCode::SelectFTS,
-                    conditions: vec![],
+                    seek_key: None,
                     index_table_id: None,
                     index_on_column: None,
                 }),

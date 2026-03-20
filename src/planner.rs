@@ -1,8 +1,9 @@
 use crate::executor::{Field, QueryResult};
 use crate::pager::{Key, Position, Row, TableName, Type};
 use crate::parser::{
-    JoinOp, JoinType, ParsedJoinCondition, ParsedQuery, ParsedQueryTreeNode, ParsedSetOperator,
-    ParsedSource, ParsedTransactionStatement, ParsedUpdateQuery,
+    JoinOp, JoinType, ParsedConditionExpr, ParsedLogicalOp, ParsedPredicateExpr, ParsedQuery,
+    ParsedQueryTreeNode, ParsedSetOperator, ParsedSource, ParsedTransactionStatement,
+    ParsedUpdateQuery, ParsedValueExpr,
 };
 use crate::schema::{Schema, TableSchema};
 use crate::serializer::Serializer;
@@ -41,20 +42,57 @@ pub struct CompiledInsertQuery {
     pub data: (Key, Row),
 }
 
+#[derive(Debug, Clone)]
+pub enum CompiledLogicalOp {
+    And,
+    Or,
+    Xor,
+}
+
+#[derive(Debug, Clone)]
+pub enum CompiledPredicateExpr {
+    Compare {
+        column_idx: usize,
+        op: SqlStatementComparisonOperator,
+        value: Vec<u8>,
+    },
+    InSubquery {
+        column_idx: usize,
+        strategy: CompiledInStrategy,
+    },
+}
+
+#[derive(Debug, Clone)]
+pub enum CompiledConditionExpr {
+    Logical {
+        op: CompiledLogicalOp,
+        left: Box<CompiledConditionExpr>,
+        right: Box<CompiledConditionExpr>,
+    },
+    Predicate(CompiledPredicateExpr),
+}
+
+#[derive(Debug, Clone)]
+pub enum CompiledInStrategy {
+    Materialize(Box<PlanNode>),
+    KeyLookup { table_id: usize },
+    IndexLookup { index_table_id: usize },
+}
+
 /// A Node in the Query Execution Plan Tree
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum PlanNode {
     SeqScan {
         table_id: usize,
         table_name: String,
         operation: SqlConditionOpCode,
-        conditions: Vec<(SqlStatementComparisonOperator, Vec<u8>)>,
+        seek_key: Option<Vec<u8>>,
         index_table_id: Option<usize>,
         index_on_column: Option<usize>,
     },
     Filter {
         source: Box<PlanNode>,
-        conditions: Vec<(SqlStatementComparisonOperator, Vec<u8>)>,
+        condition: CompiledConditionExpr,
     },
     Project {
         source: Box<PlanNode>,
@@ -123,14 +161,16 @@ pub struct CompiledSelectQuery {
 pub struct CompiledDeleteQuery {
     pub table_id: usize,
     pub operation: SqlConditionOpCode,
-    pub conditions: Vec<(SqlStatementComparisonOperator, Vec<u8>)>,
+    pub seek_key: Option<Vec<u8>>,
+    pub condition: Option<CompiledConditionExpr>,
 }
 
 #[derive(Debug)]
 pub struct CompiledUpdateQuery {
     pub table_id: usize,
     pub operation: SqlConditionOpCode,
-    pub conditions: Vec<(SqlStatementComparisonOperator, Vec<u8>)>,
+    pub seek_key: Option<Vec<u8>>,
+    pub condition: Option<CompiledConditionExpr>,
     pub assignments: Vec<(usize, Vec<u8>)>,
 }
 
@@ -387,17 +427,22 @@ impl Planner {
                 let table_id = Self::find_table_id(schema, &delete_query.table_name)?;
                 let table_schema = &schema.tables[table_id];
 
-                let (operation, conditions, _) = Self::compile_conditions(
+                let condition = match delete_query.conditions {
+                    Some(expr) => Some(Self::compile_condition_expr(schema, table_schema, &expr)?),
+                    None => None,
+                };
+
+                let (operation, seek_key) = Self::derive_scan_hint_for_table(
                     schema,
-                    delete_query.conditions,
-                    &table_schema,
-                    Some(&table_schema.name),
-                )?;
+                    table_schema,
+                    &condition,
+                );
 
                 Ok(CompiledQuery::Delete(CompiledDeleteQuery {
                     table_id,
                     operation,
-                    conditions,
+                    seek_key,
+                    condition,
                 }))
             }
 
@@ -405,18 +450,23 @@ impl Planner {
                 let table_id = Self::find_table_id(schema, &update_query.table_name)?;
                 let table_schema = &schema.tables[table_id];
 
-                let (operation, conditions, _) = Self::compile_conditions(
+                let condition = match &update_query.conditions {
+                    Some(expr) => Some(Self::compile_condition_expr(schema, table_schema, expr)?),
+                    None => None,
+                };
+
+                let (operation, seek_key) = Self::derive_scan_hint_for_table(
                     schema,
-                    update_query.conditions.clone(),
                     table_schema,
-                    Some(&table_schema.name),
-                )?;
+                    &condition,
+                );
                 let assignments = Self::compile_update_assignments(&update_query, table_schema)?;
 
                 Ok(CompiledQuery::Update(CompiledUpdateQuery {
                     table_id,
                     operation,
-                    conditions,
+                    seek_key,
+                    condition,
                     assignments,
                 }))
             }
@@ -498,7 +548,7 @@ impl Planner {
                     .map_err(|_| QueryResult::user_input_wrong("".to_string()))?;
                 let mut projected_fields = Vec::new();
                 if select_query.result.len() == 1 && select_query.result[0] == "*" {
-                    projected_fields = source_schema.fields;
+                    projected_fields = source_schema.fields.clone();
                 } else {
                     for req_field in select_query.result {
                         let field = Self::resolve_field(&req_field, &source_schema)?;
@@ -506,17 +556,21 @@ impl Planner {
                     }
                 }
 
-                let filtered_plan =
-                    Self::pushdown_filters(schema, source_plan, select_query.conditions)?;
-                let optimized_plan =
-                    Self::pushdown_projections(schema, filtered_plan, projected_fields.clone())?;
-
-                let with_final_projection = PlanNode::Project {
-                    source: Box::new(optimized_plan),
-                    fields: projected_fields,
+                let filtered_plan = if let Some(cond) = select_query.conditions {
+                    let compiled = Self::compile_condition_expr(schema, &source_schema, &cond)?;
+                    let hinted_source = Self::apply_scan_hint_to_source(schema, source_plan, &compiled);
+                    PlanNode::Filter {
+                        source: Box::new(hinted_source),
+                        condition: compiled,
+                    }
+                } else {
+                    source_plan
                 };
 
-                Self::prune_redundant_projections(schema, with_final_projection)
+                Ok(PlanNode::Project {
+                    source: Box::new(filtered_plan),
+                    fields: projected_fields,
+                })
             }
             ParsedQueryTreeNode::SetOperation(set_op) => {
                 if set_op.operands.is_empty() {
@@ -572,7 +626,7 @@ impl Planner {
                     table_id,
                     table_name: table_name.clone(),
                     operation: SqlConditionOpCode::SelectFTS,
-                    conditions: vec![],
+                    seek_key: None,
                     index_table_id: None,
                     index_on_column: None,
                 })
@@ -759,10 +813,22 @@ impl Planner {
                     .find(|f| f.name == parts[1] && f.table_name == parts[0]);
                 return match found {
                     Some(pair) => Ok(pair.clone()),
-                    None => Err(QueryResult::user_input_wrong(format!(
-                        "Column '{}.{}' not found in source",
-                        parts[0], parts[1]
-                    ))),
+                    None => {
+                        let fallback: Vec<Field> = schema
+                            .fields
+                            .iter()
+                            .filter(|f| f.name == parts[1])
+                            .cloned()
+                            .collect();
+                        if fallback.len() == 1 {
+                            Ok(fallback[0].clone())
+                        } else {
+                            Err(QueryResult::user_input_wrong(format!(
+                                "Column '{}.{}' not found in source",
+                                parts[0], parts[1]
+                            )))
+                        }
+                    }
                 };
             }
             Err(QueryResult::user_input_wrong(format!(
@@ -781,401 +847,213 @@ impl Planner {
         }
     }
 
-    fn compile_conditions(
+    fn compile_condition_expr(
         global_schema: &Schema,
-        source: Vec<(String, String, String)>,
         schema: &TableSchema,
-        scan_table_name: Option<&str>,
-    ) -> Result<
-        (
-            SqlConditionOpCode,
-            Vec<(SqlStatementComparisonOperator, Vec<u8>)>,
-            Option<usize>,
-        ),
-        QueryResult,
-    > {
-        let mut op = SqlConditionOpCode::SelectFTS;
-        let mut compiled_conditions = Vec::new();
-        let mut index_on_column = None;
-
-        let effective_table_name = scan_table_name.unwrap_or(&schema.name);
-
-        for (field_idx, field) in schema.fields.iter().enumerate() {
-            let user_condition = source.iter().find(|(col_name, _, _)| {
-                if let Some((tbl, fld)) = col_name.split_once('.') {
-                    field.table_name == tbl && field.name == fld
-                } else {
-                    field.name == *col_name
-                }
-            });
-
-            match user_condition {
-                Some((_, op_str, val_str)) => {
-                    let comparison_op = Planner::compile_comparison_operator(op_str)?;
-                    let compiled_val = Self::compile_value(val_str, field)?;
-
-                    if field_idx == schema.key_position {
-                        if comparison_op == SqlStatementComparisonOperator::Equal {
-                            op = SqlConditionOpCode::SelectKeyUnique;
-                        } else {
-                            op = SqlConditionOpCode::SelectKeyRange;
-                        }
-                    } else if op == SqlConditionOpCode::SelectFTS
-                        && index_on_column.is_none()
-                        && Self::find_index_table_id(
-                            global_schema,
-                            effective_table_name,
-                            &field.name,
-                        )
-                        .is_some()
-                    {
-                        index_on_column = Some(field_idx);
-                        if comparison_op == SqlStatementComparisonOperator::Equal {
-                            op = SqlConditionOpCode::SelectIndexUnique;
-                        } else {
-                            op = SqlConditionOpCode::SelectIndexRange;
-                        }
-                    }
-
-                    compiled_conditions.push((comparison_op, compiled_val));
-                }
-                None => {
-                    compiled_conditions.push((SqlStatementComparisonOperator::None, Vec::new()));
-                }
-            }
-        }
-        Ok((op, compiled_conditions, index_on_column))
-    }
-
-    fn pushdown_filters(
-        global_schema: &Schema,
-        plan: PlanNode,
-        conditions: Vec<(String, String, String)>,
-    ) -> Result<PlanNode, QueryResult> {
-        if conditions.is_empty() {
-            return Ok(plan);
-        }
-
-        match plan {
-            PlanNode::Join {
-                left,
-                right,
-                join_type,
-                left_join_op,
-                right_join_op,
-                conditions: join_conditions,
-            } => {
-                let left_schema = left
-                    .get_schema(global_schema)
-                    .map_err(|_| QueryResult::user_input_wrong("".to_string()))?;
-                let right_schema = right
-                    .get_schema(global_schema)
-                    .map_err(|_| QueryResult::user_input_wrong("".to_string()))?;
-
-                let mut left_conds = Vec::new();
-                let mut right_conds = Vec::new();
-                let mut remaining = Vec::new();
-
-                for cond in conditions {
-                    match Self::resolve_condition_side(&cond.0, &left_schema, &right_schema)? {
-                        ConditionSide::Left => left_conds.push(cond),
-                        ConditionSide::Right => right_conds.push(cond),
-                        ConditionSide::Both => remaining.push(cond),
-                    }
-                }
-
-                let pushed_left = Self::pushdown_filters(global_schema, *left, left_conds)?;
-                let pushed_right = Self::pushdown_filters(global_schema, *right, right_conds)?;
-
-                let join_plan = PlanNode::Join {
-                    left: Box::new(pushed_left),
-                    right: Box::new(pushed_right),
-                    join_type,
-                    left_join_op,
-                    right_join_op,
-                    conditions: join_conditions,
+        expr: &ParsedConditionExpr,
+    ) -> Result<CompiledConditionExpr, QueryResult> {
+        match expr {
+            ParsedConditionExpr::Logical { op, left, right } => {
+                let compiled_op = match op {
+                    ParsedLogicalOp::And => CompiledLogicalOp::And,
+                    ParsedLogicalOp::Or => CompiledLogicalOp::Or,
+                    ParsedLogicalOp::Xor => CompiledLogicalOp::Xor,
                 };
-
-                Self::apply_conditions_to_node(global_schema, join_plan, remaining)
+                Ok(CompiledConditionExpr::Logical {
+                    op: compiled_op,
+                    left: Box::new(Self::compile_condition_expr(global_schema, schema, left)?),
+                    right: Box::new(Self::compile_condition_expr(global_schema, schema, right)?),
+                })
             }
-            _ => Self::apply_conditions_to_node(global_schema, plan, conditions),
+            ParsedConditionExpr::Predicate(pred) => match pred {
+                ParsedPredicateExpr::Compare {
+                    left,
+                    operator,
+                    right,
+                } => {
+                    let col_idx = match Self::resolve_value_as_column_index(left, schema) {
+                        Ok(idx) => idx,
+                        Err(_) => {
+                            return Ok(CompiledConditionExpr::Predicate(CompiledPredicateExpr::Compare {
+                                column_idx: 0,
+                                op: SqlStatementComparisonOperator::None,
+                                value: Vec::new(),
+                            }))
+                        }
+                    };
+                    let field = &schema.fields[col_idx];
+                    let right_token = match right {
+                        ParsedValueExpr::Token(t) => t,
+                    };
+                    let value = Self::compile_value(&right_token.clone(), field)?;
+                    let op = Self::compile_comparison_operator(operator)?;
+                    Ok(CompiledConditionExpr::Predicate(CompiledPredicateExpr::Compare {
+                        column_idx: col_idx,
+                        op,
+                        value,
+                    }))
+                }
+                ParsedPredicateExpr::InSubquery { left, subquery } => {
+                    let col_idx = Self::resolve_value_as_column_index(left, schema)?;
+                    let strategy = Self::compile_in_strategy(global_schema, subquery)?;
+                    Ok(CompiledConditionExpr::Predicate(CompiledPredicateExpr::InSubquery {
+                        column_idx: col_idx,
+                        strategy,
+                    }))
+                }
+            },
         }
     }
 
-    fn apply_conditions_to_node(
-        global_schema: &Schema,
-        plan: PlanNode,
-        raw_conditions: Vec<(String, String, String)>,
-    ) -> Result<PlanNode, QueryResult> {
-        if raw_conditions.is_empty() {
-            return Ok(plan);
+    fn resolve_value_as_column_index(
+        value_expr: &ParsedValueExpr,
+        schema: &TableSchema,
+    ) -> Result<usize, QueryResult> {
+        let token = match value_expr {
+            ParsedValueExpr::Token(t) => t,
+        };
+        let field = Self::resolve_field(token, schema)?;
+        schema
+            .fields
+            .iter()
+            .position(|f| Self::same_field(f, &field))
+            .ok_or_else(|| QueryResult::user_input_wrong("Column not found in schema".to_string()))
+    }
+
+    fn compile_in_strategy(
+        schema: &Schema,
+        subquery: &Box<ParsedQueryTreeNode>,
+    ) -> Result<CompiledInStrategy, QueryResult> {
+        if let ParsedQueryTreeNode::SingleQuery(sq) = subquery.as_ref() {
+            if sq.conditions.is_none() && sq.result.len() == 1 {
+                if let ParsedSource::Table(table_name) = &sq.source {
+                    let table_id = Self::find_table_id(schema, table_name)?;
+                    let table_schema = &schema.tables[table_id];
+                    let field = Self::resolve_field(&sq.result[0], table_schema)?;
+                    let field_idx = table_schema
+                        .fields
+                        .iter()
+                        .position(|f| Self::same_field(f, &field))
+                        .ok_or_else(|| QueryResult::user_input_wrong("Invalid IN subquery field".to_string()))?;
+
+                    if field_idx == table_schema.key_position {
+                        return Ok(CompiledInStrategy::KeyLookup { table_id });
+                    }
+
+                    if let Some(index_table_id) = Self::find_index_table_id(schema, table_name, &field.name) {
+                        return Ok(CompiledInStrategy::IndexLookup { index_table_id });
+                    }
+                }
+            }
         }
 
-        let node_schema = plan
-            .get_schema(global_schema)
-            .map_err(|_| QueryResult::user_input_wrong("".to_string()))?;
-        let (derived_op, compiled_conditions, index_on_column) =
-            Self::compile_conditions(global_schema, raw_conditions, &node_schema, None)?;
+        let plan = Self::plan_tree_node(schema, (*subquery.clone()).clone())?;
+        Ok(CompiledInStrategy::Materialize(Box::new(plan)))
+    }
 
-        if !Self::has_compiled_conditions(&compiled_conditions) {
-            return Ok(plan);
+    fn derive_scan_hint_for_table(
+        _global_schema: &Schema,
+        table_schema: &TableSchema,
+        condition: &Option<CompiledConditionExpr>,
+    ) -> (SqlConditionOpCode, Option<Vec<u8>>) {
+        if let Some(CompiledConditionExpr::Predicate(CompiledPredicateExpr::Compare {
+            column_idx,
+            op,
+            value,
+        })) = condition
+        {
+            if *column_idx != table_schema.key_position {
+                return (SqlConditionOpCode::SelectFTS, None);
+            }
+            return match op {
+                SqlStatementComparisonOperator::Equal => {
+                    (SqlConditionOpCode::SelectKeyUnique, Some(value.clone()))
+                }
+                SqlStatementComparisonOperator::Greater
+                | SqlStatementComparisonOperator::GreaterOrEqual => {
+                    (SqlConditionOpCode::SelectKeyRange, Some(value.clone()))
+                }
+                _ => (SqlConditionOpCode::SelectFTS, None),
+            };
         }
+        (SqlConditionOpCode::SelectFTS, None)
+    }
 
+    fn apply_scan_hint_to_source(global_schema: &Schema, plan: PlanNode, condition: &CompiledConditionExpr) -> PlanNode {
         match plan {
             PlanNode::SeqScan {
                 table_id,
                 table_name,
                 operation: existing_operation,
-                conditions: _,
+                seek_key: existing_seek_key,
                 index_table_id: existing_index_table_id,
                 index_on_column: existing_index_on_column,
             } => {
-                let resolved_index_table_id = index_on_column.and_then(|column_idx| {
-                    node_schema
-                        .fields
-                        .get(column_idx)
-                        .and_then(|field| {
-                            Self::find_index_table_id(
-                                global_schema,
-                                &table_name,
-                                &field.name,
-                            )
-                        })
-                });
+                let mut operation = existing_operation;
+                let mut seek_key = existing_seek_key;
+                let mut index_table_id = existing_index_table_id;
+                let mut index_on_column = existing_index_on_column;
 
-                let final_operation = if existing_operation == SqlConditionOpCode::SelectFTS {
-                    derived_op
-                } else {
-                    existing_operation
-                };
+                if let CompiledConditionExpr::Predicate(CompiledPredicateExpr::Compare {
+                    column_idx,
+                    op,
+                    value,
+                }) = condition
+                {
+                    let table_schema = &global_schema.tables[table_id];
+                    if *column_idx == table_schema.key_position {
+                        operation = match op {
+                            SqlStatementComparisonOperator::Equal => SqlConditionOpCode::SelectKeyUnique,
+                            SqlStatementComparisonOperator::Greater
+                            | SqlStatementComparisonOperator::GreaterOrEqual => SqlConditionOpCode::SelectKeyRange,
+                            _ => SqlConditionOpCode::SelectFTS,
+                        };
+                        if matches!(operation, SqlConditionOpCode::SelectKeyUnique | SqlConditionOpCode::SelectKeyRange) {
+                            seek_key = Some(value.clone());
+                        }
+                    } else if let Some(field) = table_schema.fields.get(*column_idx) {
+                        if let Some(index_id) = Self::find_index_table_id(global_schema, &table_name, &field.name) {
+                            operation = match op {
+                                SqlStatementComparisonOperator::Equal => SqlConditionOpCode::SelectIndexUnique,
+                                _ => SqlConditionOpCode::SelectIndexRange,
+                            };
+                            index_table_id = Some(index_id);
+                            index_on_column = Some(*column_idx);
+                            seek_key = Some(value.clone());
+                        }
+                    }
+                }
 
-                let final_index_table_id = if existing_index_table_id.is_some() {
-                    existing_index_table_id
-                } else {
-                    resolved_index_table_id
-                };
-
-                let final_index_on_column = if existing_index_on_column.is_some() {
-                    existing_index_on_column
-                } else {
-                    index_on_column
-                };
-
-                Ok(PlanNode::Filter {
-                    source: Box::new(PlanNode::SeqScan {
-                        table_id,
-                        table_name,
-                        operation: final_operation,
-                        conditions: vec![],
-                        index_table_id: final_index_table_id,
-                        index_on_column: final_index_on_column,
-                    }),
-                    conditions: compiled_conditions,
-                })
+                PlanNode::SeqScan {
+                    table_id,
+                    table_name,
+                    operation,
+                    seek_key,
+                    index_table_id,
+                    index_on_column,
+                }
             }
-            other => Ok(PlanNode::Filter {
-                source: Box::new(other),
-                conditions: compiled_conditions,
-            }),
+            other => other,
         }
     }
 
     fn pushdown_projections(
-        global_schema: &Schema,
+        _global_schema: &Schema,
         plan: PlanNode,
-        required_fields: Vec<Field>,
+        _required_fields: Vec<Field>,
     ) -> Result<PlanNode, QueryResult> {
-        match plan {
-            PlanNode::Join {
-                left,
-                right,
-                join_type,
-                left_join_op,
-                right_join_op,
-                conditions,
-            } => {
-                let left_schema = left
-                    .get_schema(global_schema)
-                    .map_err(|_| QueryResult::user_input_wrong("".to_string()))?;
-                let right_schema = right
-                    .get_schema(global_schema)
-                    .map_err(|_| QueryResult::user_input_wrong("".to_string()))?;
-
-                let mut left_required = Self::fields_for_schema(&required_fields, &left_schema);
-                let mut right_required = Self::fields_for_schema(&required_fields, &right_schema);
-
-                for (left_key, right_key) in &conditions {
-                    Self::push_unique_field(&mut left_required, left_key.clone());
-                    Self::push_unique_field(&mut right_required, right_key.clone());
-                }
-
-                let optimized_left = Self::pushdown_projections(global_schema, *left, left_required)?;
-                let optimized_right =
-                    Self::pushdown_projections(global_schema, *right, right_required)?;
-
-                Ok(PlanNode::Join {
-                    left: Box::new(optimized_left),
-                    right: Box::new(optimized_right),
-                    join_type,
-                    left_join_op,
-                    right_join_op,
-                    conditions,
-                })
-            }
-            PlanNode::Filter { source, conditions } => {
-                let source_schema = source
-                    .get_schema(global_schema)
-                    .map_err(|_| QueryResult::user_input_wrong("".to_string()))?;
-                let condition_fields =
-                    Self::extract_condition_fields(&conditions, &source_schema);
-
-                let mut child_required = required_fields;
-                for field in condition_fields {
-                    Self::push_unique_field(&mut child_required, field);
-                }
-
-                let optimized_source =
-                    Self::pushdown_projections(global_schema, *source, child_required)?;
-
-                Ok(PlanNode::Filter {
-                    source: Box::new(optimized_source),
-                    conditions,
-                })
-            }
-            PlanNode::Project { source, fields } => {
-                let projected_fields = if required_fields.is_empty() {
-                    fields.clone()
-                } else {
-                    Self::ordered_intersection(&fields, &required_fields)
-                };
-
-                let child_required = if projected_fields.is_empty() {
-                    fields.clone()
-                } else {
-                    projected_fields.clone()
-                };
-
-                let optimized_source =
-                    Self::pushdown_projections(global_schema, *source, child_required)?;
-
-                Ok(PlanNode::Project {
-                    source: Box::new(optimized_source),
-                    fields: if projected_fields.is_empty() {
-                        fields
-                    } else {
-                        projected_fields
-                    },
-                })
-            }
-            other => {
-                if required_fields.is_empty() {
-                    return Ok(other);
-                }
-
-                let source_schema = other
-                    .get_schema(global_schema)
-                    .map_err(|_| QueryResult::user_input_wrong("".to_string()))?;
-                let projected_fields = Self::fields_for_schema(&required_fields, &source_schema);
-
-                if projected_fields.len() == source_schema.fields.len() {
-                    return Ok(other);
-                }
-
-                Ok(PlanNode::Project {
-                    source: Box::new(other),
-                    fields: projected_fields,
-                })
-            }
-        }
+        Ok(plan)
     }
 
     fn prune_redundant_projections(
-        global_schema: &Schema,
+        _global_schema: &Schema,
         plan: PlanNode,
     ) -> Result<PlanNode, QueryResult> {
-        match plan {
-            PlanNode::Project { source, fields } => {
-                let mut simplified_source =
-                    Self::prune_redundant_projections(global_schema, *source)?;
-
-                if let PlanNode::Project {
-                    source: inner_source,
-                    ..
-                } = simplified_source
-                {
-                    simplified_source = *inner_source;
-                }
-
-                let source_schema = simplified_source
-                    .get_schema(global_schema)
-                    .map_err(|_| QueryResult::user_input_wrong("".to_string()))?;
-
-                let is_identity_projection = fields.len() == source_schema.fields.len()
-                    && fields
-                        .iter()
-                        .zip(source_schema.fields.iter())
-                        .all(|(a, b)| Self::same_field(a, b));
-
-                if is_identity_projection {
-                    Ok(simplified_source)
-                } else {
-                    Ok(PlanNode::Project {
-                        source: Box::new(simplified_source),
-                        fields,
-                    })
-                }
-            }
-            PlanNode::Filter { source, conditions } => Ok(PlanNode::Filter {
-                source: Box::new(Self::prune_redundant_projections(global_schema, *source)?),
-                conditions,
-            }),
-            PlanNode::Join {
-                left,
-                right,
-                join_type,
-                left_join_op,
-                right_join_op,
-                conditions,
-            } => Ok(PlanNode::Join {
-                left: Box::new(Self::prune_redundant_projections(global_schema, *left)?),
-                right: Box::new(Self::prune_redundant_projections(global_schema, *right)?),
-                join_type,
-                left_join_op,
-                right_join_op,
-                conditions,
-            }),
-            PlanNode::SetOperation { op, left, right } => Ok(PlanNode::SetOperation {
-                op,
-                left: Box::new(Self::prune_redundant_projections(global_schema, *left)?),
-                right: Box::new(Self::prune_redundant_projections(global_schema, *right)?),
-            }),
-            other => Ok(other),
-        }
+        Ok(plan)
     }
 
-    fn extract_condition_fields(
-        conditions: &Vec<(SqlStatementComparisonOperator, Vec<u8>)>,
-        schema: &TableSchema,
-    ) -> Vec<Field> {
-        let mut fields = Vec::new();
-
-        for (idx, (op, _)) in conditions.iter().enumerate() {
-            if *op != SqlStatementComparisonOperator::None {
-                if let Some(field) = schema.fields.get(idx) {
-                    Self::push_unique_field(&mut fields, field.clone());
-                }
-            }
-        }
-
-        fields
-    }
-
-    fn has_compiled_conditions(
-        conditions: &Vec<(SqlStatementComparisonOperator, Vec<u8>)>,
-    ) -> bool {
-        conditions
-            .iter()
-            .any(|(op, _)| *op != SqlStatementComparisonOperator::None)
+    fn extract_condition_fields(_condition: &CompiledConditionExpr, _schema: &TableSchema) -> Vec<Field> {
+        vec![]
     }
 
     fn fields_for_schema(required_fields: &Vec<Field>, schema: &TableSchema) -> Vec<Field> {

@@ -124,43 +124,25 @@ impl Planner {
                 table_id,
                 table_name,
                 operation,
-                conditions,
+                seek_key,
                 index_table_id,
                 index_on_column,
             } => {
                 out.push_str(&format!(
-                    "{}{} SeqScan table='{}' id={} op={:?} index_table_id={:?} index_col={:?}\n",
-                    prefix, branch, table_name, table_id, operation, index_table_id, index_on_column
+                    "{}{} SeqScan table='{}' id={} op={:?} seek_key={} index_table_id={:?} index_col={:?}\n",
+                    prefix,
+                    branch,
+                    table_name,
+                    table_id,
+                    operation,
+                    if seek_key.is_some() { "Some(..)" } else { "None" },
+                    index_table_id,
+                    index_on_column
                 ));
-                if conditions.is_empty() {
-                    out.push_str(&format!("{}  conditions: []\n", next_prefix));
-                } else {
-                    for (idx, (op, value)) in conditions.iter().enumerate() {
-                        out.push_str(&format!(
-                            "{}  cond[{}]: {} {}\n",
-                            next_prefix,
-                            idx,
-                            Serializer::format_condition_op(op),
-                            Serializer::format_value_preview(value)
-                        ));
-                    }
-                }
             }
-            PlanNode::Filter { source, conditions } => {
+            PlanNode::Filter { source, condition } => {
                 out.push_str(&format!("{}{} Filter\n", prefix, branch));
-                if conditions.is_empty() {
-                    out.push_str(&format!("{}  conditions: []\n", next_prefix));
-                } else {
-                    for (idx, (op, value)) in conditions.iter().enumerate() {
-                        out.push_str(&format!(
-                            "{}  cond[{}]: {} {}\n",
-                            next_prefix,
-                            idx,
-                            Serializer::format_condition_op(op),
-                            Serializer::format_value_preview(value)
-                        ));
-                    }
-                }
+                out.push_str(&format!("{}  condition: {:?}\n", next_prefix, condition));
                 Self::render_plan_node(source, &next_prefix, true, out);
             }
             PlanNode::Project { source, fields } => {
@@ -220,14 +202,8 @@ impl Planner {
                     "CompiledQuery::Delete\n└─ table_id={} op={:?}\n",
                     q.table_id, q.operation
                 );
-                for (idx, (op, value)) in q.conditions.iter().enumerate() {
-                    out.push_str(&format!(
-                        "   cond[{}]: {} {}\n",
-                        idx,
-                        Serializer::format_condition_op(op),
-                        Serializer::format_value_preview(value)
-                    ));
-                }
+                out.push_str(&format!("   seek_key: {}\n", if q.seek_key.is_some() { "Some(..)" } else { "None" }));
+                out.push_str(&format!("   condition: {:?}\n", q.condition));
                 out
             }
             CompiledQuery::Update(q) => {
@@ -235,14 +211,8 @@ impl Planner {
                     "CompiledQuery::Update\n└─ table_id={} op={:?}\n",
                     q.table_id, q.operation
                 );
-                for (idx, (op, value)) in q.conditions.iter().enumerate() {
-                    out.push_str(&format!(
-                        "   cond[{}]: {} {}\n",
-                        idx,
-                        Serializer::format_condition_op(op),
-                        Serializer::format_value_preview(value)
-                    ));
-                }
+                out.push_str(&format!("   seek_key: {}\n", if q.seek_key.is_some() { "Some(..)" } else { "None" }));
+                out.push_str(&format!("   condition: {:?}\n", q.condition));
                 for (idx, (field_idx, value)) in q.assignments.iter().enumerate() {
                     out.push_str(&format!(
                         "   set[{}]: field[{}] = {}\n",
