@@ -3,7 +3,7 @@
 - Broad testsuite
 - Persistance to disk
 - Basic concurrency: table-level locking, multiple readers and one writer per table. connect via tcp.
-    - On a Deadlock, all transactions fail  
+    - On a Deadlock, all transactions are rejected  
 - Can run embedded or as a server
 - ToDo: Vacuuming
 

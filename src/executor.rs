@@ -546,6 +546,11 @@ impl QueryExecutor {
 
                 source.reset().map_err(QueryResult::err)?;
                 while let Some(row) = source.next().map_err(QueryResult::err)? {
+                    if !Serializer::check_condition_on_bytes(&row, &q.conditions, &schema.fields)
+                        .map_err(QueryResult::err)?
+                    {
+                        continue;
+                    }
                     if row.len() < key_offset + key_len {
                         return Err(QueryResult::err(
                             Status::InternalExceptionIntegrityCheckFailed,
@@ -618,6 +623,11 @@ impl QueryExecutor {
 
         source.reset().map_err(QueryResult::err)?;
         while let Some(row) = source.next().map_err(QueryResult::err)? {
+            if !Serializer::check_condition_on_bytes(&row, &q.conditions, &schema.fields)
+                .map_err(QueryResult::err)?
+            {
+                continue;
+            }
             let mut updated_fields = Vec::with_capacity(schema.fields.len());
             for field_idx in 0..schema.fields.len() {
                 updated_fields.push(
@@ -679,7 +689,7 @@ impl QueryExecutor {
                 table_id,
                 table_name,
                 operation,
-                conditions,
+                conditions: _,
                 index_table_id,
                 index_on_column,
             } => {
@@ -690,36 +700,11 @@ impl QueryExecutor {
                 {
                     let base_schema = self.schema.tables[*table_id].clone();
                     let index_schema = self.schema.tables[index_table_id.unwrap()].clone();
-                    let idx_col = index_on_column.unwrap();
-
-                    if idx_col >= conditions.len() {
-                        return Ok(DataFrame::from_memory(
-                            table_name.clone(),
-                            plan.get_header(&self.schema)?,
-                            vec![],
-                        ));
-                    }
-
-                    let (idx_cmp, idx_val) = conditions[idx_col].clone();
-                    if idx_cmp == SqlStatementComparisonOperator::None {
-                        return Ok(DataFrame::from_memory(
-                            table_name.clone(),
-                            plan.get_header(&self.schema)?,
-                            vec![],
-                        ));
-                    }
-
                     let index_op = match operation {
                         SqlConditionOpCode::SelectIndexUnique => SqlConditionOpCode::SelectKeyUnique,
                         SqlConditionOpCode::SelectIndexRange => SqlConditionOpCode::SelectFTS,
                         _ => SqlConditionOpCode::SelectFTS,
                     };
-
-                    let mut index_conditions = vec![
-                        (SqlStatementComparisonOperator::None, Vec::new());
-                        index_schema.fields.len()
-                    ];
-                    index_conditions[0] = (idx_cmp, idx_val);
 
                     let index_btree = Btree::init(
                         index_schema.btree_order,
@@ -732,7 +717,7 @@ impl QueryExecutor {
                         base_schema.clone(),
                     )?;
 
-                    return Ok(DataFrame::from_index_lookup(
+                    Ok(DataFrame::from_index_lookup(
                         table_name.clone(),
                         plan.get_header(&self.schema)?,
                         index_btree,
@@ -740,24 +725,21 @@ impl QueryExecutor {
                         base_btree,
                         base_schema,
                         index_op,
-                        index_conditions,
-                        conditions.clone(),
-                    ));
+                    ))
+                } else {
+                    let schema = self.schema.tables[*table_id].clone();
+                    let btree = Btree::init(
+                        schema.btree_order,
+                        self.pager_accessor.clone(),
+                        schema.clone(),
+                    )?;
+                    Ok(DataFrame::from_table(
+                        table_name.clone(),
+                        plan.get_header(&self.schema)?,
+                        btree,
+                        operation.clone(),
+                    ))
                 }
-
-                let schema = self.schema.tables[*table_id].clone();
-                let btree = Btree::init(
-                    schema.btree_order,
-                    self.pager_accessor.clone(),
-                    schema.clone(),
-                )?;
-                Ok(DataFrame::from_table(
-                    table_name.clone(),
-                    plan.get_header(&self.schema)?,
-                    btree,
-                    operation.clone(),
-                    conditions.clone(),
-                ))
             }
 
             PlanNode::Filter { source, conditions } => {
@@ -809,7 +791,8 @@ impl QueryExecutor {
                     .iter()
                     .position(|f| f.name == right_col.name && f.table_name == right_col.table_name)
                     .ok_or(Status::DataFrameJoinError)?;
-                let strategy = if *left_join_op == JoinOp::Key && *right_join_op == JoinOp::Key {
+                let is_index_or_key = |op: &JoinOp| *op == JoinOp::Key || *op == JoinOp::Index;
+                let strategy = if is_index_or_key(left_join_op) && is_index_or_key(right_join_op) {
                     JoinStrategy::SortMerge
                 } else {
                     JoinStrategy::Hash
@@ -851,7 +834,8 @@ impl QueryExecutor {
             schema.clone(),
         )?;
 
-        Ok(BTreeScanSource::new(btree, schema, operation, conditions))
+        let seek_key = BTreeScanSource::extract_seek_key(&operation, &conditions);
+        Ok(BTreeScanSource::new(btree, schema, operation, seek_key))
     }
 
     fn index_table_name(base_table: &str, column: &str) -> String {

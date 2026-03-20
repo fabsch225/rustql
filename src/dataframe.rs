@@ -35,13 +35,12 @@ impl DataFrame {
         header: Vec<Field>,
         btree: Btree,
         operation: SqlConditionOpCode,
-        conditions: Vec<(SqlStatementComparisonOperator, Vec<u8>)>,
     ) -> DataFrame {
         let schema = btree.table_schema.clone();
         DataFrame {
             identifier,
             header,
-            row_source: Source::BTree(BTreeScanSource::new(btree, schema, operation, conditions)),
+            row_source: Source::BTree(BTreeScanSource::new(btree, schema, operation, None)),
             cursor_started: false,
         }
     }
@@ -54,8 +53,6 @@ impl DataFrame {
         base_btree: Btree,
         base_schema: TableSchema,
         index_operation: SqlConditionOpCode,
-        index_conditions: Vec<(SqlStatementComparisonOperator, Vec<u8>)>,
-        base_conditions: Vec<(SqlStatementComparisonOperator, Vec<u8>)>,
     ) -> DataFrame {
         DataFrame {
             identifier,
@@ -66,8 +63,7 @@ impl DataFrame {
                 base_btree,
                 base_schema,
                 index_operation,
-                index_conditions,
-                base_conditions,
+                None,
             )),
             cursor_started: false,
         }
@@ -510,8 +506,8 @@ impl RowSource for MemorySource {
 pub struct BTreeScanSource {
     btree: Btree,
     schema: TableSchema,
-    conditions: Vec<(SqlStatementComparisonOperator, Vec<u8>)>,
     op_code: SqlConditionOpCode,
+    seek_key: Option<Vec<u8>>,
     cursor: BTreeCursor,
 }
 
@@ -520,43 +516,65 @@ impl BTreeScanSource {
         btree: Btree,
         schema: TableSchema,
         op_code: SqlConditionOpCode,
-        conditions: Vec<(SqlStatementComparisonOperator, Vec<u8>)>,
+        seek_key: Option<Vec<u8>>,
     ) -> Self {
         let mut cursor = BTreeCursor::new(btree.clone());
-        let _ = Self::setup_cursor(&mut cursor, &op_code, &conditions);
+        let _ = Self::setup_cursor(&mut cursor, &op_code, &seek_key);
 
         Self {
             btree,
             schema,
-            conditions,
             op_code,
+            seek_key,
             cursor,
+        }
+    }
+
+    pub fn extract_seek_key(
+        op_code: &SqlConditionOpCode,
+        conditions: &Vec<(SqlStatementComparisonOperator, Vec<u8>)>,
+    ) -> Option<Vec<u8>> {
+        if conditions.is_empty() {
+            return None;
+        }
+
+        let (op, ref val) = conditions[0];
+        match op_code {
+            SqlConditionOpCode::SelectKeyUnique | SqlConditionOpCode::SelectIndexUnique => {
+                if op == Equal {
+                    Some(val.clone())
+                } else {
+                    None
+                }
+            }
+            SqlConditionOpCode::SelectKeyRange => match op {
+                Greater | GreaterOrEqual | Equal => Some(val.clone()),
+                _ => None,
+            },
+            _ => None,
         }
     }
 
     pub fn setup_cursor(
         cursor: &mut BTreeCursor,
         op_code: &SqlConditionOpCode,
-        conditions: &Vec<(SqlStatementComparisonOperator, Vec<u8>)>,
+        seek_key: &Option<Vec<u8>>,
     ) -> Result<(), Status> {
         match op_code {
             SqlConditionOpCode::SelectFTS => cursor.move_to_start(),
             SqlConditionOpCode::SelectKeyRange => {
-                if conditions.is_empty() {
-                    return cursor.move_to_start();
-                }
-                let (op, ref val) = conditions[0];
-                match op {
-                    Greater | GreaterOrEqual | Equal => cursor.go_to(&val.clone()),
-                    _ => cursor.move_to_start(),
+                if let Some(val) = seek_key {
+                    cursor.go_to(val)
+                } else {
+                    cursor.move_to_start()
                 }
             }
-            SqlConditionOpCode::SelectKeyUnique => {
-                if conditions.is_empty() {
-                    return cursor.move_to_start();
+            SqlConditionOpCode::SelectKeyUnique | SqlConditionOpCode::SelectIndexUnique => {
+                if let Some(val) = seek_key {
+                    cursor.go_to(val)
+                } else {
+                    cursor.move_to_start()
                 }
-                let (_, ref val) = conditions[0];
-                cursor.go_to(&val.clone())
             }
             _ => cursor.move_to_start(),
         }
@@ -568,7 +586,6 @@ pub struct IndexLookupSource {
     index_source: BTreeScanSource,
     base_cursor: BTreeCursor,
     base_schema: TableSchema,
-    base_conditions: Vec<(SqlStatementComparisonOperator, Vec<u8>)>,
 }
 
 impl IndexLookupSource {
@@ -578,19 +595,17 @@ impl IndexLookupSource {
         base_btree: Btree,
         base_schema: TableSchema,
         index_operation: SqlConditionOpCode,
-        index_conditions: Vec<(SqlStatementComparisonOperator, Vec<u8>)>,
-        base_conditions: Vec<(SqlStatementComparisonOperator, Vec<u8>)>,
+        index_seek_key: Option<Vec<u8>>,
     ) -> Self {
         Self {
             index_source: BTreeScanSource::new(
                 index_btree,
                 index_schema,
                 index_operation,
-                index_conditions,
+                index_seek_key,
             ),
             base_cursor: BTreeCursor::new(base_btree),
             base_schema,
-            base_conditions,
         }
     }
 }
@@ -605,15 +620,8 @@ impl RowSource for IndexLookupSource {
             }
 
             if let Some((base_key, base_row_body)) = self.base_cursor.current()? {
-                let full_row =
-                    Serializer::reconstruct_row(&base_key, &base_row_body, &self.base_schema)?;
-                if Serializer::check_condition_on_bytes(
-                    &full_row,
-                    &self.base_conditions,
-                    &self.base_schema.fields,
-                )? {
-                    return Ok(Some(full_row));
-                }
+                let full_row = Serializer::reconstruct_row(&base_key, &base_row_body, &self.base_schema)?;
+                return Ok(Some(full_row));
             }
         }
 
@@ -645,22 +653,13 @@ impl RowSource for BTreeScanSource {
             }
 
             let full_row = Serializer::reconstruct_row(&key, &row_body, &self.schema)?;
-
-            if Serializer::check_condition_on_bytes(
-                &full_row,
-                &self.conditions,
-                &self.schema.fields,
-            )? {
-                self.cursor.advance()?;
-                return Ok(Some(full_row));
-            }
-
             self.cursor.advance()?;
+            return Ok(Some(full_row));
         }
     }
 
     fn reset(&mut self) -> Result<(), Status> {
-        Self::setup_cursor(&mut self.cursor, &self.op_code, &self.conditions)
+        Self::setup_cursor(&mut self.cursor, &self.op_code, &self.seek_key)
     }
 }
 

@@ -925,48 +925,53 @@ impl Planner {
             PlanNode::SeqScan {
                 table_id,
                 table_name,
-                operation,
-                conditions,
-                index_table_id,
+                operation: existing_operation,
+                conditions: _,
+                index_table_id: existing_index_table_id,
                 index_on_column: existing_index_on_column,
             } => {
-                let has_existing_conditions = Self::has_compiled_conditions(&conditions);
+                let resolved_index_table_id = index_on_column.and_then(|column_idx| {
+                    node_schema
+                        .fields
+                        .get(column_idx)
+                        .and_then(|field| {
+                            Self::find_index_table_id(
+                                global_schema,
+                                &table_name,
+                                &field.name,
+                            )
+                        })
+                });
 
-                if has_existing_conditions {
-                    Ok(PlanNode::Filter {
-                        source: Box::new(PlanNode::SeqScan {
-                            table_id,
-                            table_name,
-                            operation,
-                            conditions,
-                            index_table_id,
-                            index_on_column: existing_index_on_column,
-                        }),
-                        conditions: compiled_conditions,
-                    })
+                let final_operation = if existing_operation == SqlConditionOpCode::SelectFTS {
+                    derived_op
                 } else {
-                    let resolved_index_table_id = index_on_column.and_then(|column_idx| {
-                        node_schema
-                            .fields
-                            .get(column_idx)
-                            .and_then(|field| {
-                                Self::find_index_table_id(
-                                    global_schema,
-                                    &table_name,
-                                    &field.name,
-                                )
-                            })
-                    });
+                    existing_operation
+                };
 
-                    Ok(PlanNode::SeqScan {
+                let final_index_table_id = if existing_index_table_id.is_some() {
+                    existing_index_table_id
+                } else {
+                    resolved_index_table_id
+                };
+
+                let final_index_on_column = if existing_index_on_column.is_some() {
+                    existing_index_on_column
+                } else {
+                    index_on_column
+                };
+
+                Ok(PlanNode::Filter {
+                    source: Box::new(PlanNode::SeqScan {
                         table_id,
                         table_name,
-                        operation: derived_op,
-                        conditions: compiled_conditions,
-                        index_table_id: resolved_index_table_id,
-                        index_on_column,
-                    })
-                }
+                        operation: final_operation,
+                        conditions: vec![],
+                        index_table_id: final_index_table_id,
+                        index_on_column: final_index_on_column,
+                    }),
+                    conditions: compiled_conditions,
+                })
             }
             other => Ok(PlanNode::Filter {
                 source: Box::new(other),
