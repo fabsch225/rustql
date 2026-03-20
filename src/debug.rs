@@ -2,7 +2,10 @@ use crate::btree::Btree;
 use crate::dataframe::DataFrame;
 use crate::executor::{QueryExecutor, QueryResult};
 use crate::pager::Position;
-use crate::planner::{CompiledQuery, CompiledTransactionStatement, PlanNode, Planner};
+use crate::planner::{
+    CompiledConditionExpr, CompiledInStrategy, CompiledPredicateExpr, CompiledQuery,
+    CompiledTransactionStatement, PlanNode, Planner,
+};
 use crate::serializer::Serializer;
 use std::cmp::PartialEq;
 use std::fmt::{Debug, Display, Formatter};
@@ -111,6 +114,51 @@ impl Display for Btree {
 }
 
 impl Planner {
+    fn render_condition_expr(expr: &CompiledConditionExpr, prefix: &str, out: &mut String) {
+        match expr {
+            CompiledConditionExpr::Logical { op, left, right } => {
+                out.push_str(&format!("{}Logical {:?}\n", prefix, op));
+                out.push_str(&format!("{}├─ left:\n", prefix));
+                Self::render_condition_expr(left, &format!("{}│  ", prefix), out);
+                out.push_str(&format!("{}└─ right:\n", prefix));
+                Self::render_condition_expr(right, &format!("{}   ", prefix), out);
+            }
+            CompiledConditionExpr::Predicate(pred) => match pred {
+                CompiledPredicateExpr::Compare {
+                    column_idx,
+                    op,
+                    value,
+                } => {
+                    out.push_str(&format!(
+                        "{}Compare col[{}] {} {}\n",
+                        prefix,
+                        column_idx,
+                        Serializer::format_condition_op(op),
+                        Serializer::format_value_preview(value)
+                    ));
+                }
+                CompiledPredicateExpr::InSubquery { column_idx, strategy } => {
+                    out.push_str(&format!("{}IN col[{}]\n", prefix, column_idx));
+                    match strategy {
+                        CompiledInStrategy::KeyLookup { table_id } => {
+                            out.push_str(&format!("{}└─ strategy: KeyLookup(table_id={})\n", prefix, table_id));
+                        }
+                        CompiledInStrategy::IndexLookup { index_table_id } => {
+                            out.push_str(&format!(
+                                "{}└─ strategy: IndexLookup(index_table_id={})\n",
+                                prefix, index_table_id
+                            ));
+                        }
+                        CompiledInStrategy::Materialize(plan) => {
+                            out.push_str(&format!("{}└─ strategy: Materialize\n", prefix));
+                            Self::render_plan_node(plan, &format!("{}   ", prefix), true, out);
+                        }
+                    }
+                }
+            },
+        }
+    }
+
     pub fn render_plan_node(node: &PlanNode, prefix: &str, is_last: bool, out: &mut String) {
         let branch = if is_last { "└─" } else { "├─" };
         let next_prefix = if is_last {
@@ -142,7 +190,8 @@ impl Planner {
             }
             PlanNode::Filter { source, condition } => {
                 out.push_str(&format!("{}{} Filter\n", prefix, branch));
-                out.push_str(&format!("{}  condition: {:?}\n", next_prefix, condition));
+                out.push_str(&format!("{}  condition:\n", next_prefix));
+                Self::render_condition_expr(condition, &format!("{}    ", next_prefix), out);
                 Self::render_plan_node(source, &next_prefix, true, out);
             }
             PlanNode::Project { source, fields } => {
@@ -203,7 +252,13 @@ impl Planner {
                     q.table_id, q.operation
                 );
                 out.push_str(&format!("   seek_key: {}\n", if q.seek_key.is_some() { "Some(..)" } else { "None" }));
-                out.push_str(&format!("   condition: {:?}\n", q.condition));
+                match &q.condition {
+                    Some(cond) => {
+                        out.push_str("   condition:\n");
+                        Self::render_condition_expr(cond, "     ", &mut out);
+                    }
+                    None => out.push_str("   condition: <none>\n"),
+                }
                 out
             }
             CompiledQuery::Update(q) => {
@@ -212,7 +267,13 @@ impl Planner {
                     q.table_id, q.operation
                 );
                 out.push_str(&format!("   seek_key: {}\n", if q.seek_key.is_some() { "Some(..)" } else { "None" }));
-                out.push_str(&format!("   condition: {:?}\n", q.condition));
+                match &q.condition {
+                    Some(cond) => {
+                        out.push_str("   condition:\n");
+                        Self::render_condition_expr(cond, "     ", &mut out);
+                    }
+                    None => out.push_str("   condition: <none>\n"),
+                }
                 for (idx, (field_idx, value)) in q.assignments.iter().enumerate() {
                     out.push_str(&format!(
                         "   set[{}]: field[{}] = {}\n",
