@@ -1,8 +1,12 @@
 use crate::btree::Btree;
 use crate::cursor::BTreeCursor;
 use crate::debug::Status;
-use crate::pager::{Position, Row, Type};
+use crate::pager::{PagerAccessor, Position, Row, Type};
 use crate::parser::ParsedSetOperator;
+use crate::planner::{
+    CompiledLogicalOp, CompiledPredicateExpr,
+    SqlStatementComparisonOperator::LesserOrEqual,
+};
 use crate::planner::SqlStatementComparisonOperator::{Equal, Greater, GreaterOrEqual};
 use crate::planner::{SqlConditionOpCode, SqlStatementComparisonOperator};
 use crate::schema::{Field, TableSchema};
@@ -18,6 +22,42 @@ pub struct DataFrame {
     pub header: Vec<Field>,
     pub(crate) row_source: Source,
     cursor_started: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct ConditionEvalContext {
+    pub pager_accessor: PagerAccessor,
+    pub schemas: Vec<TableSchema>,
+}
+
+#[derive(Debug, Clone)]
+pub enum PreparedConditionExpr {
+    Logical {
+        op: CompiledLogicalOp,
+        left: Box<PreparedConditionExpr>,
+        right: Box<PreparedConditionExpr>,
+    },
+    Predicate(PreparedPredicateExpr),
+}
+
+#[derive(Debug, Clone)]
+pub enum PreparedPredicateExpr {
+    Compare {
+        column_idx: usize,
+        op: SqlStatementComparisonOperator,
+        value: Vec<u8>,
+    },
+    InSubquery {
+        column_idx: usize,
+        strategy: PreparedInStrategy,
+    },
+}
+
+#[derive(Debug, Clone)]
+pub enum PreparedInStrategy {
+    Materialize(Box<DataFrame>),
+    KeyLookup { table_id: usize },
+    IndexLookup { index_table_id: usize },
 }
 
 impl DataFrame {
@@ -119,16 +159,20 @@ impl DataFrame {
         Ok(rows)
     }
 
-    pub fn filter(self, conditions: Vec<(SqlStatementComparisonOperator, Vec<u8>)>) -> DataFrame {
-        let header = self.header.clone();
-
+    pub fn filter_prepared(
+        self,
+        condition: PreparedConditionExpr,
+        schema: TableSchema,
+        context: ConditionEvalContext,
+    ) -> DataFrame {
         DataFrame {
             identifier: format!("Filter({})", self.identifier),
-            header: header.clone(),
+            header: self.header,
             row_source: Source::Filter(FilterSource::new(
                 Box::new(self.row_source),
-                conditions,
-                header,
+                condition,
+                schema,
+                context,
             )),
             cursor_started: false,
         }
@@ -665,42 +709,261 @@ impl RowSource for BTreeScanSource {
 }
 
 #[derive(Debug, Clone)]
+enum RuntimeConditionExpr {
+    Logical {
+        op: CompiledLogicalOp,
+        left: Box<RuntimeConditionExpr>,
+        right: Box<RuntimeConditionExpr>,
+    },
+    Predicate(RuntimePredicateExpr),
+}
+
+#[derive(Debug, Clone)]
+enum RuntimePredicateExpr {
+    Compare {
+        column_idx: usize,
+        op: SqlStatementComparisonOperator,
+        value: Vec<u8>,
+    },
+    InSubquery {
+        column_idx: usize,
+        strategy: RuntimeInStrategy,
+    },
+}
+
+#[derive(Debug, Clone)]
+enum RuntimeInStrategy {
+    Materialized(HashSet<Vec<u8>>),
+    KeyLookup {
+        schema: TableSchema,
+        cursor: BTreeCursor,
+    },
+    IndexLookup {
+        schema: TableSchema,
+        cursor: BTreeCursor,
+    },
+}
+
+#[derive(Debug, Clone)]
 pub struct FilterSource {
     source: Box<Source>,
-    conditions: Vec<(SqlStatementComparisonOperator, Vec<u8>)>,
-    header: Vec<Field>,
+    condition: PreparedConditionExpr,
+    schema: TableSchema,
+    context: ConditionEvalContext,
+    runtime_condition: Option<RuntimeConditionExpr>,
 }
 
 impl FilterSource {
     pub fn new(
         source: Box<Source>,
-        conditions: Vec<(SqlStatementComparisonOperator, Vec<u8>)>,
-        header: Vec<Field>,
+        condition: PreparedConditionExpr,
+        schema: TableSchema,
+        context: ConditionEvalContext,
     ) -> Self {
         Self {
             source,
-            conditions,
-            header,
+            condition,
+            schema,
+            context,
+            runtime_condition: None,
+        }
+    }
+
+    fn initialize_runtime_condition(&mut self) -> Result<(), Status> {
+        self.runtime_condition = Some(self.prepare_runtime_condition(&self.condition)?);
+        Ok(())
+    }
+
+    fn prepare_runtime_condition(
+        &self,
+        expr: &PreparedConditionExpr,
+    ) -> Result<RuntimeConditionExpr, Status> {
+        match expr {
+            PreparedConditionExpr::Logical { op, left, right } => Ok(RuntimeConditionExpr::Logical {
+                op: op.clone(),
+                left: Box::new(self.prepare_runtime_condition(left)?),
+                right: Box::new(self.prepare_runtime_condition(right)?),
+            }),
+            PreparedConditionExpr::Predicate(pred) => match pred {
+                PreparedPredicateExpr::Compare {
+                    column_idx,
+                    op,
+                    value,
+                } => Ok(RuntimeConditionExpr::Predicate(RuntimePredicateExpr::Compare {
+                    column_idx: *column_idx,
+                    op: *op,
+                    value: value.clone(),
+                })),
+                PreparedPredicateExpr::InSubquery {
+                    column_idx,
+                    strategy,
+                } => {
+                    let runtime_strategy = match strategy {
+                        PreparedInStrategy::Materialize(df) => {
+                            let rows = df.as_ref().clone().fetch()?;
+                            let mut set = HashSet::new();
+                            for row in rows {
+                                if !row.is_empty() {
+                                    set.insert(row);
+                                }
+                            }
+                            RuntimeInStrategy::Materialized(set)
+                        }
+                        PreparedInStrategy::KeyLookup { table_id } => {
+                            let table_schema = self
+                                .context
+                                .schemas
+                                .get(*table_id)
+                                .ok_or(Status::InternalExceptionInvalidSchema)?
+                                .clone();
+                            let btree = Btree::init(
+                                table_schema.btree_order,
+                                self.context.pager_accessor.clone(),
+                                table_schema.clone(),
+                            )?;
+                            RuntimeInStrategy::KeyLookup {
+                                schema: table_schema,
+                                cursor: BTreeCursor::new(btree),
+                            }
+                        }
+                        PreparedInStrategy::IndexLookup { index_table_id } => {
+                            let index_schema = self
+                                .context
+                                .schemas
+                                .get(*index_table_id)
+                                .ok_or(Status::InternalExceptionInvalidSchema)?
+                                .clone();
+                            let btree = Btree::init(
+                                index_schema.btree_order,
+                                self.context.pager_accessor.clone(),
+                                index_schema.clone(),
+                            )?;
+                            RuntimeInStrategy::IndexLookup {
+                                schema: index_schema,
+                                cursor: BTreeCursor::new(btree),
+                            }
+                        }
+                    };
+
+                    Ok(RuntimeConditionExpr::Predicate(RuntimePredicateExpr::InSubquery {
+                        column_idx: *column_idx,
+                        strategy: runtime_strategy,
+                    }))
+                }
+            },
+        }
+    }
+
+    fn evaluate_runtime_condition(
+        expr: &mut RuntimeConditionExpr,
+        row: &Row,
+        schema: &TableSchema,
+    ) -> Result<bool, Status> {
+        match expr {
+            RuntimeConditionExpr::Logical { op, left, right } => {
+                let l = Self::evaluate_runtime_condition(left, row, schema)?;
+                let r = Self::evaluate_runtime_condition(right, row, schema)?;
+                Ok(match op {
+                    CompiledLogicalOp::And => l && r,
+                    CompiledLogicalOp::Or => l || r,
+                    CompiledLogicalOp::Xor => l ^ r,
+                })
+            }
+            RuntimeConditionExpr::Predicate(pred) => match pred {
+                RuntimePredicateExpr::Compare {
+                    column_idx,
+                    op,
+                    value,
+                } => {
+                    if *op == SqlStatementComparisonOperator::None {
+                        return Ok(true);
+                    }
+                    let lhs = Serializer::get_field_on_row(row, *column_idx, schema)?;
+                    let field_type = &schema.fields[*column_idx].field_type;
+                    let ord = Serializer::compare_with_type(&lhs, value, field_type)?;
+                    Ok(match op {
+                        SqlStatementComparisonOperator::Equal => ord == std::cmp::Ordering::Equal,
+                        SqlStatementComparisonOperator::Greater => {
+                            ord == std::cmp::Ordering::Greater
+                        }
+                        SqlStatementComparisonOperator::GreaterOrEqual => {
+                            ord == std::cmp::Ordering::Greater || ord == std::cmp::Ordering::Equal
+                        }
+                        SqlStatementComparisonOperator::Lesser => ord == std::cmp::Ordering::Less,
+                        LesserOrEqual => {
+                            ord == std::cmp::Ordering::Less || ord == std::cmp::Ordering::Equal
+                        }
+                        SqlStatementComparisonOperator::None => true,
+                    })
+                }
+                RuntimePredicateExpr::InSubquery {
+                    column_idx,
+                    strategy,
+                } => {
+                    let lhs = Serializer::get_field_on_row(row, *column_idx, schema)?;
+                    match strategy {
+                        RuntimeInStrategy::Materialized(set) => Ok(set.contains(&lhs)),
+                        RuntimeInStrategy::KeyLookup {
+                            schema,
+                            cursor,
+                        } => {
+                            cursor.go_to(&lhs)?;
+                            if !cursor.is_valid() {
+                                return Ok(false);
+                            }
+                            if let Some((key, _)) = cursor.current()? {
+                                Ok(key == lhs && !Serializer::is_tomb(&key, schema)?)
+                            } else {
+                                Ok(false)
+                            }
+                        }
+                        RuntimeInStrategy::IndexLookup {
+                            schema,
+                            cursor,
+                        } => {
+                            cursor.go_to(&lhs)?;
+                            if !cursor.is_valid() {
+                                return Ok(false);
+                            }
+                            if let Some((key, _)) = cursor.current()? {
+                                Ok(key == lhs && !Serializer::is_tomb(&key, schema)?)
+                            } else {
+                                Ok(false)
+                            }
+                        }
+                    }
+                }
+            },
         }
     }
 }
 
 impl RowSource for FilterSource {
     fn next(&mut self) -> Result<Option<Vec<u8>>, Status> {
+        if self.runtime_condition.is_none() {
+            self.initialize_runtime_condition()?;
+        }
+
         loop {
             let row = match self.source.next()? {
                 Some(r) => r,
                 None => return Ok(None),
             };
 
-            if Serializer::check_condition_on_bytes(&row, &self.conditions, &self.header)? {
+            let runtime = self
+                .runtime_condition
+                .as_mut()
+                .ok_or(Status::InternalExceptionCompilerError)?;
+
+            if Self::evaluate_runtime_condition(runtime, &row, &self.schema)? {
                 return Ok(Some(row));
             }
         }
     }
 
     fn reset(&mut self) -> Result<(), Status> {
-        self.source.reset()
+        self.source.reset()?;
+        self.initialize_runtime_condition()
     }
 }
 

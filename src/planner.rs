@@ -77,8 +77,11 @@ pub enum CompiledConditionExpr {
 #[derive(Debug, Clone)]
 pub enum CompiledInStrategy {
     Materialize(Box<PlanNode>),
-    KeyLookup { table_id: usize },
-    IndexLookup { index_table_id: usize },
+    KeyLookup { plan: Box<PlanNode>, table_id: usize },
+    IndexLookup {
+        plan: Box<PlanNode>,
+        index_table_id: usize,
+    },
 }
 
 /// A Node in the Query Execution Plan Tree
@@ -1002,8 +1005,10 @@ impl Planner {
         schema: &Schema,
         subquery: &Box<ParsedQueryTreeNode>,
     ) -> Result<CompiledInStrategy, QueryResult> {
+        let plan = Self::plan_tree_node(schema, (*subquery.clone()).clone())?;
+
         if let ParsedQueryTreeNode::SingleQuery(sq) = subquery.as_ref() {
-            if sq.conditions.is_none() && sq.result.len() == 1 {
+            if sq.result.len() == 1 {
                 if let ParsedSource::Table(table_name) = &sq.source {
                     let table_id = Self::find_table_id(schema, table_name)?;
                     let table_schema = &schema.tables[table_id];
@@ -1017,19 +1022,24 @@ impl Planner {
                         })?;
 
                     if field_idx == table_schema.key_position {
-                        return Ok(CompiledInStrategy::KeyLookup { table_id });
+                        return Ok(CompiledInStrategy::KeyLookup {
+                            plan: Box::new(plan),
+                            table_id,
+                        });
                     }
 
                     if let Some(index_table_id) =
                         Self::find_index_table_id(schema, table_name, &field.name)
                     {
-                        return Ok(CompiledInStrategy::IndexLookup { index_table_id });
+                        return Ok(CompiledInStrategy::IndexLookup {
+                            plan: Box::new(plan),
+                            index_table_id,
+                        });
                     }
                 }
             }
         }
 
-        let plan = Self::plan_tree_node(schema, (*subquery.clone()).clone())?;
         Ok(CompiledInStrategy::Materialize(Box::new(plan)))
     }
 

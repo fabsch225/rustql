@@ -143,17 +143,22 @@ impl Planner {
                 } => {
                     out.push_str(&format!("{}IN col[{}]\n", prefix, column_idx));
                     match strategy {
-                        CompiledInStrategy::KeyLookup { table_id } => {
+                        CompiledInStrategy::KeyLookup { plan, table_id } => {
                             out.push_str(&format!(
                                 "{}└─ strategy: KeyLookup(table_id={})\n",
                                 prefix, table_id
                             ));
+                            Self::render_plan_node(plan, &format!("{}   ", prefix), true, out);
                         }
-                        CompiledInStrategy::IndexLookup { index_table_id } => {
+                        CompiledInStrategy::IndexLookup {
+                            plan,
+                            index_table_id,
+                        } => {
                             out.push_str(&format!(
                                 "{}└─ strategy: IndexLookup(index_table_id={})\n",
                                 prefix, index_table_id
                             ));
+                            Self::render_plan_node(plan, &format!("{}   ", prefix), true, out);
                         }
                         CompiledInStrategy::Materialize(plan) => {
                             out.push_str(&format!("{}└─ strategy: Materialize\n", prefix));

@@ -93,7 +93,7 @@ fn main() {
     let q2 = r#"
         SELECT A.id FROM A JOIN B ON A.id = B.id JOIN C ON A.id = C.id WHERE (A.v > 70 AND B.v < 30) OR A.id IN (SELECT id FROM C WHERE C.v > 80)
     "#;
-    exec.plan(q2.to_string());
+    //exec.plan(q2.to_string());
     loop {
         if handle_cli(&mut exec) {
             break;

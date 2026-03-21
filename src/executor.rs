@@ -1,7 +1,9 @@
 use crate::btree::Btree;
 use crate::cursor::BTreeCursor;
 use crate::dataframe::{
-    BTreeScanSource, DataFrame, JoinStrategy, MemorySource, RowSource, SetOpStrategy, Source,
+    BTreeScanSource, ConditionEvalContext, DataFrame, JoinStrategy, MemorySource,
+    PreparedConditionExpr, PreparedInStrategy, PreparedPredicateExpr, RowSource, SetOpStrategy,
+    Source,
 };
 use crate::debug::Status;
 use crate::debug::Status::ExceptionQueryMisformed;
@@ -18,8 +20,9 @@ use crate::planner::SqlStatementComparisonOperator::{
 use crate::planner::{
     CompiledConditionExpr, CompiledCreateIndexQuery, CompiledCreateTableQuery, CompiledDeleteQuery,
     CompiledInStrategy, CompiledInsertQuery, CompiledLogicalOp, CompiledPredicateExpr,
-    CompiledQuery, CompiledSelectQuery, CompiledTransactionStatement, CompiledUpdateQuery,
-    PlanNode, Planner, SqlConditionOpCode, SqlStatementComparisonOperator,
+    CompiledQuery,
+    CompiledSelectQuery, CompiledTransactionStatement, CompiledUpdateQuery, PlanNode, Planner,
+    SqlConditionOpCode, SqlStatementComparisonOperator,
 };
 pub(crate) use crate::schema::{Field, IndexDefinition, Schema, TableIndex, TableSchema};
 use crate::serializer::Serializer;
@@ -30,7 +33,7 @@ use std::fmt::{Display, Formatter, format};
 use std::fs::OpenOptions;
 use std::io::{ErrorKind, Write};
 
-const MASTER_TABLE_NAME: &str = "rustsql_master";
+pub(crate) const MASTER_TABLE_NAME: &str = "rustsql_master";
 
 pub static MASTER_TABLE_SQL: &str = "CREATE TABLE rustsql_master (
         name STRING,
@@ -110,48 +113,7 @@ pub struct QueryExecutor {
     last_write_table_id: Option<usize>,
 }
 
-#[derive(Debug, Clone)]
-enum PreparedConditionExpr {
-    Logical {
-        op: CompiledLogicalOp,
-        left: Box<PreparedConditionExpr>,
-        right: Box<PreparedConditionExpr>,
-    },
-    Predicate(PreparedPredicateExpr),
-}
-
-#[derive(Debug, Clone)]
-enum PreparedPredicateExpr {
-    Compare {
-        column_idx: usize,
-        op: SqlStatementComparisonOperator,
-        value: Vec<u8>,
-    },
-    InSubquery {
-        column_idx: usize,
-        strategy: PreparedInStrategy,
-    },
-}
-
-#[derive(Debug, Clone)]
-enum PreparedInStrategy {
-    Materialized(HashSet<Vec<u8>>),
-    KeyLookup { table_id: usize },
-    IndexLookup { index_table_id: usize },
-}
-
 impl QueryExecutor {
-    fn encode_free_list_top_10(table: &TableSchema) -> String {
-        let mut entries = table.free_list.clone();
-        entries.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
-        entries.truncate(10);
-        entries
-            .iter()
-            .map(|(page, slots)| format!("{}:{}", page, slots))
-            .collect::<Vec<String>>()
-            .join(",")
-    }
-
     pub fn init(file_path: &str, t: usize) -> Self {
         let mut pager_accessor = match PagerCore::init_from_file(file_path) {
             Ok(pa) => pa,
@@ -226,7 +188,7 @@ impl QueryExecutor {
     pub fn prepare(&mut self, query: String) -> QueryResult {
         self.request_counter += 1;
         self.last_write_table_id = None;
-        let result = self.execute(query, false);
+        let result = self.run_query_internal(&query, false);
 
         // Keep free-lists fresh in memory, but do not rewrite the whole system table periodically.
         // Rewriting every 30 requests caused repeated re-encoding of long SQL strings
@@ -241,11 +203,7 @@ impl QueryExecutor {
                 }
             }
         }
-        if !result.is_ok() {
-            result.err().unwrap()
-        } else {
-            result.expect("just checked")
-        }
+        Self::finalize_result(result)
     }
 
     pub fn prepare_in_transaction_context(
@@ -298,12 +256,20 @@ impl QueryExecutor {
     }
 
     pub fn execute_readonly(&self, query: String) -> QueryResult {
-        let result = self.execute_readonly_intern(query);
-        if !result.is_ok() {
-            result.err().unwrap()
-        } else {
-            result.expect("just checked")
-        }
+        let result = self
+            .compile_query(&query)
+            .and_then(|compiled_query| match compiled_query {
+                CompiledQuery::Select(q) => {
+                    let result_df = self
+                        .exec_planned_tree(&q.plan)
+                        .map_err(QueryResult::err)?;
+                    Ok(QueryResult::return_data(result_df))
+                }
+                _ => Err(QueryResult::user_input_wrong(
+                    "query is not read-only".to_string(),
+                )),
+            });
+        Self::finalize_result(result)
     }
 
     pub fn planner_feedback_is_readonly(&self, query: &str) -> Result<bool, QueryResult> {
@@ -319,28 +285,21 @@ impl QueryExecutor {
         Planner::plan(&self.schema, parsed_query)
     }
 
-    fn execute(
-        &mut self,
-        query: String,
-        allow_modification_to_system_table: bool,
-    ) -> Result<QueryResult, QueryResult> {
-        let compiled_query = self.compile_query(&query)?;
-        self.execute_compiled(compiled_query, query, allow_modification_to_system_table)
+    fn finalize_result(result: Result<QueryResult, QueryResult>) -> QueryResult {
+        if !result.is_ok() {
+            result.err().unwrap()
+        } else {
+            result.expect("just checked")
+        }
     }
 
-    fn execute_readonly_intern(&self, query: String) -> Result<QueryResult, QueryResult> {
-        let compiled_query = self.compile_query(&query)?;
-        match compiled_query {
-            CompiledQuery::Select(q) => {
-                let result_df = self
-                    .exec_planned_tree(&q.plan)
-                    .map_err(|s| QueryResult::err(s))?;
-                Ok(QueryResult::return_data(result_df))
-            }
-            _ => Err(QueryResult::user_input_wrong(
-                "query is not read-only".to_string(),
-            )),
-        }
+    pub(crate) fn run_query_internal(
+        &mut self,
+        query: &str,
+        allow_modification_to_system_table: bool,
+    ) -> Result<QueryResult, QueryResult> {
+        let compiled_query = self.compile_query(query)?;
+        self.execute_compiled(compiled_query, query.to_string(), allow_modification_to_system_table)
     }
 
     fn execute_compiled(
@@ -447,7 +406,7 @@ impl QueryExecutor {
                     query.replace("'", "''"),
                     free_list_encoded.replace("'", "''")
                 );
-                self.execute(insert_query, true)?;
+                self.run_query_internal(&insert_query, true)?;
                 let result = self.reload_schema()?;
                 if !allow_modification_to_system_table {
                     let created_table_id = Planner::find_table_id(&self.schema, &q.table_name)?;
@@ -505,7 +464,7 @@ impl QueryExecutor {
                     MASTER_TABLE_NAME,
                     dropped_table.name.replace("'", "''")
                 );
-                self.execute(delete_master_row, true)?;
+                self.run_query_internal(&delete_master_row, true)?;
 
                 self.reload_schema()
             }
@@ -556,10 +515,6 @@ impl QueryExecutor {
                     self.lock_table_if_needed(&table_name)?;
                 }
 
-                let mut source = self
-                    .create_scan_source(q.table_id, q.operation, q.seek_key.clone())
-                    .map_err(|s| QueryResult::err(s))?;
-
                 let schema = &self.schema.tables[q.table_id];
                 let key_offset = {
                     let mut offset = 0;
@@ -581,16 +536,35 @@ impl QueryExecutor {
                     .transpose()
                     .map_err(QueryResult::err)?;
 
-                source.reset().map_err(QueryResult::err)?;
-                while let Some(row) = source.next().map_err(QueryResult::err)? {
-                    if let Some(cond) = &prepared_condition {
-                        if !self
-                            .evaluate_prepared_condition(cond, &row, schema)
-                            .map_err(QueryResult::err)?
-                        {
-                            continue;
-                        }
-                    }
+                let table_schema = schema.clone();
+                let btree = Btree::init(
+                    table_schema.btree_order,
+                    self.pager_accessor.clone(),
+                    table_schema.clone(),
+                )
+                .map_err(QueryResult::err)?;
+
+                let mut scan_df = DataFrame::from_table(
+                    "DeleteScan".to_string(),
+                    table_schema.fields.clone(),
+                    btree,
+                    q.operation.clone(),
+                    q.seek_key.clone(),
+                );
+
+                if let Some(cond) = prepared_condition {
+                    scan_df = scan_df.filter_prepared(
+                        cond,
+                        schema.clone(),
+                        ConditionEvalContext {
+                            pager_accessor: self.pager_accessor.clone(),
+                            schemas: self.schema.tables.clone(),
+                        },
+                    );
+                }
+
+                let rows = scan_df.fetch().map_err(QueryResult::err)?;
+                for row in rows {
                     if row.len() < key_offset + key_len {
                         return Err(QueryResult::err(
                             Status::InternalExceptionIntegrityCheckFailed,
@@ -657,10 +631,6 @@ impl QueryExecutor {
         let key_len = Serializer::get_size_of_type(&schema.fields[schema.key_position].field_type)
             .map_err(QueryResult::err)?;
 
-        let mut source = self
-            .create_scan_source(q.table_id, q.operation.clone(), q.seek_key.clone())
-            .map_err(QueryResult::err)?;
-
         let mut updates_to_apply: Vec<(Vec<u8>, Vec<u8>, Vec<u8>)> = Vec::new();
         let prepared_condition = q
             .condition
@@ -669,16 +639,34 @@ impl QueryExecutor {
             .transpose()
             .map_err(QueryResult::err)?;
 
-        source.reset().map_err(QueryResult::err)?;
-        while let Some(row) = source.next().map_err(QueryResult::err)? {
-            if let Some(cond) = &prepared_condition {
-                if !self
-                    .evaluate_prepared_condition(cond, &row, &schema)
-                    .map_err(QueryResult::err)?
-                {
-                    continue;
-                }
-            }
+        let btree = Btree::init(
+            schema.btree_order,
+            self.pager_accessor.clone(),
+            schema.clone(),
+        )
+        .map_err(QueryResult::err)?;
+
+        let mut scan_df = DataFrame::from_table(
+            "UpdateScan".to_string(),
+            schema.fields.clone(),
+            btree,
+            q.operation.clone(),
+            q.seek_key.clone(),
+        );
+
+        if let Some(cond) = prepared_condition {
+            scan_df = scan_df.filter_prepared(
+                cond,
+                schema.clone(),
+                ConditionEvalContext {
+                    pager_accessor: self.pager_accessor.clone(),
+                    schemas: self.schema.tables.clone(),
+                },
+            );
+        }
+
+        let rows = scan_df.fetch().map_err(QueryResult::err)?;
+        for row in rows {
             let mut updated_fields = Vec::with_capacity(schema.fields.len());
             for field_idx in 0..schema.fields.len() {
                 updated_fields.push(
@@ -804,18 +792,14 @@ impl QueryExecutor {
             PlanNode::Filter { source, condition } => {
                 let source_df = self.exec_planned_tree(source)?;
                 let prepared = self.prepare_condition_runtime(condition)?;
-                let rows = source_df.fetch()?;
                 let source_schema = source.get_schema(&self.schema)?;
-                let mut filtered = Vec::new();
-                for row in rows {
-                    if self.evaluate_prepared_condition(&prepared, &row, &source_schema)? {
-                        filtered.push(row);
-                    }
-                }
-                Ok(DataFrame::from_memory(
-                    "FilterResult".to_string(),
-                    source.get_header(&self.schema)?,
-                    filtered,
+                Ok(source_df.filter_prepared(
+                    prepared,
+                    source_schema,
+                    ConditionEvalContext {
+                        pager_accessor: self.pager_accessor.clone(),
+                        schemas: self.schema.tables.clone(),
+                    },
                 ))
             }
 
@@ -893,7 +877,7 @@ impl QueryExecutor {
         }
     }
 
-    fn create_scan_source(
+    pub(crate) fn create_scan_source(
         &self,
         table_id: usize,
         operation: SqlConditionOpCode,
@@ -940,23 +924,29 @@ impl QueryExecutor {
                     let prepared_strategy = match strategy {
                         CompiledInStrategy::Materialize(plan) => {
                             let df = self.exec_planned_tree(plan)?;
-                            let rows = df.fetch()?;
-                            let mut set = HashSet::new();
-                            for row in rows {
-                                if !row.is_empty() {
-                                    set.insert(row);
+                            PreparedInStrategy::Materialize(Box::new(df))
+                        }
+                        CompiledInStrategy::KeyLookup { plan, table_id } => {
+                            if Self::plan_contains_filter(plan) {
+                                let df = self.exec_planned_tree(plan)?;
+                                PreparedInStrategy::Materialize(Box::new(df))
+                            } else {
+                                PreparedInStrategy::KeyLookup {
+                                    table_id: *table_id,
                                 }
                             }
-                            PreparedInStrategy::Materialized(set)
                         }
-                        CompiledInStrategy::KeyLookup { table_id } => {
-                            PreparedInStrategy::KeyLookup {
-                                table_id: *table_id,
-                            }
-                        }
-                        CompiledInStrategy::IndexLookup { index_table_id } => {
-                            PreparedInStrategy::IndexLookup {
-                                index_table_id: *index_table_id,
+                        CompiledInStrategy::IndexLookup {
+                            plan,
+                            index_table_id,
+                        } => {
+                            if Self::plan_contains_filter(plan) {
+                                let df = self.exec_planned_tree(plan)?;
+                                PreparedInStrategy::Materialize(Box::new(df))
+                            } else {
+                                PreparedInStrategy::IndexLookup {
+                                    index_table_id: *index_table_id,
+                                }
                             }
                         }
                     };
@@ -972,363 +962,18 @@ impl QueryExecutor {
         }
     }
 
-    fn evaluate_prepared_condition(
-        &self,
-        expr: &PreparedConditionExpr,
-        row: &Row,
-        schema: &TableSchema,
-    ) -> Result<bool, Status> {
-        match expr {
-            PreparedConditionExpr::Logical { op, left, right } => {
-                let l = self.evaluate_prepared_condition(left, row, schema)?;
-                let r = self.evaluate_prepared_condition(right, row, schema)?;
-                Ok(match op {
-                    CompiledLogicalOp::And => l && r,
-                    CompiledLogicalOp::Or => l || r,
-                    CompiledLogicalOp::Xor => l ^ r,
-                })
+    fn plan_contains_filter(plan: &PlanNode) -> bool {
+        match plan {
+            PlanNode::Filter { .. } => true,
+            PlanNode::Project { source, .. } => Self::plan_contains_filter(source),
+            PlanNode::Join { left, right, .. } => {
+                Self::plan_contains_filter(left) || Self::plan_contains_filter(right)
             }
-            PreparedConditionExpr::Predicate(pred) => match pred {
-                PreparedPredicateExpr::Compare {
-                    column_idx,
-                    op,
-                    value,
-                } => {
-                    if *op == SqlStatementComparisonOperator::None {
-                        return Ok(true);
-                    }
-                    let lhs = Serializer::get_field_on_row(row, *column_idx, schema)?;
-                    let field_type = &schema.fields[*column_idx].field_type;
-                    let ord = Serializer::compare_with_type(&lhs, value, field_type)?;
-                    Ok(match op {
-                        SqlStatementComparisonOperator::Equal => ord == std::cmp::Ordering::Equal,
-                        SqlStatementComparisonOperator::Greater => {
-                            ord == std::cmp::Ordering::Greater
-                        }
-                        SqlStatementComparisonOperator::GreaterOrEqual => {
-                            ord == std::cmp::Ordering::Greater || ord == std::cmp::Ordering::Equal
-                        }
-                        SqlStatementComparisonOperator::Lesser => ord == std::cmp::Ordering::Less,
-                        SqlStatementComparisonOperator::LesserOrEqual => {
-                            ord == std::cmp::Ordering::Less || ord == std::cmp::Ordering::Equal
-                        }
-                        SqlStatementComparisonOperator::None => true,
-                    })
-                }
-                PreparedPredicateExpr::InSubquery {
-                    column_idx,
-                    strategy,
-                } => {
-                    let lhs = Serializer::get_field_on_row(row, *column_idx, schema)?;
-                    match strategy {
-                        PreparedInStrategy::Materialized(set) => Ok(set.contains(&lhs)),
-                        PreparedInStrategy::KeyLookup { table_id } => {
-                            let table_schema = self.schema.tables[*table_id].clone();
-                            let btree = Btree::init(
-                                table_schema.btree_order,
-                                self.pager_accessor.clone(),
-                                table_schema.clone(),
-                            )?;
-                            let mut cursor = BTreeCursor::new(btree);
-                            cursor.go_to(&lhs)?;
-                            if !cursor.is_valid() {
-                                return Ok(false);
-                            }
-                            if let Some((key, _)) = cursor.current()? {
-                                Ok(key == lhs && !Serializer::is_tomb(&key, &table_schema)?)
-                            } else {
-                                Ok(false)
-                            }
-                        }
-                        PreparedInStrategy::IndexLookup { index_table_id } => {
-                            let index_schema = self.schema.tables[*index_table_id].clone();
-                            let btree = Btree::init(
-                                index_schema.btree_order,
-                                self.pager_accessor.clone(),
-                                index_schema.clone(),
-                            )?;
-                            let mut cursor = BTreeCursor::new(btree);
-                            cursor.go_to(&lhs)?;
-                            if !cursor.is_valid() {
-                                return Ok(false);
-                            }
-                            if let Some((key, _)) = cursor.current()? {
-                                Ok(key == lhs && !Serializer::is_tomb(&key, &index_schema)?)
-                            } else {
-                                Ok(false)
-                            }
-                        }
-                    }
-                }
-            },
-        }
-    }
-
-    fn index_table_name(base_table: &str, column: &str) -> String {
-        format!("_{}_{}", base_table, column)
-    }
-
-    fn parse_index_table_name(index_table_name: &str) -> Option<(String, String)> {
-        if !index_table_name.starts_with('_') {
-            return None;
-        }
-
-        let rest = &index_table_name[1..];
-        let (base, col) = rest.rsplit_once('_')?;
-        if base.is_empty() || col.is_empty() {
-            return None;
-        }
-        Some((base.to_string(), col.to_string()))
-    }
-
-    fn find_index_table_id_for_base_column(&self, base_table: &str, column: &str) -> Option<usize> {
-        let index_name = self
-            .schema
-            .index_definitions
-            .iter()
-            .find(|idx| idx.base_table == base_table && idx.column_name == column)
-            .map(|idx| idx.index_name.clone())?;
-        Planner::find_table_id(&self.schema, &index_name).ok()
-    }
-
-    fn should_index_field(field_type: &Type) -> bool {
-        matches!(
-            field_type,
-            Type::Integer | Type::String | Type::Varchar(_) | Type::Date
-        )
-    }
-
-    fn insert_row_into_indices(
-        &mut self,
-        table_id: usize,
-        key: &Key,
-        row: &Row,
-    ) -> Result<(), QueryResult> {
-        if table_id == 0 || table_id >= self.schema.tables.len() {
-            return Ok(());
-        }
-
-        let base = self.schema.tables[table_id].clone();
-        if base.name.starts_with('_') {
-            return Ok(());
-        }
-
-        let full_row = Serializer::reconstruct_row(key, row, &base).map_err(QueryResult::err)?;
-
-        for (field_idx, field) in base.fields.iter().enumerate() {
-            if field_idx == base.key_position || !Self::should_index_field(&field.field_type) {
-                continue;
+            PlanNode::SetOperation { left, right, .. } => {
+                Self::plan_contains_filter(left) || Self::plan_contains_filter(right)
             }
-
-            let index_table_id =
-                match self.find_index_table_id_for_base_column(&base.name, &field.name) {
-                    Some(id) => id,
-                    None => continue,
-                };
-
-            let index_schema = self.schema.tables[index_table_id].clone();
-            let idx_key = Serializer::get_field_on_row(&full_row, field_idx, &base)
-                .map_err(QueryResult::err)?;
-            let base_pk = Serializer::get_field_on_row(&full_row, base.key_position, &base)
-                .map_err(QueryResult::err)?;
-
-            let mut index_btree = Btree::init(
-                index_schema.btree_order,
-                self.pager_accessor.clone(),
-                index_schema,
-            )
-            .map_err(QueryResult::err)?;
-            index_btree
-                .insert(idx_key, base_pk)
-                .map_err(QueryResult::err)?;
+            PlanNode::SeqScan { .. } => false,
         }
-
-        Ok(())
-    }
-
-    fn rebuild_indices_for_table_id(&mut self, table_id: usize) -> Result<(), QueryResult> {
-        if table_id == 0 || table_id >= self.schema.tables.len() {
-            return Ok(());
-        }
-
-        let base = self.schema.tables[table_id].clone();
-        if base.name.starts_with('_') {
-            return Ok(());
-        }
-
-        let base_key_pos = base.key_position;
-
-        for (field_idx, field) in base.fields.iter().enumerate() {
-            if field_idx == base_key_pos || !Self::should_index_field(&field.field_type) {
-                continue;
-            }
-
-            let index_table_id =
-                match self.find_index_table_id_for_base_column(&base.name, &field.name) {
-                    Some(id) => id,
-                    None => continue,
-                };
-
-            let index_schema = self.schema.tables[index_table_id].clone();
-            PagerProxy::clear_table_root(&index_schema, self.pager_accessor.clone())
-                .map_err(QueryResult::err)?;
-
-            let mut base_source = self
-                .create_scan_source(table_id, SqlConditionOpCode::SelectFTS, None)
-                .map_err(QueryResult::err)?;
-
-            let mut index_btree = Btree::init(
-                index_schema.btree_order,
-                self.pager_accessor.clone(),
-                index_schema.clone(),
-            )
-            .map_err(QueryResult::err)?;
-
-            base_source.reset().map_err(QueryResult::err)?;
-            while let Some(base_row) = base_source.next().map_err(QueryResult::err)? {
-                let idx_key = Serializer::get_field_on_row(&base_row, field_idx, &base)
-                    .map_err(QueryResult::err)?;
-                let base_pk = Serializer::get_field_on_row(&base_row, base_key_pos, &base)
-                    .map_err(QueryResult::err)?;
-                index_btree
-                    .insert(idx_key, base_pk)
-                    .map_err(QueryResult::err)?;
-            }
-        }
-
-        Ok(())
-    }
-
-    fn count_nodes_on_page(
-        &self,
-        schema: &TableSchema,
-        page_data: PageData,
-    ) -> Result<usize, Status> {
-        let mut effective_schema = schema.clone();
-        if effective_schema.btree_order == 0 {
-            effective_schema.btree_order = self.btree_node_width;
-        }
-
-        let has_varchar = schema
-            .fields
-            .iter()
-            .any(|f| matches!(f.field_type, Type::Varchar(_)));
-        if has_varchar && effective_schema.get_node_size_in_bytes()? > PAGE_SIZE {
-            return Ok(if page_data[0] == 0 && page_data[1] == 0 {
-                0
-            } else {
-                1
-            });
-        }
-
-        let mut count = 0usize;
-        let mut offset = 0usize;
-        let key_length = schema.get_key_length()?;
-        let row_length = schema.get_row_length()?;
-
-        while offset + 2 <= PAGE_SIZE {
-            let num_keys = page_data[offset] as usize;
-            let flag = page_data[offset + 1];
-
-            if num_keys == 0 && flag == 0 {
-                break;
-            }
-
-            let node_size = 2 + num_keys * (key_length + row_length) + (num_keys + 1) * 4;
-            if offset + node_size > PAGE_SIZE {
-                return Err(Status::InternalExceptionIndexOutOfRange);
-            }
-
-            count += 1;
-            offset += node_size;
-        }
-
-        Ok(count)
-    }
-
-    fn collect_btree_pages(
-        &self,
-        node: &crate::btree::BTreeNode,
-        pages: &mut HashSet<usize>,
-    ) -> Result<(), Status> {
-        if !pages.insert(node.position.page()) {
-            return Ok(());
-        }
-        for child in PagerProxy::get_children(node)? {
-            self.collect_btree_pages(&child, pages)?;
-        }
-        Ok(())
-    }
-
-    fn mark_pages_as_deleted(&self, pages: &HashSet<usize>) -> Result<(), Status> {
-        for page in pages {
-            let pos = Position::new(*page, 0);
-            self.pager_accessor.access_pager_write(|p| {
-                p.with_page_write(&pos, |page_container| {
-                    Serializer::set_is_deleted(page_container, true)
-                })
-            })?;
-        }
-        Ok(())
-    }
-
-    fn refresh_table_free_list(&mut self, table_id: usize) -> Result<(), Status> {
-        if table_id >= self.schema.tables.len() {
-            return Ok(());
-        }
-        let table_schema = self.schema.tables[table_id].clone();
-        let btree = Btree::init(
-            table_schema.btree_order,
-            self.pager_accessor.clone(),
-            table_schema.clone(),
-        )?;
-        let root = btree.root.ok_or(Status::InternalExceptionNoRoot)?;
-
-        let mut pages = HashSet::new();
-        self.collect_btree_pages(&root, &mut pages)?;
-
-        let capacity = table_schema.max_nodes_per_page()?;
-        let mut free_list = Vec::new();
-
-        for page in pages {
-            let page_data = self
-                .pager_accessor
-                .access_pager_write(|p| p.access_page_read(&Position::new(page, 0)))?;
-            let used = self.count_nodes_on_page(&table_schema, page_data.data)?;
-            let free = capacity.saturating_sub(used);
-            free_list.push((page, free));
-        }
-
-        free_list.sort_by_key(|(page, _)| *page);
-        self.schema.tables[table_id].free_list = free_list;
-        Ok(())
-    }
-
-    fn refresh_all_free_lists(&mut self) {
-        for table_id in 1..self.schema.tables.len() {
-            if let Err(e) = self.refresh_table_free_list(table_id) {
-                eprintln!(
-                    "Failed to refresh free-list for table {}: {:?}",
-                    table_id, e
-                );
-            }
-        }
-    }
-
-    fn persist_free_lists_to_system_table(&mut self) -> Result<(), QueryResult> {
-        let tables_to_persist: Vec<TableSchema> =
-            self.schema.tables.iter().skip(1).cloned().collect();
-        for table in tables_to_persist {
-            let update_query = format!(
-                "UPDATE {} SET free_list = '{}' WHERE name = '{}'",
-                MASTER_TABLE_NAME,
-                Self::encode_free_list_top_10(&table).replace("'", "''"),
-                table.name.replace("'", "''")
-            );
-            self.execute(update_query, true)?;
-        }
-
-        Ok(())
     }
 
     pub fn check_integrity(&self) -> Result<(), Status> {
