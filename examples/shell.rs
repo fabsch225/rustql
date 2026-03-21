@@ -2,7 +2,6 @@ use std::io::{self, Write};
 
 use rustql::executor::QueryExecutor;
 
-
 fn main() {
     let mut exec = QueryExecutor::init("testdb", 10);
     println!("running RustSQL shell...");
@@ -34,7 +33,9 @@ fn handle_cli(executor: &mut QueryExecutor) -> bool {
         }
     } else if v[0].eq_ignore_ascii_case("help") {
         println!("Available commands:");
-        println!("  debug - Show debug information. If parameter is provided, show specific information.");
+        println!(
+            "  debug - Show debug information. If parameter is provided, show specific information."
+        );
         println!("  exit - Exit the shell and save the database.");
         println!("  help - Show this help message.");
         println!("  plan - Show the execution plan for a query. Usage: plan <SQL_QUERY>");

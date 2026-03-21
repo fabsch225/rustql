@@ -79,14 +79,18 @@ mod tests {
     #[test]
     fn test_transaction_commit_persists_changes() {
         let mut executor = QueryExecutor::init("./default.db.bin", BTREE_NODE_SIZE);
-        assert!(executor
-            .prepare("CREATE TABLE test (id Integer, name String)".to_string())
-            .success);
+        assert!(
+            executor
+                .prepare("CREATE TABLE test (id Integer, name String)".to_string())
+                .success
+        );
 
         assert!(executor.prepare("BEGIN TRANSACTION".to_string()).success);
-        assert!(executor
-            .prepare("INSERT INTO test (id, name) VALUES (1, 'Alice')".to_string())
-            .success);
+        assert!(
+            executor
+                .prepare("INSERT INTO test (id, name) VALUES (1, 'Alice')".to_string())
+                .success
+        );
 
         let in_tx = executor.prepare("SELECT * FROM test".to_string());
         assert!(in_tx.success);
@@ -102,14 +106,18 @@ mod tests {
     #[test]
     fn test_transaction_rollback_discards_changes() {
         let mut executor = QueryExecutor::init("./default.db.bin", BTREE_NODE_SIZE);
-        assert!(executor
-            .prepare("CREATE TABLE test (id Integer, name String)".to_string())
-            .success);
+        assert!(
+            executor
+                .prepare("CREATE TABLE test (id Integer, name String)".to_string())
+                .success
+        );
 
         assert!(executor.prepare("BEGIN TRANSACTION".to_string()).success);
-        assert!(executor
-            .prepare("INSERT INTO test (id, name) VALUES (1, 'Alice')".to_string())
-            .success);
+        assert!(
+            executor
+                .prepare("INSERT INTO test (id, name) VALUES (1, 'Alice')".to_string())
+                .success
+        );
 
         let in_tx = executor.prepare("SELECT * FROM test".to_string());
         assert!(in_tx.success);
@@ -877,14 +885,16 @@ mod tests {
         let before_idx = executor.prepare("SELECT * FROM idx_people_name".to_string());
         assert!(!before_idx.success);
 
-        let create_idx = executor.prepare("CREATE INDEX idx_people_name ON people (name)".to_string());
+        let create_idx =
+            executor.prepare("CREATE INDEX idx_people_name ON people (name)".to_string());
         assert!(create_idx.success);
 
         let manual_index_table = executor
             .prepare("CREATE TABLE _people_name (idx_value String, base_pk Integer)".to_string());
         assert!(!manual_index_table.success);
 
-        let index_read = executor.prepare("SELECT * FROM idx_people_name WHERE idx_value = 'Alice'".to_string());
+        let index_read =
+            executor.prepare("SELECT * FROM idx_people_name WHERE idx_value = 'Alice'".to_string());
         assert!(index_read.success);
         assert_eq!(index_read.data.fetch().unwrap().len(), 1);
 
@@ -922,12 +932,16 @@ mod tests {
     #[test]
     fn test_drop_table_removes_table() {
         let mut executor = QueryExecutor::init("./default.db.bin", BTREE_NODE_SIZE);
-        assert!(executor
-            .prepare("CREATE TABLE to_drop (id Integer, name String)".to_string())
-            .success);
-        assert!(executor
-            .prepare("INSERT INTO to_drop (id, name) VALUES (1, 'x')".to_string())
-            .success);
+        assert!(
+            executor
+                .prepare("CREATE TABLE to_drop (id Integer, name String)".to_string())
+                .success
+        );
+        assert!(
+            executor
+                .prepare("INSERT INTO to_drop (id, name) VALUES (1, 'x')".to_string())
+                .success
+        );
 
         let dropped = executor.prepare("DROP TABLE to_drop".to_string());
         assert!(dropped.success);
@@ -938,10 +952,7 @@ mod tests {
 
     #[test]
     fn test_drop_table_marks_related_pages_deleted() {
-        fn collect_pages(
-            node: &rustql::btree::BTreeNode,
-            pages: &mut HashSet<usize>,
-        ) {
+        fn collect_pages(node: &rustql::btree::BTreeNode, pages: &mut HashSet<usize>) {
             if !pages.insert(node.position.page()) {
                 return;
             }
@@ -951,9 +962,11 @@ mod tests {
         }
 
         let mut executor = QueryExecutor::init("./default.db.bin", BTREE_NODE_SIZE);
-        assert!(executor
-            .prepare("CREATE TABLE to_drop_pages (id Integer, name String)".to_string())
-            .success);
+        assert!(
+            executor
+                .prepare("CREATE TABLE to_drop_pages (id Integer, name String)".to_string())
+                .success
+        );
 
         for i in 1..=200 {
             let q = format!(
@@ -993,9 +1006,13 @@ mod tests {
     #[test]
     fn test_manual_index_created_after_data_is_used_for_select() {
         let mut executor = QueryExecutor::init("./default.db.bin", BTREE_NODE_SIZE);
-        assert!(executor
-            .prepare("CREATE TABLE products (id Integer, price Integer, name String)".to_string())
-            .success);
+        assert!(
+            executor
+                .prepare(
+                    "CREATE TABLE products (id Integer, price Integer, name String)".to_string()
+                )
+                .success
+        );
 
         for i in 1..=40 {
             let q = format!(
@@ -1007,9 +1024,11 @@ mod tests {
             assert!(executor.prepare(q).success);
         }
 
-        assert!(executor
-            .prepare("CREATE INDEX idx_products_price ON products (price)".to_string())
-            .success);
+        assert!(
+            executor
+                .prepare("CREATE INDEX idx_products_price ON products (price)".to_string())
+                .success
+        );
 
         let result = executor.prepare("SELECT id FROM products WHERE price = 117".to_string());
         assert!(result.success);
@@ -1052,14 +1071,18 @@ mod tests {
     fn test_select_uses_index_when_available() {
         let mut executor = QueryExecutor::init("./default.db.bin", BTREE_NODE_SIZE);
         executor.prepare("CREATE TABLE people (id Integer, name String, age Integer)".to_string());
-        assert!(executor
-            .prepare("CREATE INDEX idx_people_name ON people (name)".to_string())
-            .success);
+        assert!(
+            executor
+                .prepare("CREATE INDEX idx_people_name ON people (name)".to_string())
+                .success
+        );
 
         for i in 1..=30 {
             let q = format!(
                 "INSERT INTO people (id, name, age) VALUES ({}, 'user{}', {})",
-                i, i, i + 20
+                i,
+                i,
+                i + 20
             );
             assert!(executor.prepare(q).success);
         }
@@ -1115,10 +1138,7 @@ mod tests {
         }
 
         for d in 1..=5 {
-            let res = executor.prepare(format!(
-                "DELETE FROM test WHERE id = '2026-03-{:02}'",
-                d
-            ));
+            let res = executor.prepare(format!("DELETE FROM test WHERE id = '2026-03-{:02}'", d));
             assert!(res.success);
         }
 
@@ -1142,22 +1162,39 @@ mod tests {
         let mut executor = QueryExecutor::init("./default.db.bin", BTREE_NODE_SIZE);
         executor
             .prepare("CREATE TABLE events (id Integer, event_date Date, name String)".to_string());
-        assert!(executor
-            .prepare("CREATE INDEX idx_events_event_date ON events (event_date)".to_string())
-            .success);
+        assert!(
+            executor
+                .prepare("CREATE INDEX idx_events_event_date ON events (event_date)".to_string())
+                .success
+        );
 
-        assert!(executor
-            .prepare("INSERT INTO events (id, event_date, name) VALUES (1, '2026-03-15', 'A')".to_string())
-            .success);
-        assert!(executor
-            .prepare("INSERT INTO events (id, event_date, name) VALUES (2, '2026-03-16', 'B')".to_string())
-            .success);
-        assert!(executor
-            .prepare("INSERT INTO events (id, event_date, name) VALUES (3, '2026-03-17', 'C')".to_string())
-            .success);
+        assert!(
+            executor
+                .prepare(
+                    "INSERT INTO events (id, event_date, name) VALUES (1, '2026-03-15', 'A')"
+                        .to_string()
+                )
+                .success
+        );
+        assert!(
+            executor
+                .prepare(
+                    "INSERT INTO events (id, event_date, name) VALUES (2, '2026-03-16', 'B')"
+                        .to_string()
+                )
+                .success
+        );
+        assert!(
+            executor
+                .prepare(
+                    "INSERT INTO events (id, event_date, name) VALUES (3, '2026-03-17', 'C')"
+                        .to_string()
+                )
+                .success
+        );
 
-        let result = executor
-            .prepare("SELECT id FROM events WHERE event_date = '2026-03-17'".to_string());
+        let result =
+            executor.prepare("SELECT id FROM events WHERE event_date = '2026-03-17'".to_string());
         assert!(result.success);
         assert_eq!(result.data.fetch().unwrap().len(), 1);
 
@@ -1199,22 +1236,22 @@ mod tests {
         let mut executor = QueryExecutor::init("./default.db.bin", BTREE_NODE_SIZE);
         executor
             .prepare("CREATE TABLE events (id Integer, event_date Date, name String)".to_string());
-        assert!(executor
-            .prepare("CREATE INDEX idx_events_event_date ON events (event_date)".to_string())
-            .success);
+        assert!(
+            executor
+                .prepare("CREATE INDEX idx_events_event_date ON events (event_date)".to_string())
+                .success
+        );
 
         for d in 10..=20 {
             let q = format!(
                 "INSERT INTO events (id, event_date, name) VALUES ({}, '2026-03-{}', 'e{}')",
-                d,
-                d,
-                d
+                d, d, d
             );
             assert!(executor.prepare(q).success);
         }
 
-        let result = executor
-            .prepare("SELECT id FROM events WHERE event_date >= '2026-03-15'".to_string());
+        let result =
+            executor.prepare("SELECT id FROM events WHERE event_date >= '2026-03-15'".to_string());
         assert!(result.success);
         assert_eq!(result.data.fetch().unwrap().len(), 6);
 

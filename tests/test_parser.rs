@@ -169,19 +169,35 @@ mod tests {
                             assert_eq!(op, ParsedLogicalOp::And);
 
                             match *left {
-                                ParsedConditionExpr::Predicate(ParsedPredicateExpr::Compare { left, operator, right }) => {
+                                ParsedConditionExpr::Predicate(ParsedPredicateExpr::Compare {
+                                    left,
+                                    operator,
+                                    right,
+                                }) => {
                                     assert_eq!(operator, "=");
-                                    assert!(matches!(left, ParsedValueExpr::Token(ref t) if t == "id"));
-                                    assert!(matches!(right, ParsedValueExpr::Token(ref t) if t == "10"));
+                                    assert!(
+                                        matches!(left, ParsedValueExpr::Token(ref t) if t == "id")
+                                    );
+                                    assert!(
+                                        matches!(right, ParsedValueExpr::Token(ref t) if t == "10")
+                                    );
                                 }
                                 _ => panic!("Expected compare predicate on left condition"),
                             }
 
                             match *right {
-                                ParsedConditionExpr::Predicate(ParsedPredicateExpr::Compare { left, operator, right }) => {
+                                ParsedConditionExpr::Predicate(ParsedPredicateExpr::Compare {
+                                    left,
+                                    operator,
+                                    right,
+                                }) => {
                                     assert_eq!(operator, "=");
-                                    assert!(matches!(left, ParsedValueExpr::Token(ref t) if t == "name"));
-                                    assert!(matches!(right, ParsedValueExpr::Token(ref t) if t == "John"));
+                                    assert!(
+                                        matches!(left, ParsedValueExpr::Token(ref t) if t == "name")
+                                    );
+                                    assert!(
+                                        matches!(right, ParsedValueExpr::Token(ref t) if t == "John")
+                                    );
                                 }
                                 _ => panic!("Expected compare predicate on right condition"),
                             }
@@ -584,7 +600,11 @@ mod tests {
                 ]
             );
             match update_query.conditions {
-                Some(ParsedConditionExpr::Predicate(ParsedPredicateExpr::Compare { left, operator, right })) => {
+                Some(ParsedConditionExpr::Predicate(ParsedPredicateExpr::Compare {
+                    left,
+                    operator,
+                    right,
+                })) => {
                     assert_eq!(operator, "=");
                     assert!(matches!(left, ParsedValueExpr::Token(ref t) if t == "id"));
                     assert!(matches!(right, ParsedValueExpr::Token(ref t) if t == "1"));

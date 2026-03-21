@@ -1,13 +1,10 @@
 mod tests {
     use rand::{Rng, seq::SliceRandom};
+    use rustql::constants::{FieldMeta, KeyMeta};
     use rustql::cursor::BTreeCursor;
     use rustql::executor::QueryExecutor;
-    use rustql::constants::{FieldMeta, KeyMeta};
     use rustql::serializer::Serializer;
-    use rustql::{
-        btree::Btree,
-        pager::Type,
-    };
+    use rustql::{btree::Btree, pager::Type};
 
     fn make_int_key(k: i32) -> Vec<u8> {
         let mut v = Serializer::parse_int(&*k.to_string()).expect("").to_vec();

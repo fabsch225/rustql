@@ -86,7 +86,7 @@ fn main() {
 
     exec.prepare("CREATE INDEX idx_a_v ON A (v)".into());
     exec.prepare("CREATE INDEX idx_Lg_age ON Lg (age)".into());
-   
+
     let query = r#"
         SELECT A.id FROM (SELECT A.id FROM A INNER JOIN D ON D.id = A.id UNION SELECT B.id FROM B WHERE B.v > 5) INTERSECT (SELECT C.id FROM C INNER JOIN Lg ON Lg.age = C.id)
     "#;
@@ -122,7 +122,9 @@ fn handle_cli(executor: &mut QueryExecutor) -> bool {
         }
     } else if v[0].eq_ignore_ascii_case("help") {
         println!("Available commands:");
-        println!("  debug - Show debug information. If parameter is provided, show specific information.");
+        println!(
+            "  debug - Show debug information. If parameter is provided, show specific information."
+        );
         println!("  exit - Exit the shell and save the database.");
         println!("  help - Show this help message.");
         println!("  plan - Show the execution plan for a query. Usage: plan <SQL_QUERY>");

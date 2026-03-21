@@ -2,12 +2,12 @@
 mod tests {
     use rustql::btree::BTreeNode;
     use rustql::debug::Status;
-    use rustql::pager::{Key, PagerAccessor, PagerCore, Position, Row, Type, PAGE_SIZE};
+    use rustql::pager::{Key, PAGE_SIZE, PagerAccessor, PagerCore, Position, Row, Type};
     use rustql::pager_proxy::{PageManager, PagerProxy};
     use rustql::schema::{Field, TableSchema};
     use rustql::serializer::Serializer;
     use std::collections::HashSet;
-    use std::panic::{catch_unwind, AssertUnwindSafe};
+    use std::panic::{AssertUnwindSafe, catch_unwind};
 
     fn get_schema() -> TableSchema {
         TableSchema {
@@ -236,12 +236,12 @@ mod tests {
         let pager_interface = PagerCore::init_from_file("./default.db.bin").unwrap();
         let payload = vec![42u8; PAGE_SIZE + 128];
 
-        let start = PageManager::write_payload_to_data_pages(pager_interface.clone(), &payload, 0)
-            .unwrap();
+        let start =
+            PageManager::write_payload_to_data_pages(pager_interface.clone(), &payload, 0).unwrap();
         assert!(!start.is_empty());
 
-        let restored = PageManager::read_payload_from_pages(pager_interface.clone(), start.clone())
-            .unwrap();
+        let restored =
+            PageManager::read_payload_from_pages(pager_interface.clone(), start.clone()).unwrap();
         assert_eq!(restored, payload);
 
         let first_page = pager_interface
@@ -319,7 +319,8 @@ mod tests {
         let orphan_first = pager_interface
             .access_pager_write(|p| p.access_page_read(&orphan_head))
             .unwrap();
-        let orphan_next_page = u16::from_be_bytes([orphan_first.data[0], orphan_first.data[1]]) as usize;
+        let orphan_next_page =
+            u16::from_be_bytes([orphan_first.data[0], orphan_first.data[1]]) as usize;
         assert!(orphan_next_page > 0);
 
         let mut referenced_heads = HashSet::new();
@@ -349,7 +350,9 @@ mod tests {
         assert!(Serializer::is_deleted(&orphan_overflow_page).unwrap());
 
         // referenced chain remains readable
-        assert!(PageManager::read_payload_from_pages(pager_interface.clone(), referenced_head).is_ok());
+        assert!(
+            PageManager::read_payload_from_pages(pager_interface.clone(), referenced_head).is_ok()
+        );
     }
 
     #[test]
@@ -360,12 +363,20 @@ mod tests {
         let tx2 = pager_interface.begin_transaction_with_id().unwrap();
 
         pager_interface.set_current_transaction(Some(tx1)).unwrap();
-        let tx1_page_a = pager_interface.access_pager_write(|p| p.create_page()).unwrap();
-        let tx1_page_b = pager_interface.access_pager_write(|p| p.create_page()).unwrap();
+        let tx1_page_a = pager_interface
+            .access_pager_write(|p| p.create_page())
+            .unwrap();
+        let tx1_page_b = pager_interface
+            .access_pager_write(|p| p.create_page())
+            .unwrap();
 
         pager_interface.set_current_transaction(Some(tx2)).unwrap();
-        let tx2_page_a = pager_interface.access_pager_write(|p| p.create_page()).unwrap();
-        let tx2_page_b = pager_interface.access_pager_write(|p| p.create_page()).unwrap();
+        let tx2_page_a = pager_interface
+            .access_pager_write(|p| p.create_page())
+            .unwrap();
+        let tx2_page_b = pager_interface
+            .access_pager_write(|p| p.create_page())
+            .unwrap();
 
         assert_ne!(tx1_page_a, tx1_page_b);
         assert_ne!(tx2_page_a, tx2_page_b);
@@ -386,20 +397,26 @@ mod tests {
         let tx1 = pager_interface.begin_transaction_with_id().unwrap();
         let tx2 = pager_interface.begin_transaction_with_id().unwrap();
 
-        assert!(pager_interface
-            .lock_table_for_transaction_id(tx1, "users")
-            .is_ok());
-        assert!(pager_interface
-            .lock_table_for_transaction_id(tx2, "orders")
-            .is_ok());
+        assert!(
+            pager_interface
+                .lock_table_for_transaction_id(tx1, "users")
+                .is_ok()
+        );
+        assert!(
+            pager_interface
+                .lock_table_for_transaction_id(tx2, "orders")
+                .is_ok()
+        );
 
         let overlap = pager_interface.lock_table_for_transaction_id(tx2, "users");
         assert!(overlap.is_err());
 
         pager_interface.rollback_transaction_by_id(tx1).unwrap();
-        assert!(pager_interface
-            .lock_table_for_transaction_id(tx2, "users")
-            .is_ok());
+        assert!(
+            pager_interface
+                .lock_table_for_transaction_id(tx2, "users")
+                .is_ok()
+        );
 
         pager_interface.rollback_transaction_by_id(tx2).unwrap();
     }
@@ -409,7 +426,9 @@ mod tests {
         let pager_interface = PagerCore::init_from_file("./default.db.bin").unwrap();
 
         // First, poison the cache lock by panicking while a non-transactional page write holds it.
-        let page = pager_interface.access_pager_write(|p| p.create_page()).unwrap();
+        let page = pager_interface
+            .access_pager_write(|p| p.create_page())
+            .unwrap();
         let poison_pos = Position::new(page, 0);
         let poisoned = catch_unwind(AssertUnwindSafe(|| {
             let _ = pager_interface.access_pager_write(|p| {
@@ -431,7 +450,8 @@ mod tests {
 
         // Tx2 cannot acquire the same lock while tx1 is still active.
         let tx2 = pager_interface.begin_transaction_with_id().unwrap();
-        let lock_result = pager_interface.lock_table_for_transaction_id(tx2, "atomicity_leak_table");
+        let lock_result =
+            pager_interface.lock_table_for_transaction_id(tx2, "atomicity_leak_table");
         assert_eq!(lock_result, Err(Status::ExceptionTableLocked));
 
         // Rollback tx1 should succeed (tx1 was not partially finalized/removed by failed commit).

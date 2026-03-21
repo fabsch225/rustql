@@ -66,7 +66,12 @@ mod tests {
         );
     }
 
-    fn assert_join_plan_ops(exec: &TestExecutor, query: &str, expected_left: JoinOp, expected_right: JoinOp) {
+    fn assert_join_plan_ops(
+        exec: &TestExecutor,
+        query: &str,
+        expected_left: JoinOp,
+        expected_right: JoinOp,
+    ) {
         let compiled = exec.compile_query(query).unwrap();
 
         fn find_join(plan: &PlanNode) -> Option<(&JoinOp, &JoinOp)> {
@@ -387,7 +392,9 @@ mod tests {
         assert_success(exec.prepare("CREATE TABLE users (id Integer, name String)".into()));
         assert_success(exec.prepare("CREATE TABLE orders (id Integer, user_name String)".into()));
         assert_success(exec.prepare("CREATE INDEX idx_users_name ON users (name)".into()));
-        assert_success(exec.prepare("CREATE INDEX idx_orders_user_name ON orders (user_name)".into()));
+        assert_success(
+            exec.prepare("CREATE INDEX idx_orders_user_name ON orders (user_name)".into()),
+        );
 
         let compiled = exec
             .compile_query(
@@ -437,7 +444,9 @@ mod tests {
         assert_success(exec.prepare("INSERT INTO orders VALUES (12, 'carol')".into()));
 
         assert_success(exec.prepare("CREATE INDEX idx_users_name ON users (name)".into()));
-        assert_success(exec.prepare("CREATE INDEX idx_orders_user_name ON orders (user_name)".into()));
+        assert_success(
+            exec.prepare("CREATE INDEX idx_orders_user_name ON orders (user_name)".into()),
+        );
 
         let query = "SELECT users.id FROM users INNER JOIN orders ON users.name = orders.user_name";
         let result = exec.prepare(query.into());
@@ -581,10 +590,15 @@ mod tests {
         for i in 1..=40 {
             let val = format!("S{:03}_{}", i, "x".repeat(80));
             assert_success(exec.prepare(format!("INSERT INTO s_left VALUES ({}, '{}')", i, val)));
-            assert_success(exec.prepare(format!("INSERT INTO s_right VALUES ({}, '{}')", i + 1000, val)));
+            assert_success(exec.prepare(format!(
+                "INSERT INTO s_right VALUES ({}, '{}')",
+                i + 1000,
+                val
+            )));
         }
 
-        let string_join = "SELECT s_left.id FROM s_left INNER JOIN s_right ON s_left.k = s_right.k2";
+        let string_join =
+            "SELECT s_left.id FROM s_left INNER JOIN s_right ON s_left.k = s_right.k2";
         assert_join_plan_ops(&exec, string_join, JoinOp::Index, JoinOp::Index);
         assert_row_count(exec.prepare(string_join.into()), 40);
 
@@ -597,10 +611,15 @@ mod tests {
         for i in 1..=40 {
             let val = format!("V{:03}_{}", i, "y".repeat(90));
             assert_success(exec.prepare(format!("INSERT INTO v_left VALUES ({}, '{}')", i, val)));
-            assert_success(exec.prepare(format!("INSERT INTO v_right VALUES ({}, '{}')", i + 2000, val)));
+            assert_success(exec.prepare(format!(
+                "INSERT INTO v_right VALUES ({}, '{}')",
+                i + 2000,
+                val
+            )));
         }
 
-        let varchar_join = "SELECT v_left.id FROM v_left INNER JOIN v_right ON v_left.k = v_right.k2";
+        let varchar_join =
+            "SELECT v_left.id FROM v_left INNER JOIN v_right ON v_left.k = v_right.k2";
         assert_join_plan_ops(&exec, varchar_join, JoinOp::Index, JoinOp::Index);
         assert_row_count(exec.prepare(varchar_join.into()), 40);
     }
@@ -625,8 +644,14 @@ mod tests {
         assert!(exec.prepare("INSERT INTO B VALUES (1, 90)".into()).success);
         assert!(exec.prepare("INSERT INTO B VALUES (2, 40)".into()).success);
 
-        assert!(exec.prepare("INSERT INTO C VALUES (1, true)".into()).success);
-        assert!(exec.prepare("INSERT INTO C VALUES (2, false)".into()).success);
+        assert!(
+            exec.prepare("INSERT INTO C VALUES (1, true)".into())
+                .success
+        );
+        assert!(
+            exec.prepare("INSERT INTO C VALUES (2, false)".into())
+                .success
+        );
 
         let query = "SELECT A.id FROM A NATURAL JOIN B NATURAL JOIN C WHERE B.score > 50";
 
@@ -641,7 +666,9 @@ mod tests {
 
         assert_success(exec.prepare("CREATE TABLE Employees (id Integer, name String)".into()));
         assert_success(exec.prepare("CREATE TABLE Sales (emp_id Integer, region String)".into()));
-        assert_success(exec.prepare("CREATE TABLE Marketing (emp_id Integer, region String)".into()));
+        assert_success(
+            exec.prepare("CREATE TABLE Marketing (emp_id Integer, region String)".into()),
+        );
 
         assert_success(exec.prepare("INSERT INTO Employees VALUES (1, 'Alice')".into()));
         assert_success(exec.prepare("INSERT INTO Employees VALUES (2, 'Bob')".into()));
@@ -671,8 +698,12 @@ mod tests {
 
         assert_success(exec.prepare("CREATE TABLE Users (id Integer, name String)".into()));
         assert_success(exec.prepare("CREATE TABLE Groups (id Integer, name String)".into()));
-        assert_success(exec.prepare("CREATE TABLE GroupA (user_id Integer, group_id Integer)".into()));
-        assert_success(exec.prepare("CREATE TABLE GroupB (user_id Integer, group_id Integer)".into()));
+        assert_success(
+            exec.prepare("CREATE TABLE GroupA (user_id Integer, group_id Integer)".into()),
+        );
+        assert_success(
+            exec.prepare("CREATE TABLE GroupB (user_id Integer, group_id Integer)".into()),
+        );
 
         assert_success(exec.prepare("INSERT INTO Users VALUES (1, 'Alice')".into()));
         assert_success(exec.prepare("INSERT INTO Users VALUES (2, 'Bob')".into()));
@@ -1026,8 +1057,7 @@ mod tests {
         exec.prepare("INSERT INTO B VALUES (2, 200)".into());
         exec.prepare("INSERT INTO B VALUES (3, 300)".into());
 
-        let result =
-            exec.prepare("SELECT A.id FROM A JOIN B ON A.id = B.id WHERE A.v > 15".into());
+        let result = exec.prepare("SELECT A.id FROM A JOIN B ON A.id = B.id WHERE A.v > 15".into());
         assert_row_count(result, 2);
     }
 
@@ -1083,8 +1113,7 @@ mod tests {
 
         exec.prepare("INSERT INTO C VALUES (10, 900)".into());
 
-        let query =
-            "SELECT A.id FROM A JOIN B ON A.id = B.id JOIN C ON B.v = C.bv";
+        let query = "SELECT A.id FROM A JOIN B ON A.id = B.id JOIN C ON B.v = C.bv";
         let result = exec.prepare(query.into());
         assert_row_count(result, 1);
     }
@@ -1203,5 +1232,4 @@ mod tests {
 
         assert_row_count(result, 49);
     }
-
 }

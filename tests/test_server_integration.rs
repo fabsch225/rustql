@@ -5,7 +5,7 @@ mod tests {
     use std::net::TcpListener;
     use std::net::TcpStream;
     use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::{mpsc, Arc, Barrier, Mutex, MutexGuard, OnceLock};
+    use std::sync::{Arc, Barrier, Mutex, MutexGuard, OnceLock, mpsc};
     use std::thread;
     use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -185,7 +185,10 @@ mod tests {
         let _g = acquire_test_lock();
         let t = unique_name("t_create_ok");
         let mut c = Client::connect();
-        let r = c.send(&format!("CREATE TABLE {} (id Integer, name Varchar(25))", t), 256);
+        let r = c.send(
+            &format!("CREATE TABLE {} (id Integer, name Varchar(25))", t),
+            256,
+        );
         assert_eq!(r.status, 0);
     }
 
@@ -194,8 +197,16 @@ mod tests {
         let _g = acquire_test_lock();
         let t = unique_name("t_create_dup");
         let mut c = Client::connect();
-        assert_eq!(c.send(&format!("CREATE TABLE {} (id Integer)", t), 256).status, 0);
-        assert_eq!(c.send(&format!("CREATE TABLE {} (id Integer)", t), 256).status, 1);
+        assert_eq!(
+            c.send(&format!("CREATE TABLE {} (id Integer)", t), 256)
+                .status,
+            0
+        );
+        assert_eq!(
+            c.send(&format!("CREATE TABLE {} (id Integer)", t), 256)
+                .status,
+            1
+        );
     }
 
     #[test]
@@ -203,8 +214,14 @@ mod tests {
         let _g = acquire_test_lock();
         let t = unique_name("t_ins_ok");
         let mut c = Client::connect();
-        c.send(&format!("CREATE TABLE {} (id Integer, name Varchar(25))", t), 256);
-        let r = c.send(&format!("INSERT INTO {} (id, name) VALUES (1, 'a')", t), 256);
+        c.send(
+            &format!("CREATE TABLE {} (id Integer, name Varchar(25))", t),
+            256,
+        );
+        let r = c.send(
+            &format!("INSERT INTO {} (id, name) VALUES (1, 'a')", t),
+            256,
+        );
         assert_eq!(r.status, 0);
     }
 
@@ -213,8 +230,14 @@ mod tests {
         let _g = acquire_test_lock();
         let t = unique_name("t_sel_one");
         let mut c = Client::connect();
-        c.send(&format!("CREATE TABLE {} (id Integer, name Varchar(25))", t), 256);
-        c.send(&format!("INSERT INTO {} (id, name) VALUES (1, 'a')", t), 256);
+        c.send(
+            &format!("CREATE TABLE {} (id Integer, name Varchar(25))", t),
+            256,
+        );
+        c.send(
+            &format!("INSERT INTO {} (id, name) VALUES (1, 'a')", t),
+            256,
+        );
         let r = c.send(&format!("SELECT * FROM {}", t), 256);
         assert_eq!(r.status, 0);
         assert_eq!(r.rows.len(), 1);
@@ -226,7 +249,10 @@ mod tests {
         let _g = acquire_test_lock();
         let t = unique_name("t_sel_where");
         let mut c = Client::connect();
-        c.send(&format!("CREATE TABLE {} (id Integer, name Varchar(25))", t), 256);
+        c.send(
+            &format!("CREATE TABLE {} (id Integer, name Varchar(25))", t),
+            256,
+        );
         c.send(&format!("INSERT INTO {} VALUES (1, 'a')", t), 256);
         c.send(&format!("INSERT INTO {} VALUES (2, 'b')", t), 256);
         let r = c.send(&format!("SELECT * FROM {} WHERE id = 2", t), 256);
@@ -239,7 +265,10 @@ mod tests {
         let _g = acquire_test_lock();
         let t = unique_name("t_update");
         let mut c = Client::connect();
-        c.send(&format!("CREATE TABLE {} (id Integer, name Varchar(25))", t), 256);
+        c.send(
+            &format!("CREATE TABLE {} (id Integer, name Varchar(25))", t),
+            256,
+        );
         c.send(&format!("INSERT INTO {} VALUES (1, 'a')", t), 256);
         let r = c.send(&format!("UPDATE {} SET name = 'x' WHERE id = 1", t), 256);
         assert_eq!(r.status, 0);
@@ -250,7 +279,10 @@ mod tests {
         let _g = acquire_test_lock();
         let t = unique_name("t_delete");
         let mut c = Client::connect();
-        c.send(&format!("CREATE TABLE {} (id Integer, name Varchar(25))", t), 256);
+        c.send(
+            &format!("CREATE TABLE {} (id Integer, name Varchar(25))", t),
+            256,
+        );
         c.send(&format!("INSERT INTO {} VALUES (1, 'a')", t), 256);
         let r = c.send(&format!("DELETE FROM {} WHERE id = 1", t), 256);
         assert_eq!(r.status, 0);
@@ -306,7 +338,10 @@ mod tests {
         let _g = acquire_test_lock();
         let t = unique_name("t_tx_commit");
         let mut c = Client::connect();
-        c.send(&format!("CREATE TABLE {} (id Integer, name Varchar(25))", t), 256);
+        c.send(
+            &format!("CREATE TABLE {} (id Integer, name Varchar(25))", t),
+            256,
+        );
         c.send("BEGIN TRANSACTION", 256);
         c.send(&format!("INSERT INTO {} VALUES (1, 'a')", t), 256);
         c.send("COMMIT", 256);
@@ -320,7 +355,10 @@ mod tests {
         let _g = acquire_test_lock();
         let t = unique_name("t_tx_rb");
         let mut c = Client::connect();
-        c.send(&format!("CREATE TABLE {} (id Integer, name Varchar(25))", t), 256);
+        c.send(
+            &format!("CREATE TABLE {} (id Integer, name Varchar(25))", t),
+            256,
+        );
         c.send("BEGIN TRANSACTION", 256);
         c.send(&format!("INSERT INTO {} VALUES (1, 'a')", t), 256);
         c.send("ROLLBACK", 256);
@@ -346,10 +384,17 @@ mod tests {
         let t = unique_name("t_lock_conflict");
         let mut c1 = Client::connect();
         let mut c2 = Client::connect();
-        c1.send(&format!("CREATE TABLE {} (id Integer, name Varchar(25))", t), 256);
+        c1.send(
+            &format!("CREATE TABLE {} (id Integer, name Varchar(25))", t),
+            256,
+        );
 
         assert_eq!(c1.send("BEGIN TRANSACTION", 256).status, 0);
-        assert_eq!(c1.send(&format!("INSERT INTO {} VALUES (1, 'a')", t), 256).status, 0);
+        assert_eq!(
+            c1.send(&format!("INSERT INTO {} VALUES (1, 'a')", t), 256)
+                .status,
+            0
+        );
 
         let r = c2.send(&format!("INSERT INTO {} VALUES (2, 'b')", t), 256);
         assert_eq!(r.status, 1);
@@ -366,11 +411,21 @@ mod tests {
         let mut c1 = Client::connect();
         let mut c2 = Client::connect();
 
-        c1.send(&format!("CREATE TABLE {} (id Integer, name Varchar(25))", t1), 256);
-        c1.send(&format!("CREATE TABLE {} (id Integer, name Varchar(25))", t2), 256);
+        c1.send(
+            &format!("CREATE TABLE {} (id Integer, name Varchar(25))", t1),
+            256,
+        );
+        c1.send(
+            &format!("CREATE TABLE {} (id Integer, name Varchar(25))", t2),
+            256,
+        );
 
         assert_eq!(c1.send("BEGIN TRANSACTION", 256).status, 0);
-        assert_eq!(c1.send(&format!("INSERT INTO {} VALUES (1, 'a')", t1), 256).status, 0);
+        assert_eq!(
+            c1.send(&format!("INSERT INTO {} VALUES (1, 'a')", t1), 256)
+                .status,
+            0
+        );
 
         let r = c2.send(&format!("INSERT INTO {} VALUES (2, 'b')", t2), 256);
         assert_eq!(r.status, 0);
@@ -384,7 +439,10 @@ mod tests {
         let t = unique_name("t_lock_release");
         let mut c1 = Client::connect();
         let mut c2 = Client::connect();
-        c1.send(&format!("CREATE TABLE {} (id Integer, name Varchar(25))", t), 256);
+        c1.send(
+            &format!("CREATE TABLE {} (id Integer, name Varchar(25))", t),
+            256,
+        );
 
         c1.send("BEGIN TRANSACTION", 256);
         c1.send(&format!("INSERT INTO {} VALUES (1, 'a')", t), 256);
@@ -400,7 +458,10 @@ mod tests {
         let t = unique_name("t_idx");
         let idx = unique_name("idx_name");
         let mut c = Client::connect();
-        c.send(&format!("CREATE TABLE {} (id Integer, name Varchar(25))", t), 256);
+        c.send(
+            &format!("CREATE TABLE {} (id Integer, name Varchar(25))", t),
+            256,
+        );
         let r = c.send(&format!("CREATE INDEX {} ON {} (name)", idx, t), 256);
         assert_eq!(r.status, 0);
     }
@@ -431,7 +492,10 @@ mod tests {
         let _g = acquire_test_lock();
         let t = unique_name("t_chunk");
         let mut c = Client::connect();
-        c.send(&format!("CREATE TABLE {} (id Integer, name Varchar(25))", t), 256);
+        c.send(
+            &format!("CREATE TABLE {} (id Integer, name Varchar(25))", t),
+            256,
+        );
         c.send(&format!("INSERT INTO {} VALUES (1, 'a')", t), 256);
         c.send(&format!("INSERT INTO {} VALUES (2, 'b')", t), 256);
         c.send(&format!("INSERT INTO {} VALUES (3, 'c')", t), 256);
@@ -469,7 +533,8 @@ mod tests {
         s.write_all(&0u32.to_be_bytes()).unwrap();
         s.flush().unwrap();
 
-        s.set_read_timeout(Some(Duration::from_millis(250))).unwrap();
+        s.set_read_timeout(Some(Duration::from_millis(250)))
+            .unwrap();
         let mut one = [0u8; 1];
         let read = s.read(&mut one);
         assert!(read.is_err() || matches!(read, Ok(0)));
@@ -486,7 +551,8 @@ mod tests {
         s.write_all(&0u32.to_be_bytes()).unwrap();
         s.flush().unwrap();
 
-        s.set_read_timeout(Some(Duration::from_millis(250))).unwrap();
+        s.set_read_timeout(Some(Duration::from_millis(250)))
+            .unwrap();
         let mut one = [0u8; 1];
         let read = s.read(&mut one);
         assert!(read.is_err() || matches!(read, Ok(0)));
@@ -498,9 +564,17 @@ mod tests {
         let t = unique_name("t_dup0");
         let t = format!("{}0", t);
         let mut c = Client::connect();
-        assert_eq!(c.send(&format!("CREATE TABLE {} (id Integer)", t), 256).status, 0);
+        assert_eq!(
+            c.send(&format!("CREATE TABLE {} (id Integer)", t), 256)
+                .status,
+            0
+        );
         std::thread::sleep(std::time::Duration::from_millis(100));
-        assert_eq!(c.send(&format!("CREATE TABLE {} (id Integer)", t), 256).status, 1);
+        assert_eq!(
+            c.send(&format!("CREATE TABLE {} (id Integer)", t), 256)
+                .status,
+            1
+        );
     }
 
     #[test]
@@ -516,7 +590,8 @@ mod tests {
             0
         );
         assert_eq!(
-            c1.send(&format!("INSERT INTO {} VALUES (1, 0)", t), 256).status,
+            c1.send(&format!("INSERT INTO {} VALUES (1, 0)", t), 256)
+                .status,
             0
         );
 
@@ -552,7 +627,8 @@ mod tests {
             0
         );
         assert_eq!(
-            c1.send(&format!("INSERT INTO {} VALUES (1, 0)", t), 256).status,
+            c1.send(&format!("INSERT INTO {} VALUES (1, 0)", t), 256)
+                .status,
             0
         );
 
@@ -599,8 +675,18 @@ mod tests {
                 .status,
             0
         );
-        assert_eq!(setup.send(&format!("INSERT INTO {} VALUES (1, 0)", t1), 256).status, 0);
-        assert_eq!(setup.send(&format!("INSERT INTO {} VALUES (1, 0)", t2), 256).status, 0);
+        assert_eq!(
+            setup
+                .send(&format!("INSERT INTO {} VALUES (1, 0)", t1), 256)
+                .status,
+            0
+        );
+        assert_eq!(
+            setup
+                .send(&format!("INSERT INTO {} VALUES (1, 0)", t2), 256)
+                .status,
+            0
+        );
 
         let barrier = Arc::new(Barrier::new(2));
         let (done_tx, done_rx) = mpsc::channel::<(u8, String, Duration, u8)>();
@@ -611,8 +697,12 @@ mod tests {
         let done_tx_a = done_tx.clone();
         let h1 = thread::spawn(move || {
             let mut c = Client::connect();
-            c.stream.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
-            c.stream.set_write_timeout(Some(Duration::from_secs(2))).unwrap();
+            c.stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            c.stream
+                .set_write_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
 
             assert_eq!(c.send("BEGIN TRANSACTION", 256).status, 0);
             assert_eq!(
@@ -638,8 +728,12 @@ mod tests {
         let done_tx_b = done_tx.clone();
         let h2 = thread::spawn(move || {
             let mut c = Client::connect();
-            c.stream.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
-            c.stream.set_write_timeout(Some(Duration::from_secs(2))).unwrap();
+            c.stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            c.stream
+                .set_write_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
 
             assert_eq!(c.send("BEGIN TRANSACTION", 256).status, 0);
             assert_eq!(

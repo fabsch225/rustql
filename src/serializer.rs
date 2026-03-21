@@ -1,24 +1,23 @@
 //also look at pager.rs for comments
 
-use crate::executor::Field;
 use crate::constants::{
-    PAYLOAD_CHUNK_LEN_OFFSET, PAYLOAD_FLAG_DEPRECATED, PAYLOAD_HEADER_FLAGS_OFFSET,
-    PAYLOAD_MAGIC, PAYLOAD_MAGIC_OFFSET, PAYLOAD_NEXT_PAGE_OFFSET, PAYLOAD_OWNER_ROOT_OFFSET,
-    FieldMeta, KeyMeta, NodeFlag, PageFlag
+    FieldMeta, KeyMeta, NodeFlag, PAYLOAD_CHUNK_LEN_OFFSET, PAYLOAD_FLAG_DEPRECATED,
+    PAYLOAD_HEADER_FLAGS_OFFSET, PAYLOAD_MAGIC, PAYLOAD_MAGIC_OFFSET, PAYLOAD_NEXT_PAGE_OFFSET,
+    PAYLOAD_OWNER_ROOT_OFFSET, PageFlag,
 };
-use crate::pager::{
-    BOOLEAN_SIZE, DATE_SIZE, Flag, INTEGER_SIZE, Key, NODE_METADATA_SIZE,
-    NULL_SIZE, PAGE_SIZE, POSITION_SIZE, PageContainer, PageData, Position,
-    Row, STRING_SIZE, Type,
-};
-use crate::planner::SqlStatementComparisonOperator;
-use crate::schema::TableSchema;
 use crate::debug::Status;
 use crate::debug::Status::{
     InternalExceptionIndexOutOfRange, InternalExceptionInvalidColCount,
     InternalExceptionInvalidRowLength, InternalExceptionInvalidSchema,
     InternalExceptionKeyNotFound, InternalExceptionTypeMismatch,
 };
+use crate::executor::Field;
+use crate::pager::{
+    BOOLEAN_SIZE, DATE_SIZE, Flag, INTEGER_SIZE, Key, NODE_METADATA_SIZE, NULL_SIZE, PAGE_SIZE,
+    POSITION_SIZE, PageContainer, PageData, Position, Row, STRING_SIZE, Type,
+};
+use crate::planner::SqlStatementComparisonOperator;
+use crate::schema::TableSchema;
 
 /// # Responsibilities
 /// - Execute operations on the pages
@@ -56,11 +55,7 @@ impl Serializer {
         format!("[{}] ({} bytes)", s, bytes.len())
     }
 
-    fn node_size_for_num_keys(
-        num_keys: usize,
-        key_length: usize,
-        row_length: usize,
-    ) -> usize {
+    fn node_size_for_num_keys(num_keys: usize, key_length: usize, row_length: usize) -> usize {
         NODE_METADATA_SIZE + num_keys * (key_length + row_length) + (num_keys + 1) * POSITION_SIZE
     }
 
@@ -833,10 +828,12 @@ impl Serializer {
         let new_num_keys = keys.len();
         let key_length = schema.get_key_length()?;
         let row_length = schema.get_row_length()?;
-        let old_node_size =
-            NODE_METADATA_SIZE + orig_num_keys * (key_length + row_length) + (orig_num_keys + 1) * POSITION_SIZE;
-        let new_node_size =
-            NODE_METADATA_SIZE + new_num_keys * (key_length + row_length) + (new_num_keys + 1) * POSITION_SIZE;
+        let old_node_size = NODE_METADATA_SIZE
+            + orig_num_keys * (key_length + row_length)
+            + (orig_num_keys + 1) * POSITION_SIZE;
+        let new_node_size = NODE_METADATA_SIZE
+            + new_num_keys * (key_length + row_length)
+            + (new_num_keys + 1) * POSITION_SIZE;
 
         if offset + old_node_size > PAGE_SIZE || offset + new_node_size > PAGE_SIZE {
             return Err(InternalExceptionIndexOutOfRange);

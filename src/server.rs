@@ -42,11 +42,7 @@ struct Request {
 ///     - [4] row length
 ///     - [row bytes]
 ///   - [1] done flag (0 => more chunks, 1 => done)
-pub fn serve_tcp(
-    bind_addr: &str,
-    db_path: &str,
-    btree_node_width: usize,
-) -> io::Result<()> {
+pub fn serve_tcp(bind_addr: &str, db_path: &str, btree_node_width: usize) -> io::Result<()> {
     let shared_pager = {
         let bootstrap = QueryExecutor::init(db_path, btree_node_width);
         bootstrap.pager_accessor.clone()
@@ -78,10 +74,7 @@ pub fn serve_tcp(
     Ok(())
 }
 
-fn handle_client(
-    mut stream: TcpStream,
-    mut executor: QueryExecutor,
-) -> io::Result<()> {
+fn handle_client(mut stream: TcpStream, mut executor: QueryExecutor) -> io::Result<()> {
     /*
      * Connection-local transaction context.
      *
@@ -143,7 +136,8 @@ fn handle_client(
                 begin_result
             }
         } else if active_tx_id.is_some()
-            && (tx_control == TransactionControl::Commit || tx_control == TransactionControl::Rollback)
+            && (tx_control == TransactionControl::Commit
+                || tx_control == TransactionControl::Rollback)
         {
             let end_result = executor.prepare_in_transaction_context(query, active_tx_id);
             if end_result.success {
@@ -151,9 +145,12 @@ fn handle_client(
             }
             end_result
         } else if active_tx_id.is_some() && tx_control == TransactionControl::Begin {
-            crate::executor::QueryResult::err(crate::debug::Status::ExceptionTransactionAlreadyActive)
+            crate::executor::QueryResult::err(
+                crate::debug::Status::ExceptionTransactionAlreadyActive,
+            )
         } else if active_tx_id.is_none()
-            && (tx_control == TransactionControl::Commit || tx_control == TransactionControl::Rollback)
+            && (tx_control == TransactionControl::Commit
+                || tx_control == TransactionControl::Rollback)
         {
             crate::executor::QueryResult::err(crate::debug::Status::ExceptionNoActiveTransaction)
         } else if active_tx_id.is_some() {
@@ -353,7 +350,9 @@ mod tests {
     use std::io::Cursor;
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    fn parse_response_bytes(bytes: &[u8]) -> (u8, String, Vec<(String, u8, u32)>, Vec<usize>, Vec<u8>) {
+    fn parse_response_bytes(
+        bytes: &[u8],
+    ) -> (u8, String, Vec<(String, u8, u32)>, Vec<usize>, Vec<u8>) {
         let mut cur = Cursor::new(bytes);
 
         let mut magic = [0u8; 4];
@@ -431,22 +430,34 @@ mod tests {
 
     #[test]
     fn test_parse_tx_control_begin() {
-        assert_eq!(parse_transaction_control("BEGIN TRANSACTION"), TransactionControl::Begin);
+        assert_eq!(
+            parse_transaction_control("BEGIN TRANSACTION"),
+            TransactionControl::Begin
+        );
     }
 
     #[test]
     fn test_parse_tx_control_commit_lowercase() {
-        assert_eq!(parse_transaction_control("commit"), TransactionControl::Commit);
+        assert_eq!(
+            parse_transaction_control("commit"),
+            TransactionControl::Commit
+        );
     }
 
     #[test]
     fn test_parse_tx_control_rollback_mixed_case() {
-        assert_eq!(parse_transaction_control("RoLlBaCk"), TransactionControl::Rollback);
+        assert_eq!(
+            parse_transaction_control("RoLlBaCk"),
+            TransactionControl::Rollback
+        );
     }
 
     #[test]
     fn test_parse_tx_control_other_select() {
-        assert_eq!(parse_transaction_control("SELECT 1"), TransactionControl::Other);
+        assert_eq!(
+            parse_transaction_control("SELECT 1"),
+            TransactionControl::Other
+        );
     }
 
     #[test]
@@ -456,17 +467,26 @@ mod tests {
 
     #[test]
     fn test_parse_tx_control_whitespace_only() {
-        assert_eq!(parse_transaction_control("   \n\t  "), TransactionControl::Other);
+        assert_eq!(
+            parse_transaction_control("   \n\t  "),
+            TransactionControl::Other
+        );
     }
 
     #[test]
     fn test_parse_tx_control_begin_with_leading_spaces() {
-        assert_eq!(parse_transaction_control("   BEGIN"), TransactionControl::Begin);
+        assert_eq!(
+            parse_transaction_control("   BEGIN"),
+            TransactionControl::Begin
+        );
     }
 
     #[test]
     fn test_parse_tx_control_unknown_keyword() {
-        assert_eq!(parse_transaction_control("UPSERT x"), TransactionControl::Other);
+        assert_eq!(
+            parse_transaction_control("UPSERT x"),
+            TransactionControl::Other
+        );
     }
 
     #[test]
@@ -699,7 +719,10 @@ mod tests {
 
         assert!(executor.pager_accessor.current_transaction_id().is_none());
         let should_fail = executor.pager_accessor.set_current_transaction(Some(tx_id));
-        assert!(matches!(should_fail, Err(Status::ExceptionNoActiveTransaction)));
+        assert!(matches!(
+            should_fail,
+            Err(Status::ExceptionNoActiveTransaction)
+        ));
 
         let _ = fs::remove_file(db_path);
     }

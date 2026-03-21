@@ -137,11 +137,17 @@ impl Planner {
                         Serializer::format_value_preview(value)
                     ));
                 }
-                CompiledPredicateExpr::InSubquery { column_idx, strategy } => {
+                CompiledPredicateExpr::InSubquery {
+                    column_idx,
+                    strategy,
+                } => {
                     out.push_str(&format!("{}IN col[{}]\n", prefix, column_idx));
                     match strategy {
                         CompiledInStrategy::KeyLookup { table_id } => {
-                            out.push_str(&format!("{}└─ strategy: KeyLookup(table_id={})\n", prefix, table_id));
+                            out.push_str(&format!(
+                                "{}└─ strategy: KeyLookup(table_id={})\n",
+                                prefix, table_id
+                            ));
                         }
                         CompiledInStrategy::IndexLookup { index_table_id } => {
                             out.push_str(&format!(
@@ -251,7 +257,14 @@ impl Planner {
                     "CompiledQuery::Delete\n└─ table_id={} op={:?}\n",
                     q.table_id, q.operation
                 );
-                out.push_str(&format!("   seek_key: {}\n", if q.seek_key.is_some() { "Some(..)" } else { "None" }));
+                out.push_str(&format!(
+                    "   seek_key: {}\n",
+                    if q.seek_key.is_some() {
+                        "Some(..)"
+                    } else {
+                        "None"
+                    }
+                ));
                 match &q.condition {
                     Some(cond) => {
                         out.push_str("   condition:\n");
@@ -266,7 +279,14 @@ impl Planner {
                     "CompiledQuery::Update\n└─ table_id={} op={:?}\n",
                     q.table_id, q.operation
                 );
-                out.push_str(&format!("   seek_key: {}\n", if q.seek_key.is_some() { "Some(..)" } else { "None" }));
+                out.push_str(&format!(
+                    "   seek_key: {}\n",
+                    if q.seek_key.is_some() {
+                        "Some(..)"
+                    } else {
+                        "None"
+                    }
+                ));
                 match &q.condition {
                     Some(cond) => {
                         out.push_str("   condition:\n");
@@ -291,10 +311,7 @@ impl Planner {
             ),
             CompiledQuery::CreateIndex(q) => format!(
                 "CompiledQuery::CreateIndex\n└─ index='{}' base='{}' column='{}' table='{}'",
-                q.index_name,
-                q.base_table_name,
-                q.column_name,
-                q.schema.name
+                q.index_name, q.base_table_name, q.column_name, q.schema.name
             ),
             CompiledQuery::DropTable(q) => {
                 format!("CompiledQuery::DropTable\n└─ table_id={}", q.table_id)
@@ -354,7 +371,8 @@ impl QueryExecutor {
             );
         } else {
             let table_name = table.unwrap();
-            let table_id = Planner::find_table_id(&self.schema, table_name).expect("Invalid Tablename");
+            let table_id =
+                Planner::find_table_id(&self.schema, table_name).expect("Invalid Tablename");
             let table_schema = self.schema.tables[table_id].clone();
             let btree = Btree::init(
                 table_schema.btree_order,
@@ -404,13 +422,7 @@ impl QueryExecutor {
 
                     println!(
                         "page={:>4} kind={:<8} free_space={:>4} flag=0b{:08b} dirty={} deleted={} non_zero_bytes={}",
-                        page_idx,
-                        page_kind,
-                        page.free_space,
-                        page.flag,
-                        dirty,
-                        deleted,
-                        used_bytes
+                        page_idx, page_kind, page.free_space, page.flag, dirty, deleted, used_bytes
                     );
                 }
                 Err(err) => {
@@ -428,6 +440,8 @@ impl QueryExecutor {
 
         let rendered = Planner::render_compiled_query(&compiled_query);
         println!("{}", rendered);
-        QueryResult::return_data(DataFrame::msg("Query planned successfully. See debug output for details."))
+        QueryResult::return_data(DataFrame::msg(
+            "Query planned successfully. See debug output for details.",
+        ))
     }
 }

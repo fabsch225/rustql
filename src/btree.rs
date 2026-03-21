@@ -1,8 +1,8 @@
+use crate::debug::Status;
 use crate::pager::{Key, PagerAccessor, Position, Row};
 use crate::pager_proxy::PagerProxy;
 use crate::schema::TableSchema;
 use crate::serializer::Serializer;
-use crate::debug::Status;
 use std::fmt::Display;
 use std::fmt::{Debug, Formatter};
 
@@ -272,7 +272,8 @@ impl Btree {
                 Serializer::empty_row(&self.table_schema)?,
             )?; // Add a dummy value TODO: should this be here? the BTree should call BTreeNode methods !?
             while i >= 0
-                && self.compare(&key, &x.get_key_encoded(i as usize)?.0)? == std::cmp::Ordering::Less
+                && self.compare(&key, &x.get_key_encoded(i as usize)?.0)?
+                    == std::cmp::Ordering::Less
             {
                 let key_and_row = x.get_key_encoded(i as usize)?;
                 x.set_key_encoded((i + 1) as usize, key_and_row.0, key_and_row.1)?;
@@ -281,7 +282,8 @@ impl Btree {
             x.set_key((i + 1) as usize, key.clone(), row)?;
         } else {
             while i >= 0
-                && self.compare(&key, &x.get_key_encoded(i as usize)?.0)? == std::cmp::Ordering::Less
+                && self.compare(&key, &x.get_key_encoded(i as usize)?.0)?
+                    == std::cmp::Ordering::Less
             {
                 i -= 1;
             }
@@ -307,7 +309,7 @@ impl Btree {
             //TODO: should this be here? the BTree should call BTreeNode methods !?
             self.table_schema.clone(),
             y.pager_accessor.clone(),
-            None,//Some(x), //TODO the hint-functionality is wrong!!! 
+            None, //Some(x), //TODO the hint-functionality is wrong!!!
             keys_and_rows.0,
             vec![],
             keys_and_rows.1,

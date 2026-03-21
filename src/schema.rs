@@ -1,7 +1,7 @@
-use crate::pager::{Position, TableName, Type, NODE_METADATA_SIZE, PAGE_SIZE, POSITION_SIZE};
+use crate::debug::Status;
+use crate::pager::{NODE_METADATA_SIZE, PAGE_SIZE, POSITION_SIZE, Position, TableName, Type};
 use crate::parser::JoinOp;
 use crate::serializer::Serializer;
-use crate::debug::Status;
 
 #[derive(Debug, Clone)]
 pub struct Field {

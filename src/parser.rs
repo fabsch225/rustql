@@ -288,7 +288,9 @@ impl Parser {
         {
             self.expect_token("TRANSACTION")?;
         }
-        Ok(ParsedQuery::Transaction(ParsedTransactionStatement::Rollback))
+        Ok(ParsedQuery::Transaction(
+            ParsedTransactionStatement::Rollback,
+        ))
     }
 
     fn parse_create(&mut self) -> Result<ParsedQuery, String> {
@@ -300,7 +302,10 @@ impl Parser {
         match object_type.to_uppercase().as_str() {
             "TABLE" => self.parse_create_table(),
             "INDEX" => self.parse_create_index(),
-            _ => Err(format!("Expected 'TABLE' or 'INDEX', but found '{}'", object_type)),
+            _ => Err(format!(
+                "Expected 'TABLE' or 'INDEX', but found '{}'",
+                object_type
+            )),
         }
     }
 
@@ -458,15 +463,19 @@ impl Parser {
                     .lexer
                     .next_token()
                     .ok_or_else(|| "Expected index name".to_string())?;
-                Ok(ParsedQuery::DropIndex(ParsedDropIndexQuery {
-                    index_name,
-                }))
+                Ok(ParsedQuery::DropIndex(ParsedDropIndexQuery { index_name }))
             }
-            _ => Err(format!("Expected 'TABLE' or 'INDEX', but found '{}'", object_type)),
+            _ => Err(format!(
+                "Expected 'TABLE' or 'INDEX', but found '{}'",
+                object_type
+            )),
         }
     }
 
-    fn parse_select(&mut self, allow_setop_after_closing_paren: bool) -> Result<ParsedQueryTreeNode, String> {
+    fn parse_select(
+        &mut self,
+        allow_setop_after_closing_paren: bool,
+    ) -> Result<ParsedQueryTreeNode, String> {
         let mut fields = Vec::new();
         loop {
             let token = self
@@ -771,10 +780,12 @@ impl Parser {
             self.expect_token("(")?;
             self.expect_token("SELECT")?;
             let subquery = self.parse_select(false)?;
-            return Ok(ParsedConditionExpr::Predicate(ParsedPredicateExpr::InSubquery {
-                left: ParsedValueExpr::Token(left),
-                subquery: Box::new(subquery),
-            }));
+            return Ok(ParsedConditionExpr::Predicate(
+                ParsedPredicateExpr::InSubquery {
+                    left: ParsedValueExpr::Token(left),
+                    subquery: Box::new(subquery),
+                },
+            ));
         }
 
         let right = self
@@ -782,11 +793,13 @@ impl Parser {
             .next_token()
             .ok_or_else(|| "Expected right-side expression in condition".to_string())?;
 
-        Ok(ParsedConditionExpr::Predicate(ParsedPredicateExpr::Compare {
-            left: ParsedValueExpr::Token(left),
-            operator,
-            right: ParsedValueExpr::Token(right),
-        }))
+        Ok(ParsedConditionExpr::Predicate(
+            ParsedPredicateExpr::Compare {
+                left: ParsedValueExpr::Token(left),
+                operator,
+                right: ParsedValueExpr::Token(right),
+            },
+        ))
     }
     fn parse_source(&mut self) -> Result<ParsedSource, String> {
         let mut sources = vec![self.parse_single_source()?];

@@ -1,17 +1,17 @@
 use crate::btree::BTreeNode;
 pub use crate::constants::{
     BOOLEAN_SIZE, DATE_SIZE, INTEGER_SIZE, INTEGER_SIZE_WITHOUT_FLAG, NODE_METADATA_SIZE,
-    NULL_SIZE, PAGES_START_AT, PAGE_SIZE, PAGE_SIZE_WITH_META, POSITION_SIZE, ROW_NAME_SIZE,
+    NULL_SIZE, PAGE_SIZE, PAGE_SIZE_WITH_META, PAGES_START_AT, POSITION_SIZE, ROW_NAME_SIZE,
     STRING_SIZE, TABLE_NAME_SIZE, TYPE_SIZE,
 };
 use crate::crypto::generate_random_hash;
-use crate::serializer::Serializer;
 use crate::debug::Status;
 use crate::debug::Status::{
     ExceptionNoActiveTransaction, ExceptionTableLocked, ExceptionTransactionAlreadyActive,
     InternalExceptionInvalidColCount, InternalExceptionInvalidSchema,
     InternalExceptionPagerMismatch, InternalSuccess,
 };
+use crate::serializer::Serializer;
 use std::cmp::PartialEq;
 use std::collections::{HashMap, HashSet};
 use std::fmt::{Debug, Display, Formatter};
@@ -73,7 +73,7 @@ pub struct PageContainer {
     pub data: PageData,
     position: Position,
     pub free_space: usize,
-    pub flag: Flag
+    pub flag: Flag,
 }
 
 pub type TableName = Vec<u8>;
@@ -309,13 +309,13 @@ impl PagerCore {
             .write()
             .map_err(|_| Status::InternalExceptionPagerWriteLock)?
             .insert(
-            tx_id,
-            Arc::new(RwLock::new(TransactionState {
-                page_overrides: HashMap::new(),
-                locked_tables: HashSet::new(),
-                active: true,
-            })),
-        );
+                tx_id,
+                Arc::new(RwLock::new(TransactionState {
+                    page_overrides: HashMap::new(),
+                    locked_tables: HashSet::new(),
+                    active: true,
+                })),
+            );
         Ok(tx_id)
     }
 
@@ -349,7 +349,9 @@ impl PagerCore {
     }
 
     pub fn commit_transaction(&self) -> Result<(), Status> {
-        let tx_id = self.current_transaction_id().ok_or(ExceptionNoActiveTransaction)?;
+        let tx_id = self
+            .current_transaction_id()
+            .ok_or(ExceptionNoActiveTransaction)?;
         self.commit_transaction_by_id(tx_id)
     }
 
@@ -370,8 +372,7 @@ impl PagerCore {
         // Lock order: tx -> cache -> table_locks -> current_transaction_ids
         let mut tx = tx_handle
             .write()
-            .map_err(|_| Status::InternalExceptionPagerWriteLock)?
-            ;
+            .map_err(|_| Status::InternalExceptionPagerWriteLock)?;
         if !tx.active {
             return Err(ExceptionNoActiveTransaction);
         }
@@ -416,7 +417,9 @@ impl PagerCore {
     }
 
     pub fn rollback_transaction(&self) -> Result<(), Status> {
-        let tx_id = self.current_transaction_id().ok_or(ExceptionNoActiveTransaction)?;
+        let tx_id = self
+            .current_transaction_id()
+            .ok_or(ExceptionNoActiveTransaction)?;
         self.rollback_transaction_by_id(tx_id)
     }
 
@@ -671,12 +674,7 @@ impl PagerCore {
         let _commit_guard = self.commit_gate.read().ok()?;
 
         if let Some(tx_id) = self.current_transaction_id()
-            && let Some(tx_handle) = self
-                .transactions
-                .read()
-                .ok()?
-                .get(&tx_id)
-                .cloned()
+            && let Some(tx_handle) = self.transactions.read().ok()?.get(&tx_id).cloned()
         {
             let tx = tx_handle.read().ok()?;
             if tx.active {
@@ -757,7 +755,7 @@ impl PagerCore {
     }
 
     pub fn create_page(&self) -> Result<usize, Status> {
-        // optimize: add this to freelist on rollback (journaling) 
+        // optimize: add this to freelist on rollback (journaling)
         let page_index = self.next_page_index.fetch_add(1, Ordering::SeqCst);
 
         if let Some(tx_id) = self.current_transaction_id() {

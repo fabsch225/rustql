@@ -59,18 +59,22 @@ mod tests {
     #[test]
     fn test_and_or_xor_logic_select() {
         let mut exec = QueryExecutor::init();
-        assert!(exec
-            .prepare("CREATE TABLE t (id Integer, v Integer)".to_string())
-            .success);
-        assert!(exec
-            .prepare("INSERT INTO t (id, v) VALUES (1, 10)".to_string())
-            .success);
-        assert!(exec
-            .prepare("INSERT INTO t (id, v) VALUES (2, 20)".to_string())
-            .success);
-        assert!(exec
-            .prepare("INSERT INTO t (id, v) VALUES (3, 30)".to_string())
-            .success);
+        assert!(
+            exec.prepare("CREATE TABLE t (id Integer, v Integer)".to_string())
+                .success
+        );
+        assert!(
+            exec.prepare("INSERT INTO t (id, v) VALUES (1, 10)".to_string())
+                .success
+        );
+        assert!(
+            exec.prepare("INSERT INTO t (id, v) VALUES (2, 20)".to_string())
+                .success
+        );
+        assert!(
+            exec.prepare("INSERT INTO t (id, v) VALUES (3, 30)".to_string())
+                .success
+        );
 
         let r = exec
             .prepare("SELECT id FROM t WHERE id = 1 OR id = 2 AND v = 20".to_string())
@@ -90,12 +94,14 @@ mod tests {
     #[test]
     fn test_in_subquery_key_lookup_strategy() {
         let mut exec = QueryExecutor::init();
-        assert!(exec
-            .prepare("CREATE TABLE a (id Integer, v Integer)".to_string())
-            .success);
-        assert!(exec
-            .prepare("CREATE TABLE b (id Integer, v Integer)".to_string())
-            .success);
+        assert!(
+            exec.prepare("CREATE TABLE a (id Integer, v Integer)".to_string())
+                .success
+        );
+        assert!(
+            exec.prepare("CREATE TABLE b (id Integer, v Integer)".to_string())
+                .success
+        );
 
         let compiled = exec
             .compile_query("SELECT id FROM a WHERE id IN (SELECT id FROM b)")
@@ -118,15 +124,18 @@ mod tests {
     #[test]
     fn test_in_subquery_index_lookup_strategy() {
         let mut exec = QueryExecutor::init();
-        assert!(exec
-            .prepare("CREATE TABLE a (id Integer, v Integer)".to_string())
-            .success);
-        assert!(exec
-            .prepare("CREATE TABLE b (id Integer, v Integer)".to_string())
-            .success);
-        assert!(exec
-            .prepare("CREATE INDEX idx_b_v ON b (v)".to_string())
-            .success);
+        assert!(
+            exec.prepare("CREATE TABLE a (id Integer, v Integer)".to_string())
+                .success
+        );
+        assert!(
+            exec.prepare("CREATE TABLE b (id Integer, v Integer)".to_string())
+                .success
+        );
+        assert!(
+            exec.prepare("CREATE INDEX idx_b_v ON b (v)".to_string())
+                .success
+        );
 
         let compiled = exec
             .compile_query("SELECT id FROM a WHERE v IN (SELECT v FROM b)")
@@ -149,12 +158,14 @@ mod tests {
     #[test]
     fn test_in_subquery_materialized_strategy() {
         let mut exec = QueryExecutor::init();
-        assert!(exec
-            .prepare("CREATE TABLE a (id Integer, v Integer)".to_string())
-            .success);
-        assert!(exec
-            .prepare("CREATE TABLE b (id Integer, v Integer)".to_string())
-            .success);
+        assert!(
+            exec.prepare("CREATE TABLE a (id Integer, v Integer)".to_string())
+                .success
+        );
+        assert!(
+            exec.prepare("CREATE TABLE b (id Integer, v Integer)".to_string())
+                .success
+        );
 
         let compiled = exec
             .compile_query("SELECT id FROM a WHERE v IN (SELECT v FROM b WHERE id = 1)")
@@ -177,18 +188,21 @@ mod tests {
     #[test]
     fn test_update_and_delete_with_or_conditions() {
         let mut exec = QueryExecutor::init();
-        assert!(exec
-            .prepare("CREATE TABLE t (id Integer, v Integer)".to_string())
-            .success);
+        assert!(
+            exec.prepare("CREATE TABLE t (id Integer, v Integer)".to_string())
+                .success
+        );
         for i in 1..=4 {
-            assert!(exec
-                .prepare(format!("INSERT INTO t (id, v) VALUES ({}, {})", i, i * 10))
-                .success);
+            assert!(
+                exec.prepare(format!("INSERT INTO t (id, v) VALUES ({}, {})", i, i * 10))
+                    .success
+            );
         }
 
-        assert!(exec
-            .prepare("UPDATE t SET v = 99 WHERE id = 1 OR id = 3".to_string())
-            .success);
+        assert!(
+            exec.prepare("UPDATE t SET v = 99 WHERE id = 1 OR id = 3".to_string())
+                .success
+        );
 
         let updated = exec
             .prepare("SELECT id FROM t WHERE v = 99".to_string())
@@ -197,9 +211,10 @@ mod tests {
             .unwrap();
         assert_eq!(updated.len(), 2);
 
-        assert!(exec
-            .prepare("DELETE FROM t WHERE id = 2 OR id = 4".to_string())
-            .success);
+        assert!(
+            exec.prepare("DELETE FROM t WHERE id = 2 OR id = 4".to_string())
+                .success
+        );
         let remaining = exec
             .prepare("SELECT * FROM t".to_string())
             .data
@@ -213,20 +228,32 @@ mod tests {
         let mut exec = QueryExecutor::init();
         let n = 700;
 
-        assert!(exec.prepare("CREATE TABLE a (id Integer, v Integer)".into()).success);
-        assert!(exec.prepare("CREATE TABLE b (id Integer, w Integer)".into()).success);
-        assert!(exec.prepare("CREATE TABLE c (id Integer, z Integer)".into()).success);
+        assert!(
+            exec.prepare("CREATE TABLE a (id Integer, v Integer)".into())
+                .success
+        );
+        assert!(
+            exec.prepare("CREATE TABLE b (id Integer, w Integer)".into())
+                .success
+        );
+        assert!(
+            exec.prepare("CREATE TABLE c (id Integer, z Integer)".into())
+                .success
+        );
 
         for i in 1..=n {
-            assert!(exec
-                .prepare(format!("INSERT INTO a VALUES ({}, {})", i, i % 101))
-                .success);
-            assert!(exec
-                .prepare(format!("INSERT INTO b VALUES ({}, {})", i, (i * 3) % 97))
-                .success);
-            assert!(exec
-                .prepare(format!("INSERT INTO c VALUES ({}, {})", i, (i * 5) % 103))
-                .success);
+            assert!(
+                exec.prepare(format!("INSERT INTO a VALUES ({}, {})", i, i % 101))
+                    .success
+            );
+            assert!(
+                exec.prepare(format!("INSERT INTO b VALUES ({}, {})", i, (i * 3) % 97))
+                    .success
+            );
+            assert!(
+                exec.prepare(format!("INSERT INTO c VALUES ({}, {})", i, (i * 5) % 103))
+                    .success
+            );
         }
 
         let query = "SELECT a.id FROM a JOIN b ON a.id = b.id JOIN c ON a.id = c.id WHERE (a.v > 70 AND b.w < 30) OR a.id IN (SELECT id FROM c WHERE z > 80)";
@@ -249,20 +276,32 @@ mod tests {
         let mut exec = QueryExecutor::init();
         let n = 600;
 
-        assert!(exec.prepare("CREATE TABLE a (id Integer, v Integer)".into()).success);
-        assert!(exec.prepare("CREATE TABLE b (id Integer, w Integer)".into()).success);
-        assert!(exec.prepare("CREATE TABLE d (id Integer, q Integer)".into()).success);
+        assert!(
+            exec.prepare("CREATE TABLE a (id Integer, v Integer)".into())
+                .success
+        );
+        assert!(
+            exec.prepare("CREATE TABLE b (id Integer, w Integer)".into())
+                .success
+        );
+        assert!(
+            exec.prepare("CREATE TABLE d (id Integer, q Integer)".into())
+                .success
+        );
 
         for i in 1..=n {
-            assert!(exec
-                .prepare(format!("INSERT INTO a VALUES ({}, {})", i, i % 100))
-                .success);
-            assert!(exec
-                .prepare(format!("INSERT INTO b VALUES ({}, {})", i, (i * 2) % 100))
-                .success);
-            assert!(exec
-                .prepare(format!("INSERT INTO d VALUES ({}, {})", i, (i * 7) % 100))
-                .success);
+            assert!(
+                exec.prepare(format!("INSERT INTO a VALUES ({}, {})", i, i % 100))
+                    .success
+            );
+            assert!(
+                exec.prepare(format!("INSERT INTO b VALUES ({}, {})", i, (i * 2) % 100))
+                    .success
+            );
+            assert!(
+                exec.prepare(format!("INSERT INTO d VALUES ({}, {})", i, (i * 7) % 100))
+                    .success
+            );
         }
 
         let query = "SELECT a.id FROM (SELECT a.id, a.v FROM a JOIN b ON a.id = b.id) JOIN d ON a.id = d.id WHERE (a.v > 70) XOR (d.q > 70)";
@@ -284,20 +323,32 @@ mod tests {
         let mut exec = QueryExecutor::init();
         let n = 500;
 
-        assert!(exec.prepare("CREATE TABLE a (id Integer, v Integer)".into()).success);
-        assert!(exec.prepare("CREATE TABLE b (id Integer, v Integer)".into()).success);
-        assert!(exec.prepare("CREATE TABLE c (id Integer, v Integer)".into()).success);
+        assert!(
+            exec.prepare("CREATE TABLE a (id Integer, v Integer)".into())
+                .success
+        );
+        assert!(
+            exec.prepare("CREATE TABLE b (id Integer, v Integer)".into())
+                .success
+        );
+        assert!(
+            exec.prepare("CREATE TABLE c (id Integer, v Integer)".into())
+                .success
+        );
 
         for i in 1..=n {
-            assert!(exec
-                .prepare(format!("INSERT INTO a VALUES ({}, {})", i, i % 100))
-                .success);
-            assert!(exec
-                .prepare(format!("INSERT INTO b VALUES ({}, {})", i + 100, i % 100))
-                .success);
-            assert!(exec
-                .prepare(format!("INSERT INTO c VALUES ({}, {})", i, i % 100))
-                .success);
+            assert!(
+                exec.prepare(format!("INSERT INTO a VALUES ({}, {})", i, i % 100))
+                    .success
+            );
+            assert!(
+                exec.prepare(format!("INSERT INTO b VALUES ({}, {})", i + 100, i % 100))
+                    .success
+            );
+            assert!(
+                exec.prepare(format!("INSERT INTO c VALUES ({}, {})", i, i % 100))
+                    .success
+            );
         }
 
         let query = "SELECT c.id FROM c WHERE c.id IN (SELECT id FROM (SELECT a.id FROM a UNION SELECT c.id FROM c) WHERE id > 250)";
@@ -310,16 +361,24 @@ mod tests {
         let mut exec = QueryExecutor::init();
         let n = 900;
 
-        assert!(exec.prepare("CREATE TABLE t (id Integer, v Integer)".into()).success);
-        assert!(exec.prepare("CREATE TABLE f (id Integer, mark Integer)".into()).success);
+        assert!(
+            exec.prepare("CREATE TABLE t (id Integer, v Integer)".into())
+                .success
+        );
+        assert!(
+            exec.prepare("CREATE TABLE f (id Integer, mark Integer)".into())
+                .success
+        );
 
         for i in 1..=n {
-            assert!(exec
-                .prepare(format!("INSERT INTO t VALUES ({}, {})", i, i % 100))
-                .success);
-            assert!(exec
-                .prepare(format!("INSERT INTO f VALUES ({}, {})", i, (i * 11) % 100))
-                .success);
+            assert!(
+                exec.prepare(format!("INSERT INTO t VALUES ({}, {})", i, i % 100))
+                    .success
+            );
+            assert!(
+                exec.prepare(format!("INSERT INTO f VALUES ({}, {})", i, (i * 11) % 100))
+                    .success
+            );
         }
 
         let update = "UPDATE t SET v = 999 WHERE (id <= 300 OR id >= 850) AND id IN (SELECT id FROM f WHERE mark > 50)";
@@ -346,16 +405,24 @@ mod tests {
         let mut exec = QueryExecutor::init();
         let n = 850;
 
-        assert!(exec.prepare("CREATE TABLE t (id Integer, v Integer)".into()).success);
-        assert!(exec.prepare("CREATE TABLE x (id Integer, flag Integer)".into()).success);
+        assert!(
+            exec.prepare("CREATE TABLE t (id Integer, v Integer)".into())
+                .success
+        );
+        assert!(
+            exec.prepare("CREATE TABLE x (id Integer, flag Integer)".into())
+                .success
+        );
 
         for i in 1..=n {
-            assert!(exec
-                .prepare(format!("INSERT INTO t VALUES ({}, {})", i, i % 120))
-                .success);
-            assert!(exec
-                .prepare(format!("INSERT INTO x VALUES ({}, {})", i, (i * 13) % 120))
-                .success);
+            assert!(
+                exec.prepare(format!("INSERT INTO t VALUES ({}, {})", i, i % 120))
+                    .success
+            );
+            assert!(
+                exec.prepare(format!("INSERT INTO x VALUES ({}, {})", i, (i * 13) % 120))
+                    .success
+            );
         }
 
         let del = "DELETE FROM t WHERE (v < 10 XOR v > 110) AND id IN (SELECT id FROM x WHERE flag > 90 OR flag < 5)";
@@ -381,17 +448,25 @@ mod tests {
         let mut exec = QueryExecutor::init();
         let n = 2000;
 
-        assert!(exec.prepare("CREATE TABLE a (id Integer, v Integer)".into()).success);
-        assert!(exec.prepare("CREATE TABLE b (id Integer, v Integer)".into()).success);
+        assert!(
+            exec.prepare("CREATE TABLE a (id Integer, v Integer)".into())
+                .success
+        );
+        assert!(
+            exec.prepare("CREATE TABLE b (id Integer, v Integer)".into())
+                .success
+        );
 
         for i in 1..=n {
-            assert!(exec
-                .prepare(format!("INSERT INTO a VALUES ({}, {})", i, (i * 2) % 1000))
-                .success);
+            assert!(
+                exec.prepare(format!("INSERT INTO a VALUES ({}, {})", i, (i * 2) % 1000))
+                    .success
+            );
             if i % 3 == 0 {
-                assert!(exec
-                    .prepare(format!("INSERT INTO b VALUES ({}, {})", i, (i * 7) % 1000))
-                    .success);
+                assert!(
+                    exec.prepare(format!("INSERT INTO b VALUES ({}, {})", i, (i * 7) % 1000))
+                        .success
+                );
             }
         }
 
@@ -408,17 +483,25 @@ mod tests {
         let mut exec = QueryExecutor::init();
         let n = 1500;
 
-        assert!(exec.prepare("CREATE TABLE a (id Integer, v Integer)".into()).success);
-        assert!(exec.prepare("CREATE TABLE b (id Integer, v Integer)".into()).success);
+        assert!(
+            exec.prepare("CREATE TABLE a (id Integer, v Integer)".into())
+                .success
+        );
+        assert!(
+            exec.prepare("CREATE TABLE b (id Integer, v Integer)".into())
+                .success
+        );
         assert!(exec.prepare("CREATE INDEX idx_b_v ON b (v)".into()).success);
 
         for i in 1..=n {
-            assert!(exec
-                .prepare(format!("INSERT INTO a VALUES ({}, {})", i, i % 200))
-                .success);
-            assert!(exec
-                .prepare(format!("INSERT INTO b VALUES ({}, {})", i, (i + 50) % 200))
-                .success);
+            assert!(
+                exec.prepare(format!("INSERT INTO a VALUES ({}, {})", i, i % 200))
+                    .success
+            );
+            assert!(
+                exec.prepare(format!("INSERT INTO b VALUES ({}, {})", i, (i + 50) % 200))
+                    .success
+            );
         }
 
         let rows = exec
@@ -435,22 +518,40 @@ mod tests {
         let mut exec = QueryExecutor::init();
         let n = 650;
 
-        assert!(exec.prepare("CREATE TABLE p (id Integer, a Integer)".into()).success);
-        assert!(exec.prepare("CREATE TABLE q (id Integer, b Integer)".into()).success);
-        assert!(exec.prepare("CREATE TABLE r (id Integer, c Integer)".into()).success);
-        assert!(exec.prepare("CREATE TABLE s (id Integer, d Integer)".into()).success);
+        assert!(
+            exec.prepare("CREATE TABLE p (id Integer, a Integer)".into())
+                .success
+        );
+        assert!(
+            exec.prepare("CREATE TABLE q (id Integer, b Integer)".into())
+                .success
+        );
+        assert!(
+            exec.prepare("CREATE TABLE r (id Integer, c Integer)".into())
+                .success
+        );
+        assert!(
+            exec.prepare("CREATE TABLE s (id Integer, d Integer)".into())
+                .success
+        );
 
         for i in 1..=n {
-            assert!(exec.prepare(format!("INSERT INTO p VALUES ({}, {})", i, i % 90)).success);
-            assert!(exec
-                .prepare(format!("INSERT INTO q VALUES ({}, {})", i, (i * 2) % 90))
-                .success);
-            assert!(exec
-                .prepare(format!("INSERT INTO r VALUES ({}, {})", i, (i * 3) % 90))
-                .success);
-            assert!(exec
-                .prepare(format!("INSERT INTO s VALUES ({}, {})", i, (i * 5) % 90))
-                .success);
+            assert!(
+                exec.prepare(format!("INSERT INTO p VALUES ({}, {})", i, i % 90))
+                    .success
+            );
+            assert!(
+                exec.prepare(format!("INSERT INTO q VALUES ({}, {})", i, (i * 2) % 90))
+                    .success
+            );
+            assert!(
+                exec.prepare(format!("INSERT INTO r VALUES ({}, {})", i, (i * 3) % 90))
+                    .success
+            );
+            assert!(
+                exec.prepare(format!("INSERT INTO s VALUES ({}, {})", i, (i * 5) % 90))
+                    .success
+            );
         }
 
         let query = "SELECT p.id FROM (SELECT p.id, p.a FROM p JOIN q ON p.id = q.id WHERE q.b > 20 OR p.a < 10) JOIN r ON p.id = r.id JOIN s ON p.id = s.id WHERE (r.c > 30 AND s.d < 40) OR (p.a > 70 XOR s.d > 70)";
@@ -476,22 +577,40 @@ mod tests {
         let mut exec = QueryExecutor::init();
         let n = 1000;
 
-        assert!(exec.prepare("CREATE TABLE u (id Integer, x Integer)".into()).success);
-        assert!(exec.prepare("CREATE TABLE v (id Integer, y Integer)".into()).success);
-        assert!(exec.prepare("CREATE TABLE m (id Integer, t Integer)".into()).success);
-        assert!(exec.prepare("CREATE TABLE n (id Integer, t Integer)".into()).success);
+        assert!(
+            exec.prepare("CREATE TABLE u (id Integer, x Integer)".into())
+                .success
+        );
+        assert!(
+            exec.prepare("CREATE TABLE v (id Integer, y Integer)".into())
+                .success
+        );
+        assert!(
+            exec.prepare("CREATE TABLE m (id Integer, t Integer)".into())
+                .success
+        );
+        assert!(
+            exec.prepare("CREATE TABLE n (id Integer, t Integer)".into())
+                .success
+        );
 
         for i in 1..=n {
-            assert!(exec.prepare(format!("INSERT INTO u VALUES ({}, {})", i, i % 75)).success);
-            assert!(exec
-                .prepare(format!("INSERT INTO v VALUES ({}, {})", i, (i * 2) % 75))
-                .success);
-            assert!(exec
-                .prepare(format!("INSERT INTO m VALUES ({}, {})", i, (i * 3) % 75))
-                .success);
-            assert!(exec
-                .prepare(format!("INSERT INTO n VALUES ({}, {})", i, (i * 5) % 75))
-                .success);
+            assert!(
+                exec.prepare(format!("INSERT INTO u VALUES ({}, {})", i, i % 75))
+                    .success
+            );
+            assert!(
+                exec.prepare(format!("INSERT INTO v VALUES ({}, {})", i, (i * 2) % 75))
+                    .success
+            );
+            assert!(
+                exec.prepare(format!("INSERT INTO m VALUES ({}, {})", i, (i * 3) % 75))
+                    .success
+            );
+            assert!(
+                exec.prepare(format!("INSERT INTO n VALUES ({}, {})", i, (i * 5) % 75))
+                    .success
+            );
         }
 
         let query = "SELECT u.id FROM u JOIN v ON u.id = v.id WHERE (u.id IN (SELECT id FROM m WHERE t > 40)) XOR (u.id IN (SELECT id FROM n WHERE t < 10))";
@@ -513,22 +632,40 @@ mod tests {
         let mut exec = QueryExecutor::init();
         let n = 750;
 
-        assert!(exec.prepare("CREATE TABLE a (id Integer, v Integer)".into()).success);
-        assert!(exec.prepare("CREATE TABLE b (id Integer, v Integer)".into()).success);
-        assert!(exec.prepare("CREATE TABLE c (id Integer, v Integer)".into()).success);
-        assert!(exec.prepare("CREATE TABLE d (id Integer, v Integer)".into()).success);
+        assert!(
+            exec.prepare("CREATE TABLE a (id Integer, v Integer)".into())
+                .success
+        );
+        assert!(
+            exec.prepare("CREATE TABLE b (id Integer, v Integer)".into())
+                .success
+        );
+        assert!(
+            exec.prepare("CREATE TABLE c (id Integer, v Integer)".into())
+                .success
+        );
+        assert!(
+            exec.prepare("CREATE TABLE d (id Integer, v Integer)".into())
+                .success
+        );
 
         for i in 1..=n {
-            assert!(exec.prepare(format!("INSERT INTO a VALUES ({}, {})", i, i % 110)).success);
-            assert!(exec
-                .prepare(format!("INSERT INTO b VALUES ({}, {})", i, (i * 2) % 110))
-                .success);
-            assert!(exec
-                .prepare(format!("INSERT INTO c VALUES ({}, {})", i, (i * 3) % 110))
-                .success);
-            assert!(exec
-                .prepare(format!("INSERT INTO d VALUES ({}, {})", i, (i * 4) % 110))
-                .success);
+            assert!(
+                exec.prepare(format!("INSERT INTO a VALUES ({}, {})", i, i % 110))
+                    .success
+            );
+            assert!(
+                exec.prepare(format!("INSERT INTO b VALUES ({}, {})", i, (i * 2) % 110))
+                    .success
+            );
+            assert!(
+                exec.prepare(format!("INSERT INTO c VALUES ({}, {})", i, (i * 3) % 110))
+                    .success
+            );
+            assert!(
+                exec.prepare(format!("INSERT INTO d VALUES ({}, {})", i, (i * 4) % 110))
+                    .success
+            );
         }
 
         let query = "SELECT a.id FROM a JOIN b ON a.id = b.id JOIN c ON a.id = c.id WHERE (a.v > 90 AND b.v > 80) OR a.id IN (SELECT id FROM (SELECT id FROM c UNION SELECT id FROM d) WHERE id > 500)";

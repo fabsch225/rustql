@@ -1,12 +1,12 @@
 use crate::btree::Btree;
 use crate::cursor::BTreeCursor;
+use crate::debug::Status;
 use crate::pager::{Position, Row, Type};
 use crate::parser::ParsedSetOperator;
 use crate::planner::SqlStatementComparisonOperator::{Equal, Greater, GreaterOrEqual};
 use crate::planner::{SqlConditionOpCode, SqlStatementComparisonOperator};
 use crate::schema::{Field, TableSchema};
 use crate::serializer::Serializer;
-use crate::debug::Status;
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::fmt::{Display, Formatter};
@@ -234,11 +234,13 @@ impl Display for DataFrame {
                     let mut position = 0;
                     for field in &self.header {
                         let field_type = &field.field_type;
-                        let field_len = Serializer::get_size_of_type(field_type).map_err(|_| fmt::Error)?;
+                        let field_len =
+                            Serializer::get_size_of_type(field_type).map_err(|_| fmt::Error)?;
 
                         let field_value = &row[position..position + field_len];
                         let formatted_value =
-                            Serializer::format_field(&field_value.to_vec(), field_type).map_err(|_| fmt::Error)?;
+                            Serializer::format_field(&field_value.to_vec(), field_type)
+                                .map_err(|_| fmt::Error)?;
 
                         write!(f, "{}\t", formatted_value)?;
                         position += field_len;
@@ -543,11 +545,7 @@ impl BTreeScanSource {
         let (op, ref val) = conditions[0];
         match op_code {
             SqlConditionOpCode::SelectKeyUnique | SqlConditionOpCode::SelectIndexUnique => {
-                if op == Equal {
-                    Some(val.clone())
-                } else {
-                    None
-                }
+                if op == Equal { Some(val.clone()) } else { None }
             }
             SqlConditionOpCode::SelectKeyRange => match op {
                 Greater | GreaterOrEqual | Equal => Some(val.clone()),
@@ -622,7 +620,8 @@ impl RowSource for IndexLookupSource {
             }
 
             if let Some((base_key, base_row_body)) = self.base_cursor.current()? {
-                let full_row = Serializer::reconstruct_row(&base_key, &base_row_body, &self.base_schema)?;
+                let full_row =
+                    Serializer::reconstruct_row(&base_key, &base_row_body, &self.base_schema)?;
                 return Ok(Some(full_row));
             }
         }
@@ -1151,7 +1150,9 @@ impl RowSource for SetOperationSource {
                             | ParsedSetOperator::Minus => {
                                 *r_curr = self.right.next_as_source()?;
                             }
-                            _ => {panic!()}
+                            _ => {
+                                panic!()
+                            }
                         },
                         std::cmp::Ordering::Equal => match self.op {
                             ParsedSetOperator::Union | ParsedSetOperator::Intersect => {
@@ -1169,7 +1170,9 @@ impl RowSource for SetOperationSource {
                                 *l_curr = self.left.next()?;
                                 *r_curr = self.right.next_as_source()?;
                             }
-                            _ => {panic!()}
+                            _ => {
+                                panic!()
+                            }
                         },
                     },
                     (Some(l), None) => match self.op {

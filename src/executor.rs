@@ -3,6 +3,8 @@ use crate::cursor::BTreeCursor;
 use crate::dataframe::{
     BTreeScanSource, DataFrame, JoinStrategy, MemorySource, RowSource, SetOpStrategy, Source,
 };
+use crate::debug::Status;
+use crate::debug::Status::ExceptionQueryMisformed;
 use crate::pager::{
     Key, PAGE_SIZE, PAGE_SIZE_WITH_META, PageData, PagerAccessor, PagerCore, Position, Row,
     TableName, TransactionId, Type,
@@ -14,15 +16,13 @@ use crate::planner::SqlStatementComparisonOperator::{
     Equal, Greater, GreaterOrEqual, Lesser, LesserOrEqual,
 };
 use crate::planner::{
-    CompiledConditionExpr, CompiledInStrategy, CompiledLogicalOp, CompiledPredicateExpr,
-    CompiledCreateIndexQuery, CompiledCreateTableQuery, CompiledDeleteQuery, CompiledInsertQuery, CompiledQuery,
-    CompiledSelectQuery, CompiledTransactionStatement, CompiledUpdateQuery, PlanNode, Planner, SqlConditionOpCode,
-    SqlStatementComparisonOperator,
+    CompiledConditionExpr, CompiledCreateIndexQuery, CompiledCreateTableQuery, CompiledDeleteQuery,
+    CompiledInStrategy, CompiledInsertQuery, CompiledLogicalOp, CompiledPredicateExpr,
+    CompiledQuery, CompiledSelectQuery, CompiledTransactionStatement, CompiledUpdateQuery,
+    PlanNode, Planner, SqlConditionOpCode, SqlStatementComparisonOperator,
 };
 pub(crate) use crate::schema::{Field, IndexDefinition, Schema, TableIndex, TableSchema};
 use crate::serializer::Serializer;
-use crate::debug::Status;
-use crate::debug::Status::ExceptionQueryMisformed;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::fmt;
@@ -197,25 +197,25 @@ impl QueryExecutor {
         bootstrap_executor
     }
 
-        pub fn from_pager_accessor(pager_accessor: PagerAccessor, t: usize) -> Self {
-            let mut bootstrap_executor = QueryExecutor {
-                pager_accessor: pager_accessor.clone(),
-                query_cache: HashMap::new(),
-                schema: Schema {
-                    table_index: TableIndex {
-                        index: vec![TableName::from(MASTER_TABLE_NAME.to_string())],
-                    },
-                    tables: vec![Self::make_master_table_schema()],
-                    index_definitions: vec![],
+    pub fn from_pager_accessor(pager_accessor: PagerAccessor, t: usize) -> Self {
+        let mut bootstrap_executor = QueryExecutor {
+            pager_accessor: pager_accessor.clone(),
+            query_cache: HashMap::new(),
+            schema: Schema {
+                table_index: TableIndex {
+                    index: vec![TableName::from(MASTER_TABLE_NAME.to_string())],
                 },
-                btree_node_width: t,
-                request_counter: 0,
-                last_write_table_id: None,
-            };
+                tables: vec![Self::make_master_table_schema()],
+                index_definitions: vec![],
+            },
+            btree_node_width: t,
+            request_counter: 0,
+            last_write_table_id: None,
+        };
 
-            bootstrap_executor.schema = bootstrap_executor.load_schema();
-            bootstrap_executor
-        }
+        bootstrap_executor.schema = bootstrap_executor.load_schema();
+        bootstrap_executor
+    }
 
     pub fn exit(&self) {
         self.pager_accessor
@@ -234,7 +234,10 @@ impl QueryExecutor {
         if self.request_counter % 30 == 0 {
             if let Some(table_id) = self.last_write_table_id {
                 if let Err(e) = self.refresh_table_free_list(table_id) {
-                    eprintln!("Failed to refresh free-list for table {}: {:?}", table_id, e);
+                    eprintln!(
+                        "Failed to refresh free-list for table {}: {:?}",
+                        table_id, e
+                    );
                 }
             }
         }
@@ -322,11 +325,7 @@ impl QueryExecutor {
         allow_modification_to_system_table: bool,
     ) -> Result<QueryResult, QueryResult> {
         let compiled_query = self.compile_query(&query)?;
-        self.execute_compiled(
-            compiled_query,
-            query,
-            allow_modification_to_system_table,
-        )
+        self.execute_compiled(compiled_query, query, allow_modification_to_system_table)
     }
 
     fn execute_readonly_intern(&self, query: String) -> Result<QueryResult, QueryResult> {
@@ -351,28 +350,26 @@ impl QueryExecutor {
         allow_modification_to_system_table: bool,
     ) -> Result<QueryResult, QueryResult> {
         match compiled_query {
-            CompiledQuery::Transaction(tx) => {
-                match tx {
-                    CompiledTransactionStatement::Begin => {
-                        self.pager_accessor
-                            .begin_transaction()
-                            .map_err(QueryResult::err)?;
-                        Ok(QueryResult::went_fine())
-                    }
-                    CompiledTransactionStatement::Commit => {
-                        self.pager_accessor
-                            .commit_transaction()
-                            .map_err(QueryResult::err)?;
-                        self.reload_schema()
-                    }
-                    CompiledTransactionStatement::Rollback => {
-                        self.pager_accessor
-                            .rollback_transaction()
-                            .map_err(QueryResult::err)?;
-                        self.reload_schema()
-                    }
+            CompiledQuery::Transaction(tx) => match tx {
+                CompiledTransactionStatement::Begin => {
+                    self.pager_accessor
+                        .begin_transaction()
+                        .map_err(QueryResult::err)?;
+                    Ok(QueryResult::went_fine())
                 }
-            }
+                CompiledTransactionStatement::Commit => {
+                    self.pager_accessor
+                        .commit_transaction()
+                        .map_err(QueryResult::err)?;
+                    self.reload_schema()
+                }
+                CompiledTransactionStatement::Rollback => {
+                    self.pager_accessor
+                        .rollback_transaction()
+                        .map_err(QueryResult::err)?;
+                    self.reload_schema()
+                }
+            },
             CompiledQuery::CreateIndex(q) => {
                 if !allow_modification_to_system_table {
                     self.lock_table_if_needed(MASTER_TABLE_NAME)?;
@@ -467,7 +464,9 @@ impl QueryExecutor {
             ),
             CompiledQuery::DropTable(q) => {
                 if !allow_modification_to_system_table && q.table_id == 0 {
-                    return Err(QueryResult::msg("You are not allowed to modify this table."));
+                    return Err(QueryResult::msg(
+                        "You are not allowed to modify this table.",
+                    ));
                 }
 
                 if q.table_id >= self.schema.tables.len() {
@@ -518,7 +517,9 @@ impl QueryExecutor {
             }
             CompiledQuery::Insert(q) => {
                 if !allow_modification_to_system_table && q.table_id == 0 {
-                    return Err(QueryResult::msg("You are not allowed to modify this table."));
+                    return Err(QueryResult::msg(
+                        "You are not allowed to modify this table.",
+                    ));
                 }
 
                 if !allow_modification_to_system_table {
@@ -530,12 +531,9 @@ impl QueryExecutor {
                 if allow_modification_to_system_table && q.table_id == 0 {
                     schema.free_list.clear();
                 }
-                let mut btree = Btree::init(
-                    schema.btree_order,
-                    self.pager_accessor.clone(),
-                    schema,
-                )
-                .map_err(|s| QueryResult::err(s))?;
+                let mut btree =
+                    Btree::init(schema.btree_order, self.pager_accessor.clone(), schema)
+                        .map_err(|s| QueryResult::err(s))?;
                 let (insert_key, insert_row) = q.data;
                 btree
                     .insert(insert_key.clone(), insert_row.clone())
@@ -548,7 +546,9 @@ impl QueryExecutor {
             }
             CompiledQuery::Delete(q) => {
                 if !allow_modification_to_system_table && q.table_id == 0 {
-                    return Err(QueryResult::msg("You are not allowed to modify this table."));
+                    return Err(QueryResult::msg(
+                        "You are not allowed to modify this table.",
+                    ));
                 }
 
                 if !allow_modification_to_system_table {
@@ -622,7 +622,9 @@ impl QueryExecutor {
             }
             CompiledQuery::Update(q) => {
                 if !allow_modification_to_system_table && q.table_id == 0 {
-                    return Err(QueryResult::msg("You are not allowed to modify this table."));
+                    return Err(QueryResult::msg(
+                        "You are not allowed to modify this table.",
+                    ));
                 }
 
                 if !allow_modification_to_system_table {
@@ -680,7 +682,8 @@ impl QueryExecutor {
             let mut updated_fields = Vec::with_capacity(schema.fields.len());
             for field_idx in 0..schema.fields.len() {
                 updated_fields.push(
-                    Serializer::get_field_on_row(&row, field_idx, &schema).map_err(QueryResult::err)?,
+                    Serializer::get_field_on_row(&row, field_idx, &schema)
+                        .map_err(QueryResult::err)?,
                 );
             }
 
@@ -718,7 +721,9 @@ impl QueryExecutor {
         .map_err(QueryResult::err)?;
 
         for (original_key, _, _) in &updates_to_apply {
-            btree.delete(original_key.clone()).map_err(QueryResult::err)?;
+            btree
+                .delete(original_key.clone())
+                .map_err(QueryResult::err)?;
         }
 
         for (_, new_key, new_row) in updates_to_apply {
@@ -745,12 +750,15 @@ impl QueryExecutor {
                 if matches!(
                     operation,
                     SqlConditionOpCode::SelectIndexUnique | SqlConditionOpCode::SelectIndexRange
-                ) && index_table_id.is_some() && index_on_column.is_some()
+                ) && index_table_id.is_some()
+                    && index_on_column.is_some()
                 {
                     let base_schema = self.schema.tables[*table_id].clone();
                     let index_schema = self.schema.tables[index_table_id.unwrap()].clone();
                     let index_op = match operation {
-                        SqlConditionOpCode::SelectIndexUnique => SqlConditionOpCode::SelectKeyUnique,
+                        SqlConditionOpCode::SelectIndexUnique => {
+                            SqlConditionOpCode::SelectKeyUnique
+                        }
                         SqlConditionOpCode::SelectIndexRange => SqlConditionOpCode::SelectFTS,
                         _ => SqlConditionOpCode::SelectFTS,
                     };
@@ -906,22 +914,29 @@ impl QueryExecutor {
         expr: &CompiledConditionExpr,
     ) -> Result<PreparedConditionExpr, Status> {
         match expr {
-            CompiledConditionExpr::Logical { op, left, right } => Ok(PreparedConditionExpr::Logical {
-                op: op.clone(),
-                left: Box::new(self.prepare_condition_runtime(left)?),
-                right: Box::new(self.prepare_condition_runtime(right)?),
-            }),
+            CompiledConditionExpr::Logical { op, left, right } => {
+                Ok(PreparedConditionExpr::Logical {
+                    op: op.clone(),
+                    left: Box::new(self.prepare_condition_runtime(left)?),
+                    right: Box::new(self.prepare_condition_runtime(right)?),
+                })
+            }
             CompiledConditionExpr::Predicate(pred) => match pred {
                 CompiledPredicateExpr::Compare {
                     column_idx,
                     op,
                     value,
-                } => Ok(PreparedConditionExpr::Predicate(PreparedPredicateExpr::Compare {
-                    column_idx: *column_idx,
-                    op: *op,
-                    value: value.clone(),
-                })),
-                CompiledPredicateExpr::InSubquery { column_idx, strategy } => {
+                } => Ok(PreparedConditionExpr::Predicate(
+                    PreparedPredicateExpr::Compare {
+                        column_idx: *column_idx,
+                        op: *op,
+                        value: value.clone(),
+                    },
+                )),
+                CompiledPredicateExpr::InSubquery {
+                    column_idx,
+                    strategy,
+                } => {
                     let prepared_strategy = match strategy {
                         CompiledInStrategy::Materialize(plan) => {
                             let df = self.exec_planned_tree(plan)?;
@@ -935,7 +950,9 @@ impl QueryExecutor {
                             PreparedInStrategy::Materialized(set)
                         }
                         CompiledInStrategy::KeyLookup { table_id } => {
-                            PreparedInStrategy::KeyLookup { table_id: *table_id }
+                            PreparedInStrategy::KeyLookup {
+                                table_id: *table_id,
+                            }
                         }
                         CompiledInStrategy::IndexLookup { index_table_id } => {
                             PreparedInStrategy::IndexLookup {
@@ -944,10 +961,12 @@ impl QueryExecutor {
                         }
                     };
 
-                    Ok(PreparedConditionExpr::Predicate(PreparedPredicateExpr::InSubquery {
-                        column_idx: *column_idx,
-                        strategy: prepared_strategy,
-                    }))
+                    Ok(PreparedConditionExpr::Predicate(
+                        PreparedPredicateExpr::InSubquery {
+                            column_idx: *column_idx,
+                            strategy: prepared_strategy,
+                        },
+                    ))
                 }
             },
         }
@@ -983,7 +1002,9 @@ impl QueryExecutor {
                     let ord = Serializer::compare_with_type(&lhs, value, field_type)?;
                     Ok(match op {
                         SqlStatementComparisonOperator::Equal => ord == std::cmp::Ordering::Equal,
-                        SqlStatementComparisonOperator::Greater => ord == std::cmp::Ordering::Greater,
+                        SqlStatementComparisonOperator::Greater => {
+                            ord == std::cmp::Ordering::Greater
+                        }
                         SqlStatementComparisonOperator::GreaterOrEqual => {
                             ord == std::cmp::Ordering::Greater || ord == std::cmp::Ordering::Equal
                         }
@@ -1099,10 +1120,11 @@ impl QueryExecutor {
                 continue;
             }
 
-            let index_table_id = match self.find_index_table_id_for_base_column(&base.name, &field.name) {
-                Some(id) => id,
-                None => continue,
-            };
+            let index_table_id =
+                match self.find_index_table_id_for_base_column(&base.name, &field.name) {
+                    Some(id) => id,
+                    None => continue,
+                };
 
             let index_schema = self.schema.tables[index_table_id].clone();
             let idx_key = Serializer::get_field_on_row(&full_row, field_idx, &base)
@@ -1116,7 +1138,9 @@ impl QueryExecutor {
                 index_schema,
             )
             .map_err(QueryResult::err)?;
-            index_btree.insert(idx_key, base_pk).map_err(QueryResult::err)?;
+            index_btree
+                .insert(idx_key, base_pk)
+                .map_err(QueryResult::err)?;
         }
 
         Ok(())
@@ -1139,10 +1163,11 @@ impl QueryExecutor {
                 continue;
             }
 
-            let index_table_id = match self.find_index_table_id_for_base_column(&base.name, &field.name) {
-                Some(id) => id,
-                None => continue,
-            };
+            let index_table_id =
+                match self.find_index_table_id_for_base_column(&base.name, &field.name) {
+                    Some(id) => id,
+                    None => continue,
+                };
 
             let index_schema = self.schema.tables[index_table_id].clone();
             PagerProxy::clear_table_root(&index_schema, self.pager_accessor.clone())
@@ -1161,18 +1186,24 @@ impl QueryExecutor {
 
             base_source.reset().map_err(QueryResult::err)?;
             while let Some(base_row) = base_source.next().map_err(QueryResult::err)? {
-                let idx_key =
-                    Serializer::get_field_on_row(&base_row, field_idx, &base).map_err(QueryResult::err)?;
-                let base_pk =
-                    Serializer::get_field_on_row(&base_row, base_key_pos, &base).map_err(QueryResult::err)?;
-                index_btree.insert(idx_key, base_pk).map_err(QueryResult::err)?;
+                let idx_key = Serializer::get_field_on_row(&base_row, field_idx, &base)
+                    .map_err(QueryResult::err)?;
+                let base_pk = Serializer::get_field_on_row(&base_row, base_key_pos, &base)
+                    .map_err(QueryResult::err)?;
+                index_btree
+                    .insert(idx_key, base_pk)
+                    .map_err(QueryResult::err)?;
             }
         }
 
         Ok(())
     }
 
-    fn count_nodes_on_page(&self, schema: &TableSchema, page_data: PageData) -> Result<usize, Status> {
+    fn count_nodes_on_page(
+        &self,
+        schema: &TableSchema,
+        page_data: PageData,
+    ) -> Result<usize, Status> {
         let mut effective_schema = schema.clone();
         if effective_schema.btree_order == 0 {
             effective_schema.btree_order = self.btree_node_width;
@@ -1183,7 +1214,11 @@ impl QueryExecutor {
             .iter()
             .any(|f| matches!(f.field_type, Type::Varchar(_)));
         if has_varchar && effective_schema.get_node_size_in_bytes()? > PAGE_SIZE {
-            return Ok(if page_data[0] == 0 && page_data[1] == 0 { 0 } else { 1 });
+            return Ok(if page_data[0] == 0 && page_data[1] == 0 {
+                0
+            } else {
+                1
+            });
         }
 
         let mut count = 0usize;
@@ -1211,7 +1246,11 @@ impl QueryExecutor {
         Ok(count)
     }
 
-    fn collect_btree_pages(&self, node: &crate::btree::BTreeNode, pages: &mut HashSet<usize>) -> Result<(), Status> {
+    fn collect_btree_pages(
+        &self,
+        node: &crate::btree::BTreeNode,
+        pages: &mut HashSet<usize>,
+    ) -> Result<(), Status> {
         if !pages.insert(node.position.page()) {
             return Ok(());
         }
@@ -1268,13 +1307,17 @@ impl QueryExecutor {
     fn refresh_all_free_lists(&mut self) {
         for table_id in 1..self.schema.tables.len() {
             if let Err(e) = self.refresh_table_free_list(table_id) {
-                eprintln!("Failed to refresh free-list for table {}: {:?}", table_id, e);
+                eprintln!(
+                    "Failed to refresh free-list for table {}: {:?}",
+                    table_id, e
+                );
             }
         }
     }
 
     fn persist_free_lists_to_system_table(&mut self) -> Result<(), QueryResult> {
-        let tables_to_persist: Vec<TableSchema> = self.schema.tables.iter().skip(1).cloned().collect();
+        let tables_to_persist: Vec<TableSchema> =
+            self.schema.tables.iter().skip(1).cloned().collect();
         for table in tables_to_persist {
             let update_query = format!(
                 "UPDATE {} SET free_list = '{}' WHERE name = '{}'",
@@ -1378,7 +1421,8 @@ impl QueryExecutor {
             tables: vec![master_table_schema.clone()],
             index_definitions: vec![],
         };
-        let mut pending_indices: Vec<(String, i32, String, crate::parser::ParsedCreateIndexQuery)> = vec![];
+        let mut pending_indices: Vec<(String, i32, String, crate::parser::ParsedCreateIndexQuery)> =
+            vec![];
         let select_query = CompiledSelectQuery {
             plan: PlanNode::Project {
                 source: Box::new(PlanNode::SeqScan {
@@ -1469,10 +1513,17 @@ impl QueryExecutor {
                     }
                 }
                 ParsedQuery::CreateIndex(idx) => {
-                    pending_indices.push((idx.index_name.clone(), rootpage, free_list_encoded, idx));
+                    pending_indices.push((
+                        idx.index_name.clone(),
+                        rootpage,
+                        free_list_encoded,
+                        idx,
+                    ));
                 }
                 _ => {
-                    panic!("in the system table should only be create table or create index queries")
+                    panic!(
+                        "in the system table should only be create table or create index queries"
+                    )
                 }
             }
         });
@@ -1504,7 +1555,9 @@ impl QueryExecutor {
                         table_name: index_name.clone(),
                     },
                     Field {
-                        field_type: base_schema.fields[base_schema.key_position].field_type.clone(),
+                        field_type: base_schema.fields[base_schema.key_position]
+                            .field_type
+                            .clone(),
                         name: "base_pk".to_string(),
                         table_name: index_name.clone(),
                     },
@@ -1555,5 +1608,4 @@ impl QueryExecutor {
             }
         }
     }
-
 }
