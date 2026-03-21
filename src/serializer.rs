@@ -28,6 +28,56 @@ use crate::schema::TableSchema;
 pub struct Serializer {}
 
 impl Serializer {
+    pub fn project(
+        row: &[u8],
+        source_header: &[Field],
+        mapping_indices: &[usize],
+    ) -> Result<Vec<u8>, Status> {
+        let split_fields = Self::split_row_into_fields(row, source_header)?;
+        let mut projected = Vec::new();
+        for &idx in mapping_indices {
+            if idx >= split_fields.len() {
+                return Err(InternalExceptionIndexOutOfRange);
+            }
+            projected.extend_from_slice(split_fields[idx]);
+        }
+        Ok(projected)
+    }
+
+    pub fn lookup_key_for_target(
+        target_row: &[u8],
+        table_schema: &TableSchema,
+    ) -> Result<Option<Key>, Status> {
+        let key_len = table_schema.get_key_length()?;
+        if target_row.len() == key_len {
+            return Ok(Some(target_row.to_vec()));
+        }
+
+        if Self::split_row_into_fields(target_row, &table_schema.fields).is_ok() {
+            return Ok(Some(Self::get_field_on_row_slice(
+                target_row,
+                table_schema.key_position,
+                table_schema,
+            )?));
+        }
+
+        Ok(None)
+    }
+
+    pub fn lookup_target_matches_row(
+        target_row: &[u8],
+        found_key: &Key,
+        found_row_body: &Row,
+        table_schema: &TableSchema,
+    ) -> Result<bool, Status> {
+        if target_row.len() == table_schema.get_key_length()? {
+            return Ok(found_key.as_slice() == target_row);
+        }
+
+        let full_row = Self::reconstruct_row(found_key, found_row_body, table_schema)?;
+        Ok(full_row.as_slice() == target_row)
+    }
+
     pub fn format_condition_op(op: &SqlStatementComparisonOperator) -> &'static str {
         match op {
             SqlStatementComparisonOperator::None => "NONE",
@@ -1347,6 +1397,14 @@ impl Serializer {
 
     pub fn get_field_on_row(
         row: &Vec<u8>,
+        index: usize,
+        table_schema: &TableSchema,
+    ) -> Result<Vec<u8>, Status> {
+        Self::get_field_on_row_slice(row, index, table_schema)
+    }
+
+    pub fn get_field_on_row_slice(
+        row: &[u8],
         index: usize,
         table_schema: &TableSchema,
     ) -> Result<Vec<u8>, Status> {

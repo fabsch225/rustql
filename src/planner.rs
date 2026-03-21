@@ -77,11 +77,7 @@ pub enum CompiledConditionExpr {
 #[derive(Debug, Clone)]
 pub enum CompiledInStrategy {
     Materialize(Box<PlanNode>),
-    KeyLookup { plan: Box<PlanNode>, table_id: usize },
-    IndexLookup {
-        plan: Box<PlanNode>,
-        index_table_id: usize,
-    },
+    Lookup(Box<PlanNode>),
 }
 
 /// A Node in the Query Execution Plan Tree
@@ -102,6 +98,7 @@ pub enum PlanNode {
     Project {
         source: Box<PlanNode>,
         fields: Vec<Field>,
+        lookup_key_field_idx: Option<usize>,
     },
     Join {
         left: Box<PlanNode>,
@@ -637,9 +634,15 @@ impl Planner {
         if already_exact_projection {
             Ok(optimized_plan)
         } else {
+            let source_schema = optimized_plan
+                .get_schema(schema)
+                .map_err(|_| QueryResult::user_input_wrong("".to_string()))?;
+            let lookup_key_field_idx =
+                Self::compute_project_lookup_hint(&source_schema, &projected_fields);
             Ok(PlanNode::Project {
                 source: Box::new(optimized_plan),
                 fields: projected_fields,
+                lookup_key_field_idx,
             })
         }
     }
@@ -1007,40 +1010,7 @@ impl Planner {
     ) -> Result<CompiledInStrategy, QueryResult> {
         let plan = Self::plan_tree_node(schema, (*subquery.clone()).clone())?;
 
-        if let ParsedQueryTreeNode::SingleQuery(sq) = subquery.as_ref() {
-            if sq.result.len() == 1 {
-                if let ParsedSource::Table(table_name) = &sq.source {
-                    let table_id = Self::find_table_id(schema, table_name)?;
-                    let table_schema = &schema.tables[table_id];
-                    let field = Self::resolve_field(&sq.result[0], table_schema)?;
-                    let field_idx = table_schema
-                        .fields
-                        .iter()
-                        .position(|f| Self::same_field(f, &field))
-                        .ok_or_else(|| {
-                            QueryResult::user_input_wrong("Invalid IN subquery field".to_string())
-                        })?;
-
-                    if field_idx == table_schema.key_position {
-                        return Ok(CompiledInStrategy::KeyLookup {
-                            plan: Box::new(plan),
-                            table_id,
-                        });
-                    }
-
-                    if let Some(index_table_id) =
-                        Self::find_index_table_id(schema, table_name, &field.name)
-                    {
-                        return Ok(CompiledInStrategy::IndexLookup {
-                            plan: Box::new(plan),
-                            index_table_id,
-                        });
-                    }
-                }
-            }
-        }
-
-        Ok(CompiledInStrategy::Materialize(Box::new(plan)))
+        Ok(CompiledInStrategy::Lookup(Box::new(plan)))
     }
 
     fn derive_scan_hint_for_table(
@@ -1275,7 +1245,11 @@ impl Planner {
                     })
                 }
             }
-            PlanNode::Project { source, fields } => {
+            PlanNode::Project {
+                source,
+                fields,
+                lookup_key_field_idx: _,
+            } => {
                 let projected_fields = if required_fields.is_empty() {
                     fields.clone()
                 } else {
@@ -1291,13 +1265,23 @@ impl Planner {
                 let optimized_source =
                     Self::pushdown_projections(global_schema, *source, child_required)?;
 
+                let source_schema = optimized_source
+                    .get_schema(global_schema)
+                    .map_err(|_| QueryResult::user_input_wrong("".to_string()))?;
+
+                let final_fields = if projected_fields.is_empty() {
+                    fields
+                } else {
+                    projected_fields
+                };
+
+                let lookup_key_field_idx =
+                    Self::compute_project_lookup_hint(&source_schema, &final_fields);
+
                 Ok(PlanNode::Project {
                     source: Box::new(optimized_source),
-                    fields: if projected_fields.is_empty() {
-                        fields
-                    } else {
-                        projected_fields
-                    },
+                    fields: final_fields,
+                    lookup_key_field_idx,
                 })
             }
             PlanNode::SetOperation { op, left, right } => {
@@ -1313,6 +1297,20 @@ impl Planner {
             }
             other => Ok(other),
         }
+    }
+
+    fn compute_project_lookup_hint(
+        source_schema: &TableSchema,
+        projected_fields: &Vec<Field>,
+    ) -> Option<usize> {
+        if !source_schema.has_key || source_schema.key_position >= source_schema.fields.len() {
+            return None;
+        }
+
+        let key_field = &source_schema.fields[source_schema.key_position];
+        projected_fields
+            .iter()
+            .position(|f| Self::same_field(f, key_field))
     }
 
     fn split_filter_terms_for_join(

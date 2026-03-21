@@ -111,10 +111,10 @@ mod tests {
             let cond = extract_filter_condition(&q.plan).expect("expected filter condition");
             match cond {
                 CompiledConditionExpr::Predicate(CompiledPredicateExpr::InSubquery {
-                    strategy: CompiledInStrategy::KeyLookup { .. },
+                    strategy: CompiledInStrategy::Lookup(_),
                     ..
                 }) => {}
-                _ => panic!("expected key-lookup strategy for IN subquery"),
+                _ => panic!("expected lookup strategy for IN subquery"),
             }
         } else {
             panic!("expected select query");
@@ -145,10 +145,10 @@ mod tests {
             let cond = extract_filter_condition(&q.plan).expect("expected filter condition");
             match cond {
                 CompiledConditionExpr::Predicate(CompiledPredicateExpr::InSubquery {
-                    strategy: CompiledInStrategy::IndexLookup { .. },
+                    strategy: CompiledInStrategy::Lookup(_),
                     ..
                 }) => {}
-                _ => panic!("expected index-lookup strategy for IN subquery"),
+                _ => panic!("expected lookup strategy for IN subquery"),
             }
         } else {
             panic!("expected select query");
@@ -156,7 +156,7 @@ mod tests {
     }
 
     #[test]
-    fn test_in_subquery_materialized_strategy() {
+    fn test_in_subquery_lookup_strategy_for_filtered_subquery() {
         let mut exec = QueryExecutor::init();
         assert!(
             exec.prepare("CREATE TABLE a (id Integer, v Integer)".to_string())
@@ -175,10 +175,10 @@ mod tests {
             let cond = extract_filter_condition(&q.plan).expect("expected filter condition");
             match cond {
                 CompiledConditionExpr::Predicate(CompiledPredicateExpr::InSubquery {
-                    strategy: CompiledInStrategy::Materialize(_),
+                    strategy: CompiledInStrategy::Lookup(_),
                     ..
                 }) => {}
-                _ => panic!("expected materialized strategy for filtered IN subquery"),
+                _ => panic!("expected lookup strategy for filtered IN subquery"),
             }
         } else {
             panic!("expected select query");

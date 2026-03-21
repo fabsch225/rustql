@@ -56,8 +56,9 @@ pub enum PreparedPredicateExpr {
 #[derive(Debug, Clone)]
 pub enum PreparedInStrategy {
     Materialize(Box<DataFrame>),
-    KeyLookup { table_id: usize },
-    IndexLookup { index_table_id: usize },
+    Lookup {
+        lookup_df: Box<DataFrame>,
+    },
 }
 
 impl DataFrame {
@@ -178,7 +179,12 @@ impl DataFrame {
         }
     }
 
-    pub fn project(self, new_header: Vec<Field>, mapping_indices: Vec<usize>) -> DataFrame {
+    pub fn project(
+        self,
+        new_header: Vec<Field>,
+        mapping_indices: Vec<usize>,
+        lookup_key_field_idx: Option<usize>,
+    ) -> DataFrame {
         let source_header = self.header.clone();
 
         DataFrame {
@@ -188,6 +194,8 @@ impl DataFrame {
                 Box::new(self.row_source),
                 mapping_indices,
                 source_header,
+                lookup_key_field_idx,
+                self.header,
             )),
             cursor_started: false,
         }
@@ -316,6 +324,16 @@ pub enum Source {
 pub trait RowSource {
     fn next(&mut self) -> Result<Option<Vec<u8>>, Status>;
     fn reset(&mut self) -> Result<(), Status>;
+
+    fn lookup(&mut self, target_row: &[u8]) -> Result<bool, Status> {
+        self.reset()?;
+        while let Some(row) = self.next()? {
+            if row == target_row {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
 }
 
 impl RowSource for Source {
@@ -344,6 +362,20 @@ impl RowSource for Source {
             Source::SetOp(s) => s.reset(),
             Source::Filter(s) => s.reset(),
             Source::Project(s) => s.reset(),
+        }
+    }
+
+    fn lookup(&mut self, target_row: &[u8]) -> Result<bool, Status> {
+        match self {
+            Source::Memory(s) => s.lookup(target_row),
+            Source::BTree(s) => s.lookup(target_row),
+            Source::IndexLookup(s) => s.lookup(target_row),
+            Source::NestedLoopJoin(s) => s.lookup(target_row),
+            Source::HashJoin(s) => s.lookup(target_row),
+            Source::SortMergeJoin(s) => s.lookup(target_row),
+            Source::SetOp(s) => s.lookup(target_row),
+            Source::Filter(s) => s.lookup(target_row),
+            Source::Project(s) => s.lookup(target_row),
         }
     }
 }
@@ -548,6 +580,10 @@ impl RowSource for MemorySource {
         self.idx = 0;
         Ok(())
     }
+
+    fn lookup(&mut self, target_row: &[u8]) -> Result<bool, Status> {
+        Ok(self.data.iter().any(|r| r.as_slice() == target_row))
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -678,6 +714,33 @@ impl RowSource for IndexLookupSource {
         self.base_cursor.move_to_start()?;
         Ok(())
     }
+
+    fn lookup(&mut self, target_row: &[u8]) -> Result<bool, Status> {
+        let key = match Serializer::lookup_key_for_target(target_row, &self.base_schema)? {
+            Some(k) => k,
+            None => return Ok(false),
+        };
+
+        self.base_cursor.go_to(&key)?;
+        if !self.base_cursor.is_valid() {
+            return Ok(false);
+        }
+
+        if let Some((found_key, base_row_body)) = self.base_cursor.current()? {
+            if found_key != key || Serializer::is_tomb(&found_key, &self.base_schema)? {
+                return Ok(false);
+            }
+
+            Serializer::lookup_target_matches_row(
+                target_row,
+                &found_key,
+                &base_row_body,
+                &self.base_schema,
+            )
+        } else {
+            Ok(false)
+        }
+    }
 }
 
 impl RowSource for BTreeScanSource {
@@ -705,6 +768,28 @@ impl RowSource for BTreeScanSource {
 
     fn reset(&mut self) -> Result<(), Status> {
         Self::setup_cursor(&mut self.cursor, &self.op_code, &self.seek_key)
+    }
+
+    fn lookup(&mut self, target_row: &[u8]) -> Result<bool, Status> {
+        let lookup_key = match Serializer::lookup_key_for_target(target_row, &self.schema)? {
+            Some(k) => k,
+            None => return Ok(false),
+        };
+
+        self.cursor.go_to(&lookup_key)?;
+        if !self.cursor.is_valid() {
+            return Ok(false);
+        }
+
+        if let Some((found_key, row_body)) = self.cursor.current()? {
+            if found_key != lookup_key || Serializer::is_tomb(&found_key, &self.schema)? {
+                return Ok(false);
+            }
+
+            Serializer::lookup_target_matches_row(target_row, &found_key, &row_body, &self.schema)
+        } else {
+            Ok(false)
+        }
     }
 }
 
@@ -734,14 +819,7 @@ enum RuntimePredicateExpr {
 #[derive(Debug, Clone)]
 enum RuntimeInStrategy {
     Materialized(HashSet<Vec<u8>>),
-    KeyLookup {
-        schema: TableSchema,
-        cursor: BTreeCursor,
-    },
-    IndexLookup {
-        schema: TableSchema,
-        cursor: BTreeCursor,
-    },
+    Lookup(Box<Source>),
 }
 
 #[derive(Debug, Clone)]
@@ -774,6 +852,17 @@ impl FilterSource {
         Ok(())
     }
 
+    fn materialize_lookup_set(df: &DataFrame) -> Result<HashSet<Vec<u8>>, Status> {
+        let rows = df.clone().fetch()?;
+        let mut set = HashSet::new();
+        for row in rows {
+            if !row.is_empty() {
+                set.insert(row);
+            }
+        }
+        Ok(set)
+    }
+
     fn prepare_runtime_condition(
         &self,
         expr: &PreparedConditionExpr,
@@ -800,48 +889,10 @@ impl FilterSource {
                 } => {
                     let runtime_strategy = match strategy {
                         PreparedInStrategy::Materialize(df) => {
-                            let rows = df.as_ref().clone().fetch()?;
-                            let mut set = HashSet::new();
-                            for row in rows {
-                                if !row.is_empty() {
-                                    set.insert(row);
-                                }
-                            }
-                            RuntimeInStrategy::Materialized(set)
+                            RuntimeInStrategy::Materialized(Self::materialize_lookup_set(df)?)
                         }
-                        PreparedInStrategy::KeyLookup { table_id } => {
-                            let table_schema = self
-                                .context
-                                .schemas
-                                .get(*table_id)
-                                .ok_or(Status::InternalExceptionInvalidSchema)?
-                                .clone();
-                            let btree = Btree::init(
-                                table_schema.btree_order,
-                                self.context.pager_accessor.clone(),
-                                table_schema.clone(),
-                            )?;
-                            RuntimeInStrategy::KeyLookup {
-                                schema: table_schema,
-                                cursor: BTreeCursor::new(btree),
-                            }
-                        }
-                        PreparedInStrategy::IndexLookup { index_table_id } => {
-                            let index_schema = self
-                                .context
-                                .schemas
-                                .get(*index_table_id)
-                                .ok_or(Status::InternalExceptionInvalidSchema)?
-                                .clone();
-                            let btree = Btree::init(
-                                index_schema.btree_order,
-                                self.context.pager_accessor.clone(),
-                                index_schema.clone(),
-                            )?;
-                            RuntimeInStrategy::IndexLookup {
-                                schema: index_schema,
-                                cursor: BTreeCursor::new(btree),
-                            }
+                        PreparedInStrategy::Lookup { lookup_df } => {
+                            RuntimeInStrategy::Lookup(Box::new(lookup_df.row_source.clone()))
                         }
                     };
 
@@ -903,38 +954,15 @@ impl FilterSource {
                     let lhs = Serializer::get_field_on_row(row, *column_idx, schema)?;
                     match strategy {
                         RuntimeInStrategy::Materialized(set) => Ok(set.contains(&lhs)),
-                        RuntimeInStrategy::KeyLookup {
-                            schema,
-                            cursor,
-                        } => {
-                            cursor.go_to(&lhs)?;
-                            if !cursor.is_valid() {
-                                return Ok(false);
-                            }
-                            if let Some((key, _)) = cursor.current()? {
-                                Ok(key == lhs && !Serializer::is_tomb(&key, schema)?)
-                            } else {
-                                Ok(false)
-                            }
-                        }
-                        RuntimeInStrategy::IndexLookup {
-                            schema,
-                            cursor,
-                        } => {
-                            cursor.go_to(&lhs)?;
-                            if !cursor.is_valid() {
-                                return Ok(false);
-                            }
-                            if let Some((key, _)) = cursor.current()? {
-                                Ok(key == lhs && !Serializer::is_tomb(&key, schema)?)
-                            } else {
-                                Ok(false)
-                            }
-                        }
+                        RuntimeInStrategy::Lookup(source) => source.lookup(&lhs),
                     }
                 }
             },
         }
+    }
+
+    fn is_full_row_for_schema(row: &[u8], schema: &TableSchema) -> bool {
+        Serializer::split_row_into_fields(&row.to_vec(), &schema.fields).is_ok()
     }
 }
 
@@ -965,6 +993,32 @@ impl RowSource for FilterSource {
         self.source.reset()?;
         self.initialize_runtime_condition()
     }
+
+    fn lookup(&mut self, target_row: &[u8]) -> Result<bool, Status> {
+        if !Self::is_full_row_for_schema(target_row, &self.schema) {
+            self.reset()?;
+            while let Some(row) = self.next()? {
+                if row == target_row {
+                    return Ok(true);
+                }
+            }
+            return Ok(false);
+        }
+
+        if !self.source.lookup(target_row)? {
+            return Ok(false);
+        }
+
+        if self.runtime_condition.is_none() {
+            self.initialize_runtime_condition()?;
+        }
+
+        let runtime = self
+            .runtime_condition
+            .as_mut()
+            .ok_or(Status::InternalExceptionCompilerError)?;
+        Self::evaluate_runtime_condition(runtime, &target_row.to_vec(), &self.schema)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -972,6 +1026,8 @@ pub struct ProjectSource {
     source: Box<Source>,
     mapping_indices: Vec<usize>,
     source_header: Vec<Field>,
+    lookup_key_field_idx: Option<usize>,
+    projected_header: Vec<Field>,
 }
 
 impl ProjectSource {
@@ -979,11 +1035,15 @@ impl ProjectSource {
         source: Box<Source>,
         mapping_indices: Vec<usize>,
         source_header: Vec<Field>,
+        lookup_key_field_idx: Option<usize>,
+        projected_header: Vec<Field>,
     ) -> Self {
         Self {
             source,
             mapping_indices,
             source_header,
+            lookup_key_field_idx,
+            projected_header,
         }
     }
 }
@@ -995,20 +1055,37 @@ impl RowSource for ProjectSource {
             None => return Ok(None),
         };
 
-        let split_fields = Serializer::split_row_into_fields(&row, &self.source_header)?;
-
-        let mut new_row_bytes = Vec::new();
-        for &idx in &self.mapping_indices {
-            if idx < split_fields.len() {
-                new_row_bytes.extend_from_slice(&split_fields[idx]);
-            }
-        }
-
-        Ok(Some(new_row_bytes))
+        Ok(Some(Serializer::project(
+            &row,
+            &self.source_header,
+            &self.mapping_indices,
+        )?))
     }
 
     fn reset(&mut self) -> Result<(), Status> {
         self.source.reset()
+    }
+
+    fn lookup(&mut self, target_row: &[u8]) -> Result<bool, Status> {
+        if let Some(projected_key_idx) = self.lookup_key_field_idx {
+            if let Ok(fields) =
+                Serializer::split_row_into_fields(&target_row.to_vec(), &self.projected_header)
+            {
+                if projected_key_idx < fields.len() {
+                    if self.source.lookup(&fields[projected_key_idx])? {
+                        return Ok(true);
+                    }
+                }
+            }
+        }
+
+        self.reset()?;
+        while let Some(row) = self.next()? {
+            if row == target_row {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 }
 
@@ -1535,6 +1612,7 @@ impl RowSource for SetOperationSource {
     fn reset(&mut self) -> Result<(), Status> {
         self.left.reset()?;
         self.right.reset()?;
+        self.seen_rows.clear();
         if let RightSideContainer::Sorted(_) = self.right {
             self.state = SetOpState::SortedMerge {
                 l_curr: None,
@@ -1545,5 +1623,28 @@ impl RowSource for SetOperationSource {
             self.state = SetOpState::LeftStream;
         }
         Ok(())
+    }
+
+    fn lookup(&mut self, target_row: &[u8]) -> Result<bool, Status> {
+        match self.op {
+            ParsedSetOperator::Intersect => {
+                Ok(self.left.lookup(target_row)? && self.right.contains(target_row)?)
+            }
+            ParsedSetOperator::Except | ParsedSetOperator::Minus => {
+                Ok(self.left.lookup(target_row)? && !self.right.contains(target_row)?)
+            }
+            ParsedSetOperator::Union | ParsedSetOperator::All => {
+                Ok(self.left.lookup(target_row)? || self.right.contains(target_row)?)
+            }
+            ParsedSetOperator::Times => {
+                self.reset()?;
+                while let Some(row) = self.next()? {
+                    if row == target_row {
+                        return Ok(true);
+                    }
+                }
+                Ok(false)
+            }
+        }
     }
 }

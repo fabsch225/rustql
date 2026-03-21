@@ -803,7 +803,11 @@ impl QueryExecutor {
                 ))
             }
 
-            PlanNode::Project { source, fields } => {
+            PlanNode::Project {
+                source,
+                fields,
+                lookup_key_field_idx,
+            } => {
                 let source_df = self.exec_planned_tree(source)?;
                 //ToDo compute these in the Planner
                 let mut mapping_indices = Vec::new();
@@ -819,7 +823,11 @@ impl QueryExecutor {
                     }
                 }
 
-                Ok(source_df.project(fields.clone(), mapping_indices))
+                Ok(source_df.project(
+                    fields.clone(),
+                    mapping_indices,
+                    *lookup_key_field_idx,
+                ))
             }
 
             PlanNode::Join {
@@ -926,27 +934,10 @@ impl QueryExecutor {
                             let df = self.exec_planned_tree(plan)?;
                             PreparedInStrategy::Materialize(Box::new(df))
                         }
-                        CompiledInStrategy::KeyLookup { plan, table_id } => {
-                            if Self::plan_contains_filter(plan) {
-                                let df = self.exec_planned_tree(plan)?;
-                                PreparedInStrategy::Materialize(Box::new(df))
-                            } else {
-                                PreparedInStrategy::KeyLookup {
-                                    table_id: *table_id,
-                                }
-                            }
-                        }
-                        CompiledInStrategy::IndexLookup {
-                            plan,
-                            index_table_id,
-                        } => {
-                            if Self::plan_contains_filter(plan) {
-                                let df = self.exec_planned_tree(plan)?;
-                                PreparedInStrategy::Materialize(Box::new(df))
-                            } else {
-                                PreparedInStrategy::IndexLookup {
-                                    index_table_id: *index_table_id,
-                                }
+                        CompiledInStrategy::Lookup(plan) => {
+                            let lookup_df = self.exec_planned_tree(plan)?;
+                            PreparedInStrategy::Lookup {
+                                lookup_df: Box::new(lookup_df),
                             }
                         }
                     };
@@ -959,20 +950,6 @@ impl QueryExecutor {
                     ))
                 }
             },
-        }
-    }
-
-    fn plan_contains_filter(plan: &PlanNode) -> bool {
-        match plan {
-            PlanNode::Filter { .. } => true,
-            PlanNode::Project { source, .. } => Self::plan_contains_filter(source),
-            PlanNode::Join { left, right, .. } => {
-                Self::plan_contains_filter(left) || Self::plan_contains_filter(right)
-            }
-            PlanNode::SetOperation { left, right, .. } => {
-                Self::plan_contains_filter(left) || Self::plan_contains_filter(right)
-            }
-            PlanNode::SeqScan { .. } => false,
         }
     }
 
@@ -1105,6 +1082,7 @@ impl QueryExecutor {
                         table_name: MASTER_TABLE_NAME.to_string(),
                     },
                 ],
+                lookup_key_field_idx: None,
             },
         };
 

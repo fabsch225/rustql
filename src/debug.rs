@@ -143,25 +143,12 @@ impl Planner {
                 } => {
                     out.push_str(&format!("{}IN col[{}]\n", prefix, column_idx));
                     match strategy {
-                        CompiledInStrategy::KeyLookup { plan, table_id } => {
-                            out.push_str(&format!(
-                                "{}└─ strategy: KeyLookup(table_id={})\n",
-                                prefix, table_id
-                            ));
-                            Self::render_plan_node(plan, &format!("{}   ", prefix), true, out);
-                        }
-                        CompiledInStrategy::IndexLookup {
-                            plan,
-                            index_table_id,
-                        } => {
-                            out.push_str(&format!(
-                                "{}└─ strategy: IndexLookup(index_table_id={})\n",
-                                prefix, index_table_id
-                            ));
-                            Self::render_plan_node(plan, &format!("{}   ", prefix), true, out);
-                        }
                         CompiledInStrategy::Materialize(plan) => {
                             out.push_str(&format!("{}└─ strategy: Materialize\n", prefix));
+                            Self::render_plan_node(plan, &format!("{}   ", prefix), true, out);
+                        }
+                        CompiledInStrategy::Lookup(plan) => {
+                            out.push_str(&format!("{}└─ strategy: Lookup\n", prefix));
                             Self::render_plan_node(plan, &format!("{}   ", prefix), true, out);
                         }
                     }
@@ -205,7 +192,11 @@ impl Planner {
                 Self::render_condition_expr(condition, &format!("{}    ", next_prefix), out);
                 Self::render_plan_node(source, &next_prefix, true, out);
             }
-            PlanNode::Project { source, fields } => {
+            PlanNode::Project {
+                source,
+                fields,
+                lookup_key_field_idx,
+            } => {
                 out.push_str(&format!("{}{} Project\n", prefix, branch));
                 let fields_repr = fields
                     .iter()
@@ -213,6 +204,10 @@ impl Planner {
                     .collect::<Vec<String>>()
                     .join(", ");
                 out.push_str(&format!("{}  fields: [{}]\n", next_prefix, fields_repr));
+                out.push_str(&format!(
+                    "{}  lookup_key_field_idx: {:?}\n",
+                    next_prefix, lookup_key_field_idx
+                ));
                 Self::render_plan_node(source, &next_prefix, true, out);
             }
             PlanNode::Join {
